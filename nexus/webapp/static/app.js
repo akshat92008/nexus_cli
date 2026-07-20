@@ -8,7 +8,6 @@ let ws = null;
 let sessionId = `ws_${Date.now()}`;
 let isThinking = false;
 let currentModel = 'Loading...';
-let messageHistory = [];
 
 // ─── DOM Elements ───────────────────────────────────────────────────────────
 const chatArea = document.getElementById('chatArea');
@@ -296,32 +295,37 @@ function renderMarkdown(text) {
 
     let html = text;
 
-    // Code blocks (```language\ncode\n```)
+    // Code blocks (```language\ncode\n```) — process first to protect from other rules
     html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-        const langLabel = lang || 'text';
+        const langLabel = lang || 'code';
         return `<pre><div class="code-header"><span>${langLabel}</span></div><code class="language-${langLabel}">${escapeHtml(code.trim())}</code></pre>`;
     });
 
-    // Inline code
+    // Inline code — process before bold/italic to protect backtick content
     html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
 
-    // Bold
+    // Bold (**text**) — must process before italic to avoid * collision
     html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
 
-    // Italic
-    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    // Italic (*text*) — single asterisks, now safe since ** already handled
+    html = html.replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>');
 
     // Headers
     html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
     html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
     html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
 
-    // Unordered lists
+    // Unordered lists — wrap consecutive <li> in <ul>
     html = html.replace(/^[*-] (.+)$/gm, '<li>$1</li>');
-    html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+    html = html.replace(/((?:<li>.*?<\/li>\n?)+)/g, '<ul>$1</ul>');
 
-    // Ordered lists
+    // Ordered lists — wrap consecutive <li> in <ol>
     html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+    html = html.replace(/((?:<li>.*?<\/li>\n?)+)/g, (match) => {
+        // Only wrap in <ol> if not already inside <ul>
+        if (match.includes('<ul>')) return match;
+        return '<ol>' + match + '</ol>';
+    });
 
     // Links
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
@@ -330,7 +334,7 @@ function renderMarkdown(text) {
     html = html.replace(/\n\n/g, '</p><p>');
     html = '<p>' + html + '</p>';
 
-    // Clean up empty paragraphs
+    // Clean up empty paragraphs and fix nesting
     html = html.replace(/<p>\s*<\/p>/g, '');
     html = html.replace(/<p>(<h[1-6]>)/g, '$1');
     html = html.replace(/(<\/h[1-6]>)<\/p>/g, '$1');
@@ -338,6 +342,8 @@ function renderMarkdown(text) {
     html = html.replace(/(<\/pre>)<\/p>/g, '$1');
     html = html.replace(/<p>(<ul>)/g, '$1');
     html = html.replace(/(<\/ul>)<\/p>/g, '$1');
+    html = html.replace(/<p>(<ol>)/g, '$1');
+    html = html.replace(/(<\/ol>)<\/p>/g, '$1');
 
     return html;
 }

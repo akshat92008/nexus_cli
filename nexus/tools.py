@@ -568,15 +568,14 @@ def _run_git(args: list[str], cwd: str | None = None) -> tuple[bool, str]:
 
 def _strip_html(html_text: str) -> str:
     """Very simple HTML-to-text converter."""
-    import re as _re
     # Remove script and style elements
-    text = _re.sub(r'<(script|style)[^>]*>.*?</\1>', '', html_text, flags=_re.DOTALL | _re.IGNORECASE)
+    text = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', html_text, flags=re.DOTALL | re.IGNORECASE)
     # Remove HTML tags
-    text = _re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r'<[^>]+>', ' ', text)
     # Decode HTML entities
     text = html.unescape(text)
     # Collapse whitespace
-    text = _re.sub(r'\s+', ' ', text)
+    text = re.sub(r'\s+', ' ', text)
     # Trim lines
     lines = [line.strip() for line in text.split('\n')]
     text = '\n'.join(line for line in lines if line)
@@ -845,14 +844,20 @@ def tool_process_run(command: str, cwd: str | None = None) -> str:
         stdout_f = open(stdout_log, "w")
         stderr_f = open(stderr_log, "w")
 
-        proc = subprocess.Popen(
-            command,
-            shell=True,
-            stdout=stdout_f,
-            stderr=stderr_f,
-            cwd=work_dir,
-            env={**os.environ},
-        )
+        try:
+            proc = subprocess.Popen(
+                command,
+                shell=True,
+                stdout=stdout_f,
+                stderr=stderr_f,
+                cwd=work_dir,
+                env={**os.environ},
+            )
+        finally:
+            # Close file handles in the parent — the child process
+            # has its own copies of the file descriptors
+            stdout_f.close()
+            stderr_f.close()
 
         _bg_processes[proc.pid] = {
             "command": command,
