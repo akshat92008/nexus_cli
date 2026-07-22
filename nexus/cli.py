@@ -105,7 +105,14 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
         ui.print_help()
 
     elif command == "/models":
-        ui.print_models_table()
+        if arg:
+            # User typed "/models <name>" — treat as model switch
+            if agent.set_model(arg.strip()):
+                ui.print_model_info(agent.model_key, agent.model_cfg)
+            else:
+                ui.print_error(f"Unknown model: '{arg}'. Use /models to see available options.")
+        else:
+            ui.print_models_table()
 
     elif command == "/model":
         if not arg:
@@ -115,6 +122,17 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
             ui.print_model_info(agent.model_key, agent.model_cfg)
         else:
             ui.print_error(f"Unknown model: '{arg}'. Use /models to see available options.")
+
+    elif command.startswith("/model"):
+        # Handle typos like "/modelglm-5.2" or "/modelsdeepseek-v4"
+        model_name = command.replace("/models", "").replace("/model", "").strip()
+        if model_name:
+            if agent.set_model(model_name):
+                ui.print_model_info(agent.model_key, agent.model_cfg)
+            else:
+                ui.print_error(f"Unknown model: '{model_name}'. Use /models to see available options.")
+        else:
+            ui.print_models_table()
 
     elif command == "/clear":
         agent.clear_history()
@@ -212,6 +230,59 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
     elif command == "/tools":
         ui.print_tools_table()
 
+    # ─── ADDED EXTENSION COMMANDS ────────────────────────────────────
+
+    elif command == "/skills":
+        ui.console.print(agent.skills.get_skill_summary())
+
+    elif command == "/hooks":
+        ui.console.print(agent.hooks.get_summary())
+
+    elif command == "/subagent":
+        if not arg:
+            ui.print_error("Usage: /subagent <template> <task>  (e.g., /subagent security Scan for hardcoded passwords)")
+            return True
+        sub_parts = arg.strip().split(maxsplit=1)
+        if len(sub_parts) < 2:
+            ui.print_error("Usage: /subagent <template> <task>")
+            return True
+        template, task = sub_parts[0], sub_parts[1]
+        report = agent.spawn_subagent(template, task)
+        ui.console.print(report)
+
+    elif command == "/verify":
+        checks = arg.strip().split() if arg else None
+        report = agent.run_verification(checks)
+        ui.console.print(report)
+
+    elif command == "/mcp":
+        ui.console.print(agent.mcp.get_summary())
+
+    elif command == "/plugins":
+        if not agent.plugin_loader.plugins:
+            ui.print_info("No plugins loaded.")
+        else:
+            ui.console.print(f"🔌 Plugins ({len(agent.plugin_loader.plugins)} loaded)")
+            for name, plugin in agent.plugin_loader.plugins.items():
+                ui.console.print(f"  🟢 {name} (v{plugin.version}) — {plugin.description}")
+
+    elif command == "/web":
+        port = int(arg.strip()) if arg.strip().isdigit() else 3000
+        start_background_web_server(agent.client.api_key, agent.model_key, port, agent.working_dir)
+        ui.print_success(f"Web UI server started in background at http://localhost:{port}")
+
+    elif command == "/rules":
+        rules = agent.project_mem.load_rules()
+        ui.console.print(f"📋 Project Rules ({agent.working_dir}/NEXUS.md):")
+        ui.console.print(f"  Build command: {rules.build_command or 'None'}")
+        ui.console.print(f"  Test command:  {rules.test_command or 'None'}")
+        ui.console.print(f"  Lint command:  {rules.lint_command or 'None'}")
+        ui.console.print(f"  Format command:{rules.format_command or 'None'}")
+        if rules.rules:
+            ui.console.print("\nRules:")
+            for rule in rules.rules:
+                ui.console.print(f"  • {rule}")
+
     else:
         ui.print_error(f"Unknown command: {command}. Type /help for available commands.")
 
@@ -270,6 +341,36 @@ def run_web(api_key: str, model: str, port: int, working_dir: str | None):
         sys.exit(1)
 
 
+def start_background_web_server(api_key: str, model: str, port: int, working_dir: str | None):
+    """Start the web server in a daemon thread and automatically open the default browser."""
+    import threading
+    import time
+    import webbrowser
+    from nexus.webapp.server import create_app
+    import uvicorn
+
+    def _run():
+        try:
+            app = create_app(api_key=api_key, model=model, working_dir=working_dir)
+            # Run uvicorn quietly (log_level="error") to avoid cluttered CLI printouts
+            uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
+        except Exception:
+            pass  # Fail silently if port is already bound by another instance
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+
+    # Open the browser automatically after the server binds
+    def _open_browser():
+        time.sleep(1.2)
+        try:
+            webbrowser.open(f"http://localhost:{port}")
+        except Exception:
+            pass
+
+    threading.Thread(target=_open_browser, daemon=True).start()
+
+
 def main():
     args = parse_args()
 
@@ -287,6 +388,8 @@ def main():
         sys.exit(1)
 
     # Determine API key
+    from nexus.api import _load_env_file
+    _load_env_file()
     api_key = args.api_key or os.environ.get("NVIDIA_API_KEY")
     if not api_key:
         ui.console.print()

@@ -4,24 +4,32 @@ Model registry — all top-tier models available on NVIDIA's free API catalog.
 
 MODELS = {
     # ── Flagship Reasoning & Coding ──────────────────────────────────
+    "llama-3.3-70b": {
+        "id": "meta/llama-3.3-70b-instruct",
+        "name": "Llama 3.3 70B",
+        "category": "coding",
+        "context": 128000,
+        "description": "Meta's flagship 70B — super fast, elite tool calling & agentic coding",
+        "supports_tools": True,
+    },
     "deepseek-v4": {
         "id": "deepseek-ai/deepseek-v4-pro",
         "name": "DeepSeek V4 Pro",
         "category": "reasoning",
         "context": 131072,
-        "description": "MoE flagship — 1M context, top-tier reasoning & code",
+        "description": "MoE flagship — 128k context, top-tier reasoning & code",
         "supports_tools": True,
     },
-    "deepseek-r1": {
-        "id": "deepseek-ai/deepseek-r1",
-        "name": "DeepSeek R1",
-        "category": "reasoning",
+    "deepseek-flash": {
+        "id": "deepseek-ai/deepseek-v4-flash",
+        "name": "DeepSeek V4 Flash",
+        "category": "coding",
         "context": 131072,
-        "description": "Deep reasoning model with chain-of-thought",
-        "supports_tools": False,
+        "description": "Ultra-fast DeepSeek MoE for rapid code generation & tool use",
+        "supports_tools": True,
     },
     "glm-5.2": {
-        "id": "thudm/glm-5.2",
+        "id": "z-ai/glm-5.2",
         "name": "GLM 5.2",
         "category": "reasoning",
         "context": 131072,
@@ -33,106 +41,74 @@ MODELS = {
         "name": "Kimi K2.6",
         "category": "coding",
         "context": 131072,
-        "description": "Multimodal MoE — optimized for coding & tool use",
+        "description": "Multimodal MoE by Moonshot AI — optimized for coding & tool use",
         "supports_tools": True,
     },
-
-    # ── NVIDIA Nemotron Family ───────────────────────────────────────
-    "nemotron-ultra": {
-        "id": "nvidia/nemotron-3-ultra-550b-a55b",
-        "name": "Nemotron Ultra 550B",
-        "category": "reasoning",
+    "minimax-m3": {
+        "id": "minimaxai/minimax-m3",
+        "name": "MiniMax M3",
+        "category": "general",
         "context": 131072,
-        "description": "NVIDIA flagship — agentic reasoning, 550B params",
+        "description": "High-performance Mixture-of-Experts model by MiniMax",
+        "supports_tools": True,
+    },
+    "codestral": {
+        "id": "mistralai/codestral-22b-instruct-v0.1",
+        "name": "Codestral 22B",
+        "category": "coding",
+        "context": 32768,
+        "description": "Mistral AI's specialized model for code generation & editing",
+        "supports_tools": True,
+    },
+    "qwen3.5": {
+        "id": "qwen/qwen3.5-397b-a17b",
+        "name": "Qwen 3.5 (397B)",
+        "category": "coding",
+        "context": 128000,
+        "description": "Alibaba's 397B flagship MoE — specialized in software engineering",
         "supports_tools": True,
     },
     "nemotron-super": {
-        "id": "nvidia/llama-3.1-nemotron-70b-instruct",
-        "name": "Nemotron 70B",
-        "category": "general",
-        "context": 131072,
-        "description": "Fine-tuned Llama 3.1 70B by NVIDIA",
-        "supports_tools": True,
-    },
-
-    # ── Qwen Family ─────────────────────────────────────────────────
-    "qwen-2.5-72b": {
-        "id": "qwen/qwen2.5-72b-instruct",
-        "name": "Qwen 2.5 72B",
-        "category": "general",
-        "context": 131072,
-        "description": "Alibaba's 72B flagship — strong code & math",
-        "supports_tools": True,
-    },
-    "qwen-coder": {
-        "id": "qwen/qwen2.5-coder-32b-instruct",
-        "name": "Qwen 2.5 Coder 32B",
-        "category": "coding",
-        "context": 65536,
-        "description": "Specialized coding model by Alibaba",
-        "supports_tools": True,
-    },
-
-    # ── Meta Llama Family ────────────────────────────────────────────
-    "llama-3.1-405b": {
-        "id": "meta/llama-3.1-405b-instruct",
-        "name": "Llama 3.1 405B",
-        "category": "general",
-        "context": 131072,
-        "description": "Meta's largest open model — 405B params",
+        "id": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+        "name": "Nemotron Super 49B",
+        "category": "reasoning",
+        "context": 128000,
+        "description": "NVIDIA tuned Llama 3.3 for reasoning & complex tool execution",
         "supports_tools": True,
     },
     "llama-3.1-70b": {
         "id": "meta/llama-3.1-70b-instruct",
         "name": "Llama 3.1 70B",
         "category": "general",
-        "context": 131072,
-        "description": "Strong all-rounder at 70B",
+        "context": 128000,
+        "description": "Meta's highly capable 70B instruction-tuned model",
         "supports_tools": True,
-    },
-
-    # ── Mistral Family ──────────────────────────────────────────────
-    "mixtral-8x22b": {
-        "id": "mistralai/mixtral-8x22b-instruct-v0.1",
-        "name": "Mixtral 8x22B",
-        "category": "general",
-        "context": 65536,
-        "description": "Mistral MoE — fast and capable",
-        "supports_tools": True,
-    },
-    "mistral-large": {
-        "id": "mistralai/mistral-large-2-instruct",
-        "name": "Mistral Large 2",
-        "category": "reasoning",
-        "context": 131072,
-        "description": "Mistral's flagship large model",
-        "supports_tools": True,
-    },
-
-    # ── Google Gemma ─────────────────────────────────────────────────
-    "gemma-2-27b": {
-        "id": "google/gemma-2-27b-it",
-        "name": "Gemma 2 27B",
-        "category": "general",
-        "context": 8192,
-        "description": "Google's efficient open model",
-        "supports_tools": False,
     },
 }
 
 # Aliases for convenience
 ALIASES = {
+    "llama": "llama-3.3-70b",
+    "llama3": "llama-3.3-70b",
+    "llama-3.3": "llama-3.3-70b",
     "deepseek": "deepseek-v4",
+    "deepseek-v4": "deepseek-v4",
+    "deepseek-v4-pro": "deepseek-v4",
+    "deepseek-v4-flash": "deepseek-flash",
+    "deepseek-pro": "deepseek-v4",
+    "v4": "deepseek-v4",
+    "v4-pro": "deepseek-v4",
     "ds": "deepseek-v4",
-    "ds-r1": "deepseek-r1",
+    "flash": "deepseek-flash",
     "glm": "glm-5.2",
+    "glm-5.2": "glm-5.2",
     "kimi": "kimi-k2.6",
-    "nemotron": "nemotron-ultra",
-    "qwen": "qwen-2.5-72b",
-    "llama": "llama-3.1-405b",
-    "mixtral": "mixtral-8x22b",
-    "mistral": "mistral-large",
-    "gemma": "gemma-2-27b",
+    "minimax": "minimax-m3",
+    "qwen": "qwen3.5",
+    "qwen-coder": "qwen3.5",
+    "nemotron": "nemotron-super",
+    "code": "codestral",
+    "codestral": "codestral",
 }
 
 DEFAULT_MODEL = "deepseek-v4"
@@ -140,8 +116,16 @@ DEFAULT_MODEL = "deepseek-v4"
 
 def resolve_model(name: str) -> dict | None:
     """Resolve a model name or alias to its config dict."""
-    key = ALIASES.get(name.lower(), name.lower())
-    return MODELS.get(key)
+    if not name:
+        return MODELS[DEFAULT_MODEL]
+    key = ALIASES.get(name.lower().strip(), name.lower().strip())
+    if key in MODELS:
+        return MODELS[key]
+    # Fuzzy match
+    for k, cfg in MODELS.items():
+        if name.lower() in k or name.lower() in cfg["name"].lower():
+            return cfg
+    return None
 
 
 def list_models() -> list[dict]:
@@ -150,3 +134,4 @@ def list_models() -> list[dict]:
     for key, cfg in sorted(MODELS.items(), key=lambda x: (x[1]["category"], x[0])):
         results.append({"key": key, **cfg})
     return results
+

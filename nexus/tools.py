@@ -582,12 +582,36 @@ def _strip_html(html_text: str) -> str:
     return text.strip()
 
 
+def _resolve_path(path_str: str) -> Path:
+    """
+    Intelligently resolve file and directory paths.
+    Expands ~, handles relative paths, and maps 'desktop/...' or 'Desktop/...'
+    to the user's actual Desktop directory if applicable.
+    """
+    if not path_str:
+        return Path.cwd()
+
+    path_str = str(path_str).strip()
+    clean_path = path_str.replace("\\", "/")
+
+    # Handle explicit desktop paths like 'desktop/calculator' or 'Desktop/app.py'
+    if clean_path.lower().startswith("desktop/") or clean_path.lower() == "desktop":
+        desktop_dir = Path.home() / "Desktop"
+        if desktop_dir.exists():
+            if clean_path.lower() == "desktop":
+                return desktop_dir.resolve()
+            relative_part = clean_path.split("/", 1)[1]
+            return (desktop_dir / relative_part).resolve()
+
+    return Path(path_str).expanduser().resolve()
+
+
 # ── Tool implementations ────────────────────────────────────────────────────
 
 def tool_read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
     """Read file contents with line numbers."""
     try:
-        p = Path(path).expanduser().resolve()
+        p = _resolve_path(path)
         if not p.exists():
             return f"❌ File not found: {path}"
         if not p.is_file():
@@ -597,6 +621,17 @@ def tool_read_file(path: str, start_line: int | None = None, end_line: int | Non
 
         with open(p, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
+
+        if start_line is not None:
+            try:
+                start_line = int(start_line)
+            except (ValueError, TypeError):
+                start_line = None
+        if end_line is not None:
+            try:
+                end_line = int(end_line)
+            except (ValueError, TypeError):
+                end_line = None
 
         start = max(1, start_line or 1)
         end = min(len(lines), end_line or len(lines))
@@ -617,7 +652,7 @@ def tool_read_file(path: str, start_line: int | None = None, end_line: int | Non
 def tool_write_file(path: str, content: str) -> str:
     """Write content to a file, creating directories as needed. Tracked for undo."""
     try:
-        p = Path(path).expanduser().resolve()
+        p = _resolve_path(path)
 
         # Snapshot before writing
         history = get_history()
@@ -639,32 +674,59 @@ def tool_write_file(path: str, content: str) -> str:
 def tool_edit_file(path: str, old_text: str, new_text: str) -> str:
     """Replace old_text with new_text in a file. Tracked for undo."""
     try:
-        p = Path(path).expanduser().resolve()
+        p = _resolve_path(path)
         if not p.exists():
             return f"❌ File not found: {path}"
 
         with open(p, "r", encoding="utf-8") as f:
             content = f.read()
 
+        # 1. Exact match
         count = content.count(old_text)
+        target_old = old_text
+
+        # 2. Whitespace-insensitive fallback match if exact fails
         if count == 0:
-            return f"❌ Text not found in {p.name}. Make sure old_text matches exactly (including whitespace/indentation)."
+            content_lines = content.splitlines(keepends=True)
+            old_lines = old_text.splitlines()
+
+            if old_lines:
+                clean_old = [line.strip() for line in old_lines if line.strip()]
+                matches = []
+                for i in range(len(content_lines) - len(old_lines) + 1):
+                    chunk = content_lines[i : i + len(old_lines)]
+                    clean_chunk = [line.strip() for line in chunk if line.strip()]
+                    if clean_chunk == clean_old:
+                        matches.append((i, "".join(chunk)))
+
+                if len(matches) == 1:
+                    target_old = matches[0][1]
+                    count = 1
+
+        if count == 0:
+            # Diagnostic feedback for LLM
+            first_line = old_text.splitlines()[0] if old_text.strip() else old_text
+            content_lines = content.splitlines()
+            similar = [f"L{i+1}: {l.strip()[:80]}" for i, l in enumerate(content_lines) if first_line.strip() in l.strip() or l.strip() in first_line.strip()]
+            hint = f"\nSimilar lines in {p.name}:\n" + "\n".join(similar[:5]) if similar else ""
+            return f"❌ Text not found in {p.name}. Make sure old_text matches exactly.{hint}"
+
         if count > 1:
-            return f"⚠️  Found {count} occurrences. Please provide more context to make old_text unique."
+            return f"⚠️ Found {count} occurrences of old_text in {p.name}. Provide more surrounding lines to make old_text unique."
 
         # Snapshot before editing
         history = get_history()
         snapshot = history.snapshot_before_write(str(p))
 
-        new_content = content.replace(old_text, new_text, 1)
+        new_content = content.replace(target_old, new_text, 1)
         with open(p, "w", encoding="utf-8") as f:
             f.write(new_content)
 
         history.record_change(str(p), "edit_file", snapshot)
 
-        old_lines = old_text.count("\n") + 1
-        new_lines = new_text.count("\n") + 1
-        return f"✅ Edited {p.name}: replaced {old_lines} lines → {new_lines} lines"
+        old_lc = old_text.count("\n") + 1
+        new_lc = new_text.count("\n") + 1
+        return f"✅ Edited {p.name}: replaced {old_lc} lines → {new_lc} lines"
     except Exception as e:
         return f"❌ Error editing file: {e}"
 
@@ -672,12 +734,18 @@ def tool_edit_file(path: str, old_text: str, new_text: str) -> str:
 def tool_patch_file(path: str, start_line: int, end_line: int, new_content: str) -> str:
     """Apply a line-range based edit. Tracked for undo."""
     try:
-        p = Path(path).expanduser().resolve()
+        p = _resolve_path(path)
         if not p.exists():
             return f"❌ File not found: {path}"
 
         with open(p, "r", encoding="utf-8") as f:
             lines = f.readlines()
+
+        try:
+            start_line = int(start_line)
+            end_line = int(end_line)
+        except (ValueError, TypeError):
+            return f"❌ start_line and end_line must be integers"
 
         if start_line < 1 or start_line > len(lines) + 1:
             return f"❌ start_line {start_line} out of range (file has {len(lines)} lines)"
@@ -729,7 +797,7 @@ def tool_multi_edit(edits: list[dict]) -> str:
 def tool_file_info(path: str) -> str:
     """Get file/directory metadata."""
     try:
-        p = Path(path).expanduser().resolve()
+        p = _resolve_path(path)
         if not p.exists():
             return f"❌ Path not found: {path}"
 
@@ -767,8 +835,8 @@ def tool_diff_files(file_a: str, file_b: str) -> str:
     try:
         import difflib
 
-        pa = Path(file_a).expanduser().resolve()
-        pb = Path(file_b).expanduser().resolve()
+        pa = _resolve_path(file_a)
+        pb = _resolve_path(file_b)
 
         if not pa.exists():
             return f"❌ File not found: {file_a}"
@@ -793,10 +861,26 @@ def tool_diff_files(file_a: str, file_b: str) -> str:
         return f"❌ Error diffing files: {e}"
 
 
-def tool_run_command(command: str, cwd: str | None = None, timeout: int = 120) -> str:
+def tool_run_command(command: str, cwd: str | None = None, timeout: float | int | str = 120) -> str:
     """Execute a shell command."""
     try:
         work_dir = cwd or os.getcwd()
+        if timeout is not None:
+            try:
+                timeout = float(timeout)
+            except (ValueError, TypeError):
+                timeout = 120.0
+
+        env = {
+            **os.environ,
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "CI": "true",
+            "DEBIAN_FRONTEND": "noninteractive",
+            "PAGER": "cat",
+            "PYTHONUNBUFFERED": "1",
+            "TERM": "dumb",
+        }
+
         result = subprocess.run(
             command,
             shell=True,
@@ -804,7 +888,7 @@ def tool_run_command(command: str, cwd: str | None = None, timeout: int = 120) -
             text=True,
             cwd=work_dir,
             timeout=timeout,
-            env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
+            env=env,
         )
 
         output_parts = []
@@ -882,7 +966,7 @@ def tool_process_run(command: str, cwd: str | None = None) -> str:
 def tool_search_code(pattern: str, directory: str | None = None, file_pattern: str | None = None) -> str:
     """Search for a pattern across files."""
     try:
-        search_dir = Path(directory or os.getcwd()).expanduser().resolve()
+        search_dir = _resolve_path(directory or os.getcwd())
         if not search_dir.is_dir():
             return f"❌ Not a directory: {search_dir}"
 
@@ -931,7 +1015,7 @@ def tool_search_code(pattern: str, directory: str | None = None, file_pattern: s
 def tool_list_directory(path: str | None = None, recursive: bool = False, max_depth: int = 3) -> str:
     """List directory contents."""
     try:
-        dir_path = Path(path or os.getcwd()).expanduser().resolve()
+        dir_path = _resolve_path(path or os.getcwd())
         if not dir_path.is_dir():
             return f"❌ Not a directory: {dir_path}"
 
@@ -968,7 +1052,7 @@ def tool_list_directory(path: str | None = None, recursive: bool = False, max_de
 def tool_find_files(pattern: str, directory: str | None = None) -> str:
     """Find files matching a glob pattern."""
     try:
-        search_dir = Path(directory or os.getcwd()).expanduser().resolve()
+        search_dir = _resolve_path(directory or os.getcwd())
         matches = []
         for p in search_dir.rglob(pattern):
             if any(part in IGNORE_DIRS for part in p.parts):
@@ -993,7 +1077,7 @@ def tool_find_files(pattern: str, directory: str | None = None) -> str:
 def tool_get_project_structure(path: str | None = None, max_depth: int = 4) -> str:
     """Generate a tree view of the project."""
     try:
-        root = Path(path or os.getcwd()).expanduser().resolve()
+        root = _resolve_path(path or os.getcwd())
         lines = [f"🌳 {root.name}/"]
 
         def _tree(p: Path, prefix: str, depth: int):
@@ -1026,7 +1110,7 @@ def tool_get_project_structure(path: str | None = None, max_depth: int = 4) -> s
 
 def tool_git_status(cwd: str | None = None) -> str:
     """Show comprehensive git status."""
-    work_dir = cwd or os.getcwd()
+    work_dir = str(_resolve_path(cwd or os.getcwd()))
 
     # Get branch
     ok, branch = _run_git(["branch", "--show-current"], work_dir)
@@ -1090,6 +1174,7 @@ def tool_git_diff(
     cwd: str | None = None,
 ) -> str:
     """Show git diffs."""
+    work_dir = str(_resolve_path(cwd or os.getcwd()))
     args = ["diff"]
     if staged:
         args.append("--cached")
@@ -1099,7 +1184,7 @@ def tool_git_diff(
         args.extend(["--", file_path])
 
     args.extend(["--stat"])
-    ok, stat_output = _run_git(args, cwd)
+    ok, stat_output = _run_git(args, work_dir)
 
     # Also get the full diff
     full_args = ["diff"]
@@ -1110,7 +1195,7 @@ def tool_git_diff(
     if file_path:
         full_args.extend(["--", file_path])
 
-    _, full_diff = _run_git(full_args, cwd)
+    _, full_diff = _run_git(full_args, work_dir)
 
     if not full_diff and not stat_output:
         ctx = "staged" if staged else "unstaged"
@@ -1134,25 +1219,26 @@ def tool_git_commit(
     cwd: str | None = None,
 ) -> str:
     """Stage and commit."""
+    work_dir = str(_resolve_path(cwd or os.getcwd()))
     # Stage files
     if all:
-        ok, out = _run_git(["add", "-A"], cwd)
+        ok, out = _run_git(["add", "-A"], work_dir)
         if not ok:
             return f"❌ Failed to stage files: {out}"
     elif files:
-        ok, out = _run_git(["add"] + files, cwd)
+        ok, out = _run_git(["add"] + files, work_dir)
         if not ok:
             return f"❌ Failed to stage files: {out}"
 
     # Commit
-    ok, out = _run_git(["commit", "-m", message], cwd)
+    ok, out = _run_git(["commit", "-m", message], work_dir)
     if not ok:
         if "nothing to commit" in out:
             return "ℹ️  Nothing to commit. Stage changes first with git_commit(all=true) or specify files."
         return f"❌ Commit failed: {out}"
 
     # Get the short hash
-    _, hash_out = _run_git(["rev-parse", "--short", "HEAD"], cwd)
+    _, hash_out = _run_git(["rev-parse", "--short", "HEAD"], work_dir)
 
     return f"✅ Committed: [{hash_out.strip()}] {message}\n{out}"
 
@@ -1164,6 +1250,7 @@ def tool_git_log(
     cwd: str | None = None,
 ) -> str:
     """View commit history."""
+    work_dir = str(_resolve_path(cwd or os.getcwd()))
     args = ["log", f"-{count}"]
     if oneline:
         args.append("--oneline")
@@ -1172,7 +1259,7 @@ def tool_git_log(
     if file_path:
         args.extend(["--", file_path])
 
-    ok, output = _run_git(args, cwd)
+    ok, output = _run_git(args, work_dir)
     if not ok:
         return f"❌ Git log failed: {output}"
 
@@ -1185,23 +1272,24 @@ def tool_git_branch(
     cwd: str | None = None,
 ) -> str:
     """Manage branches."""
+    work_dir = str(_resolve_path(cwd or os.getcwd()))
     if action == "list":
-        ok, output = _run_git(["branch", "-a"], cwd)
+        ok, output = _run_git(["branch", "-a"], work_dir)
         return f"🌿 Branches:\n{output}" if ok else f"❌ {output}"
 
     if not name:
         return f"❌ Branch name required for '{action}'"
 
     if action == "create":
-        ok, output = _run_git(["checkout", "-b", name], cwd)
+        ok, output = _run_git(["checkout", "-b", name], work_dir)
         return f"✅ Created and switched to branch: {name}" if ok else f"❌ {output}"
 
     elif action == "switch":
-        ok, output = _run_git(["checkout", name], cwd)
+        ok, output = _run_git(["checkout", name], work_dir)
         return f"✅ Switched to branch: {name}" if ok else f"❌ {output}"
 
     elif action == "delete":
-        ok, output = _run_git(["branch", "-d", name], cwd)
+        ok, output = _run_git(["branch", "-d", name], work_dir)
         return f"✅ Deleted branch: {name}" if ok else f"❌ {output}"
 
     return f"❌ Unknown action: {action}. Use list/create/switch/delete."
@@ -1320,8 +1408,45 @@ TOOL_DISPATCH = {
 }
 
 
+def normalize_tool_arguments(name: str, args: dict) -> dict:
+    """Normalize common tool parameter name variations from LLMs."""
+    args = dict(args)
+    if name in ("read_file", "write_file", "edit_file", "patch_file", "file_info"):
+        if "path" not in args:
+            for alt in ("file_path", "file", "filename", "filepath", "target_file"):
+                if alt in args:
+                    args["path"] = args.pop(alt)
+                    break
+    elif name in ("run_command", "process_run"):
+        if "command" not in args:
+            for alt in ("cmd", "shell_command", "script", "exec"):
+                if alt in args:
+                    args["command"] = args.pop(alt)
+                    break
+    elif name == "search_code":
+        if "pattern" not in args:
+            for alt in ("query", "search_pattern", "regex", "term"):
+                if alt in args:
+                    args["pattern"] = args.pop(alt)
+                    break
+    elif name == "web_fetch":
+        if "url" not in args:
+            for alt in ("link", "uri", "target_url"):
+                if alt in args:
+                    args["url"] = args.pop(alt)
+                    break
+    elif name == "web_search":
+        if "query" not in args:
+            for alt in ("q", "search", "term", "keywords"):
+                if alt in args:
+                    args["query"] = args.pop(alt)
+                    break
+    return args
+
+
 def execute_tool(name: str, arguments: dict) -> str:
     """Execute a tool by name with the given arguments."""
+    arguments = normalize_tool_arguments(name, arguments)
     fn = TOOL_DISPATCH.get(name)
     if not fn:
         return f"❌ Unknown tool: {name}"
@@ -1329,3 +1454,4 @@ def execute_tool(name: str, arguments: dict) -> str:
         return fn(**arguments)
     except TypeError as e:
         return f"❌ Invalid arguments for {name}: {e}"
+

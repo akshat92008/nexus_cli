@@ -22,140 +22,152 @@ console = Console()
 
 # ── Color palette ────────────────────────────────────────────────────────────
 
-CYAN    = "#00e5ff"
-MAGENTA = "#e040fb"
-GREEN   = "#76ff03"
-ORANGE  = "#ff9100"
-RED     = "#ff1744"
-DIM     = "#6c757d"
-WHITE   = "#e0e0e0"
-GOLD    = "#ffd740"
-PURPLE  = "#b388ff"
+CYAN    = "#00f0ff"  # Neon Electric Cyan
+MAGENTA = "#d946ef"  # Deep Fuchsia
+GREEN   = "#10b981"  # Emerald Mint Green
+ORANGE  = "#f59e0b"  # Warm Amber Orange
+RED     = "#f43f5e"  # Rose Coral Red
+DIM     = "#64748b"  # Slate Grey
+WHITE   = "#f8fafc"  # Off-White
+GOLD    = "#fbbf24"  # Gold Yellow
+PURPLE  = "#8b5cf6"  # Electric Violet
 
 
 def print_banner():
     """Print the gorgeous startup banner."""
     banner = r"""
-[bold #00e5ff]  ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗[/]  [bold #e040fb] █████╗ ██╗[/]
-[bold #00e5ff]  ████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝[/]  [bold #e040fb]██╔══██╗██║[/]
-[bold #00e5ff]  ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗[/]  [bold #e040fb]███████║██║[/]
-[bold #00e5ff]  ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║[/]  [bold #e040fb]██╔══██║██║[/]
-[bold #00e5ff]  ██║ ╚████║███████╗██╔╝ ╚██╗╚██████╔╝███████║[/]  [bold #e040fb]██║  ██║██║[/]
-[bold #00e5ff]  ╚═╝  ╚═══╝╚══════╝╚═╝   ╚═╝ ╚═════╝ ╚══════╝[/]  [bold #e040fb]╚═╝  ╚═╝╚═╝[/]
+[bold #00f0ff]  ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗[/]  [bold #d946ef] █████╗ ██╗[/]
+[bold #00f0ff]  ████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝[/]  [bold #d946ef]██╔══██╗██║[/]
+[bold #00f0ff]  ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗[/]  [bold #d946ef]███████║██║[/]
+[bold #00f0ff]  ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║[/]  [bold #d946ef]██╔══██║██║[/]
+[bold #00f0ff]  ██║ ╚████║███████╗██╔╝ ╚██╗╚██████╔╝███████║[/]  [bold #d946ef]██║  ██║██║[/]
+[bold #00f0ff]  ╚═╝  ╚═══╝╚══════╝╚═╝   ╚═╝ ╚═════╝ ╚══════╝[/]  [bold #d946ef]╚═╝  ╚═╝╚═╝[/]
 """
     console.print(banner)
     console.print(
-        f"  [bold {CYAN}]NVIDIA-Powered Coding Agent[/]  │  "
-        f"[{DIM}]Free API • 20 Tools • Git • Web • Undo • Memory[/]",
+        f"  [bold {CYAN}]✦ NEXUS AI ✦[/] [dim]—[/] [bold {WHITE}]The Autonomous Coding Agent Operating System[/]\n"
+        f"  [dim]🤖 Free NVIDIA API Catalog • 🔧 20 Developer Tools • 💾 Session Memory • ⚡ Auto-Verification[/]",
         justify="center",
     )
     console.print()
 
 
 def print_model_info(model_key: str, model_cfg: dict):
-    """Print current model info."""
+    """Print current model info inside a premium rounded panel."""
+    tools_str = f"[bold {GREEN}]Enabled[/]" if model_cfg.get("supports_tools") else f"[bold {RED}]Disabled[/]"
+    content = (
+        f"  [bold {WHITE}]{model_cfg['name']}[/]  [dim]•[/]  [italic {DIM}]{model_cfg['id']}[/]\n"
+        f"  [bold {DIM}]Desc:[/] {model_cfg['description']}\n\n"
+        f"  [bold {CYAN}]Context Limit:[/] [bold {WHITE}]{model_cfg['context']:,}[/] tokens    "
+        f"[bold {CYAN}]Tool Execution:[/] {tools_str}"
+    )
     console.print(
         Panel(
-            f"[bold {GREEN}]{model_cfg['name']}[/]  "
-            f"[{DIM}]({model_cfg['id']})[/]\n"
-            f"[{WHITE}]{model_cfg['description']}[/]  │  "
-            f"Context: [bold]{model_cfg['context']:,}[/] tokens  │  "
-            f"Tools: {'[bold green]✓[/]' if model_cfg.get('supports_tools') else '[bold red]✗[/]'}",
-            title=f"[bold {CYAN}]⚡ Active Model[/]",
-            border_style=CYAN,
-            padding=(0, 2),
+            content,
+            title=f" [bold {PURPLE}]✦ active model configuration ✦[/] ",
+            title_align="left",
+            border_style=DIM,
+            box=box.ROUNDED,
+            padding=(1, 2),
         )
     )
 
 
 def print_help():
-    """Print command help."""
+    """Print command help in a premium, clean table format."""
     table = Table(
         show_header=True,
         header_style=f"bold {CYAN}",
         border_style=DIM,
-        box=box.ROUNDED,
-        title=f"[bold {GOLD}]⌘ Commands[/]",
-        padding=(0, 2),
+        box=box.SIMPLE_HEAD,
+        title=f"[bold {GOLD}]✦ Available CLI Commands[/]",
     )
-    table.add_column("Command", style=f"bold {GREEN}", min_width=22)
+    table.add_column("Command", style=f"bold {PURPLE}", min_width=22)
     table.add_column("Description", style=WHITE)
 
     commands = [
-        ("/help", "Show this help message"),
-        ("/models", "List all available models"),
-        ("/model <name>", "Switch to a different model"),
-        ("/tools", "List all 20 agent tools"),
-        ("/clear", "Clear conversation history"),
-        ("/reset", "Reset conversation and clear screen"),
-        ("/project", "Show project structure"),
-        ("/git", "Show git status"),
-        ("/undo", "Undo the last file change"),
-        ("/diff", "Show the last file change as a diff"),
-        ("/changes", "List all file changes in this session"),
-        ("/history", "List saved conversations"),
-        ("/resume <id>", "Resume a previous conversation"),
-        ("/compact", "Compress conversation to save context"),
-        ("/cost", "Show token usage stats"),
-        ("/system <prompt>", "Set a custom system prompt"),
-        ("/save <file>", "Save conversation to a file"),
-        ("/multi", "Enter multi-line input mode (end with Ctrl+D)"),
-        ("/exit, /quit", "Exit NexusAI"),
+        ("/help", "Show this command helper menu"),
+        ("/models", "List all available AI models in the catalog"),
+        ("/model <name>", "Switch the active AI model (e.g. /model kimi-k3)"),
+        ("/tools", "List all 20 built-in developer tools"),
+        ("/clear", "Clear session conversation history"),
+        ("/reset", "Reset the conversation session and clear terminal"),
+        ("/project", "Print structural tree of the working directory"),
+        ("/git", "Check the repository Git status"),
+        ("/undo", "Revert the last file modification"),
+        ("/diff", "View the unified diff of the last change"),
+        ("/changes", "Summary list of all files changed in session"),
+        ("/history", "Browse saved local conversation logs"),
+        ("/resume <id>", "Load and resume a previous conversation"),
+        ("/compact", "Compress history context length to save tokens"),
+        ("/cost", "Report token usage statistics for the session"),
+        ("/system <prompt>", "Override the agent's base system prompt"),
+        ("/save <file>", "Export conversation history as JSON"),
+        ("/multi", "Open multi-line text input mode (end with Ctrl+D)"),
+        ("/skills", "Show active functional automation skills"),
+        ("/hooks", "List active workspace lifecycle hooks"),
+        ("/subagent <temp> <task>", "Spawn a specialized agent to run isolated work"),
+        ("/verify", "Run workspace automated lint/test/build checks"),
+        ("/mcp", "List connected Model Context Protocol servers"),
+        ("/plugins", "List loaded plugins and extensions"),
+        ("/rules", "Display project instructions loaded from NEXUS.md"),
+        ("/exit, /quit", "Close session and exit NexusAI"),
     ]
     for cmd, desc in commands:
         table.add_row(cmd, desc)
     console.print(table)
+    console.print()
 
 
 def print_tools_table():
-    """Print all available agent tools."""
+    """Print all available agent tools in a clean layout."""
     table = Table(
         show_header=True,
         header_style=f"bold {CYAN}",
         border_style=DIM,
-        box=box.ROUNDED,
-        title=f"[bold {GOLD}]🔧 Agent Tools (20)[/]",
-        padding=(0, 1),
+        box=box.SIMPLE_HEAD,
+        title=f"[bold {GOLD}]✦ Integrated Agent Tools (20)[/]",
     )
-    table.add_column("Tool", style=f"bold {GREEN}", min_width=20)
-    table.add_column("Category", style=PURPLE)
-    table.add_column("Description", style=WHITE)
+    table.add_column("Tool Name", style=f"bold {WHITE}", min_width=20)
+    table.add_column("Layer/Category", style=PURPLE)
+    table.add_column("Action & Purpose", style=DIM)
 
     tools = [
-        ("read_file", "File", "Read file contents with line numbers"),
-        ("write_file", "File", "Create/overwrite files (tracked for undo)"),
-        ("edit_file", "File", "Surgical find-and-replace edits (tracked)"),
-        ("patch_file", "File", "Line-range based editing (tracked)"),
-        ("multi_edit", "File", "Batch edits across multiple files (tracked)"),
-        ("file_info", "File", "File metadata (size, perms, lines, MD5)"),
-        ("diff_files", "File", "Unified diff between two files"),
-        ("search_code", "Search", "Regex search across codebase"),
-        ("list_directory", "Search", "List directory contents"),
-        ("find_files", "Search", "Find files by glob pattern"),
-        ("get_project_structure", "Search", "Project tree view"),
-        ("run_command", "Shell", "Execute shell commands (blocking)"),
-        ("process_run", "Shell", "Start background processes"),
-        ("git_status", "Git", "Full repository status"),
-        ("git_diff", "Git", "View diffs (working/staged/commits)"),
-        ("git_commit", "Git", "Stage and commit changes"),
-        ("git_log", "Git", "View commit history"),
-        ("git_branch", "Git", "List/create/switch/delete branches"),
-        ("web_fetch", "Web", "Fetch and read any URL"),
-        ("web_search", "Web", "Search the web (DuckDuckGo)"),
+        ("read_file", "File IO", "Retrieve file content with exact line numbers"),
+        ("write_file", "File IO", "Create or completely overwrite a file (undoable)"),
+        ("edit_file", "File IO", "Apply surgical find-and-replace edits (undoable)"),
+        ("patch_file", "File IO", "Edit specific line range sequences (undoable)"),
+        ("multi_edit", "File IO", "Apply batch edits across multiple files (undoable)"),
+        ("file_info", "File IO", "Read size, permissions, line count, and MD5"),
+        ("diff_files", "File IO", "Calculate unified diff between two files"),
+        ("search_code", "Search", "Perform regex patterns search across codebase"),
+        ("list_directory", "Search", "Retrieve folder listing, recursively if wanted"),
+        ("find_files", "Search", "Find files using shell-like glob patterns"),
+        ("get_project_structure", "Search", "Print hierarchical directory structures"),
+        ("run_command", "Sandbox", "Execute blocking shell commands inside workspace"),
+        ("process_run", "Sandbox", "Run background processes and return PID"),
+        ("git_status", "Version Control", "Check repository status (branch, modified)"),
+        ("git_diff", "Version Control", "Review current workspace/index/commit diffs"),
+        ("git_commit", "Version Control", "Add changes and commit with descriptive messages"),
+        ("git_log", "Version Control", "Browse repository commit logs"),
+        ("git_branch", "Version Control", "List, create, or delete Git branches"),
+        ("web_fetch", "Web Client", "Fetch external URL content and convert to markdown"),
+        ("web_search", "Web Client", "Search the web anonymously via DuckDuckGo"),
     ]
 
     category_colors = {
-        "File": GREEN,
+        "File IO": GREEN,
         "Search": CYAN,
-        "Shell": ORANGE,
-        "Git": MAGENTA,
-        "Web": PURPLE,
+        "Sandbox": ORANGE,
+        "Version Control": MAGENTA,
+        "Web Client": PURPLE,
     }
 
     for name, cat, desc in tools:
         color = category_colors.get(cat, WHITE)
         table.add_row(name, f"[{color}]{cat}[/]", desc)
     console.print(table)
+    console.print()
 
 
 def print_models_table():
@@ -164,15 +176,14 @@ def print_models_table():
         show_header=True,
         header_style=f"bold {CYAN}",
         border_style=DIM,
-        box=box.ROUNDED,
-        title=f"[bold {GOLD}]🚀 Available Models — NVIDIA API Catalog[/]",
-        padding=(0, 1),
+        box=box.SIMPLE_HEAD,
+        title=f"[bold {GOLD}]✦ Available Models — NVIDIA API Catalog[/]",
     )
-    table.add_column("Key", style=f"bold {GREEN}", min_width=16)
+    table.add_column("Key", style=f"bold {PURPLE}", min_width=16)
     table.add_column("Model Name", style=f"bold {WHITE}")
-    table.add_column("Category", style=PURPLE)
-    table.add_column("Context", style=ORANGE, justify="right")
-    table.add_column("Tools", justify="center")
+    table.add_column("Category", style=CYAN)
+    table.add_column("Context Window", style=ORANGE, justify="right")
+    table.add_column("Tools Support", justify="center")
     table.add_column("Description", style=DIM)
 
     category_colors = {
@@ -193,6 +204,7 @@ def print_models_table():
             m["description"],
         )
     console.print(table)
+    console.print()
 
 
 def print_conversation_list(conversations: list[dict]):
@@ -201,65 +213,115 @@ def print_conversation_list(conversations: list[dict]):
         show_header=True,
         header_style=f"bold {CYAN}",
         border_style=DIM,
-        box=box.ROUNDED,
-        title=f"[bold {GOLD}]💬 Saved Conversations[/]",
-        padding=(0, 1),
+        box=box.SIMPLE_HEAD,
+        title=f"[bold {GOLD}]✦ Saved Conversations[/]",
     )
-    table.add_column("ID", style=f"bold {GREEN}", min_width=22)
-    table.add_column("Model", style=PURPLE)
+    table.add_column("Conversation ID", style=f"bold {GREEN}", min_width=22)
+    table.add_column("Model Name", style=PURPLE)
     table.add_column("Messages", style=ORANGE, justify="right")
-    table.add_column("Preview", style=WHITE, max_width=50)
+    table.add_column("Preview Snippet", style=WHITE, max_width=60)
 
     for conv in conversations:
         table.add_row(
             conv["id"],
             conv.get("model_name", "unknown"),
             str(conv.get("message_count", 0)),
-            conv.get("preview", "")[:50],
+            conv.get("preview", "")[:60],
         )
     console.print(table)
-    console.print(f"  [{DIM}]Use /resume <id> to load a conversation[/]")
+    console.print(f"  [{DIM}]Use /resume <id> to load a previous session[/]")
+    console.print()
+
+
+class LiveStatus:
+    """Stream-safe live status manager to show active model thinking & tool drafting."""
+    def __init__(self, console_obj=None):
+        self.console = console_obj or console
+        self._status = None
+        self._is_active = False
+
+    def start(self, message: str = "Thinking..."):
+        if not self._is_active:
+            try:
+                self._status = self.console.status(f"[bold {CYAN}]⚡ {message}[/]", spinner="dots")
+                self._status.start()
+                self._is_active = True
+            except Exception:
+                pass
+
+    def update(self, message: str):
+        if self._is_active and self._status:
+            try:
+                self._status.update(f"[bold {CYAN}]⚡ {message}[/]")
+            except Exception:
+                pass
+        else:
+            self.start(message)
+
+    def stop(self):
+        if self._is_active and self._status:
+            try:
+                self._status.stop()
+            except Exception:
+                pass
+            self._status = None
+            self._is_active = False
 
 
 def print_tool_call(name: str, args: dict):
-    """Print a tool call with syntax highlighting."""
-    args_str = ""
+    """Print a tool call in a clean, unified modern format."""
+    args_list = []
     for k, v in args.items():
-        if k == "content" and len(str(v)) > 200:
-            v_display = str(v)[:200] + f"... ({len(str(v))} chars)"
+        if k in ("content", "old_text", "new_text", "new_content") and len(str(v)) > 80:
+            v_display = str(v)[:80].replace("\n", "\\n") + f"... ({len(str(v))} chars)"
         elif k == "edits" and isinstance(v, list):
             v_display = f"[{len(v)} edits]"
         else:
-            v_display = str(v)
+            v_display = str(v).replace("\n", "\\n")
         v_display = escape(v_display)
-        args_str += f"  [bold]{escape(str(k))}[/]: {v_display}\n"
+        args_list.append(f"[bold {DIM}]{k}=[/][#bbf7ff]{v_display}[/]")
+    
+    extra = ""
+    if name in ("write_file", "edit_file", "patch_file"):
+        content = args.get("content", "") or args.get("new_text", "") or args.get("new_content", "")
+        if content:
+            lines = content.count("\n") + 1
+            extra = f" [{GOLD}]({lines} lines, {len(content):,} chars)[/]"
 
-    console.print(
-        Panel(
-            args_str.rstrip(),
-            title=f"[bold {ORANGE}]🔧 {name}[/]",
-            border_style=ORANGE,
-            padding=(0, 2),
-        )
-    )
+    args_str = ", ".join(args_list)
+    console.print(f"  [bold {ORANGE}]⚙ Calling tool:[/] [bold {WHITE}]{name}[/]({args_str}){extra}")
 
 
 def print_tool_result(result: str, success: bool = True):
-    """Print a tool execution result."""
-    color = GREEN if success else RED
-    # Truncate very long results for display
-    display = str(result)
-    if len(display) > 3000:
-        display = escape(display[:1500]) + f"\n\n[{DIM}]... ({len(display) - 3000} chars omitted) ...[/]\n\n" + escape(display[-1500:])
+    """Print a tool execution result cleanly with minimal spacing and formatting."""
+    if success:
+        display = str(result).strip()
+        if not display:
+            console.print(f"    [bold {GREEN}]✓ Success[/] [dim](no output returned)[/]")
+            return
+        
+        if display.startswith("✅ Wrote") or display.startswith("✅ Edited") or display.startswith("✅ Patched"):
+            console.print(f"    [bold {GREEN}]✓ Success:[/] [bold {WHITE}]{escape(display.replace('✅ ', ''))}[/]")
+            return
+
+        lines = display.splitlines()
+        if len(lines) <= 4:
+            console.print(f"    [bold {GREEN}]✓ Success:[/] [dim]{escape(display)}[/]")
+        else:
+            preview = "\n".join(lines[:8])
+            if len(lines) > 8:
+                preview += f"\n[bold {DIM}]... ({len(lines) - 8} more lines of output) ...[/]"
+            
+            console.print(
+                Panel(
+                    escape(preview),
+                    border_style=DIM,
+                    box=box.MINIMAL,
+                    padding=(0, 2),
+                )
+            )
     else:
-        display = escape(display)
-    console.print(
-        Panel(
-            display,
-            border_style=color,
-            padding=(0, 1),
-        )
-    )
+        console.print(f"    [bold {RED}]✗ Tool Error:[/] [italic {RED}]{escape(str(result).strip())}[/]")
 
 
 def print_streaming_start():
@@ -274,26 +336,26 @@ def print_response_complete():
 
 def print_error(message: str):
     """Print an error message."""
-    console.print(f"[bold {RED}]✗ Error:[/] [{WHITE}]{escape(str(message))}[/]")
+    console.print(f"  [bold {RED}]✗[/] [{WHITE}]{escape(str(message))}[/]")
 
 
 def print_info(message: str):
     """Print an info message."""
-    console.print(f"[{CYAN}]ℹ {escape(str(message))}[/]")
+    console.print(f"  [{CYAN}]✦[/] [{WHITE}]{escape(str(message))}[/]")
 
 
 def print_success(message: str):
     """Print a success message."""
-    console.print(f"[{GREEN}]✓ {escape(str(message))}[/]")
+    console.print(f"  [{GREEN}]✓[/] [{WHITE}]{escape(str(message))}[/]")
 
 
 def print_warning(message: str):
     """Print a warning."""
-    console.print(f"[{ORANGE}]⚠ {escape(str(message))}[/]")
+    console.print(f"  [{ORANGE}]⚠[/] [{WHITE}]{escape(str(message))}[/]")
 
 
 def print_token_usage(prompt_tokens: int, completion_tokens: int, total_tokens: int):
-    """Print token usage stats."""
+    """Print token usage stats in a clean panel."""
     table = Table(
         show_header=False,
         border_style=DIM,
@@ -306,26 +368,58 @@ def print_token_usage(prompt_tokens: int, completion_tokens: int, total_tokens: 
     table.add_row("Completion tokens", f"{completion_tokens:,}")
     table.add_row("Total tokens", f"[bold {GREEN}]{total_tokens:,}[/]")
     console.print(
-        Panel(table, title=f"[bold {GOLD}]📊 Token Usage[/]", border_style=DIM, padding=(0, 1))
+        Panel(table, title=f" [bold {GOLD}]📊 Session Token Usage[/] ", border_style=DIM, padding=(0, 1))
     )
 
 
+_prompt_session = None
+
+
 def get_prompt(model_name: str) -> str:
-    """Get user input with a styled prompt."""
+    """Get user input with a styled prompt supporting persistent history."""
+    global _prompt_session
     try:
+        from prompt_toolkit import PromptSession
+        from prompt_toolkit.history import FileHistory
+        from prompt_toolkit.formatted_text import HTML
+
+        if _prompt_session is None:
+            # Save command history to a hidden file in user's home directory
+            history_file = os.path.expanduser("~/.nexus_cli_history")
+            _prompt_session = PromptSession(history=FileHistory(history_file))
+
         console.print()
-        return console.input(f"[bold {CYAN}]❯ [/]")
-    except (EOFError, KeyboardInterrupt):
+        pwd = os.path.basename(os.getcwd()) or "workspace"
+        console.print(
+            f" [bold {CYAN}]nexusai[/] [dim]•[/] [bold {PURPLE}]{model_name}[/] [dim]•[/] [bold {GREEN}]{pwd}[/]"
+        )
+        
+        # Use HTML formatting in prompt_toolkit for consistent cyan color
+        return _prompt_session.prompt(HTML('<ansicyan> ❯ </ansicyan>'))
+
+    except ImportError:
+        # Fallback to standard input if prompt_toolkit isn't loaded
+        try:
+            console.print()
+            pwd = os.path.basename(os.getcwd()) or "workspace"
+            console.print(
+                f" [bold {CYAN}]nexusai[/] [dim]•[/] [bold {PURPLE}]{model_name}[/] [dim]•[/] [bold {GREEN}]{pwd}[/]"
+            )
+            return console.input(f" [bold {CYAN}]❯ [/]")
+        except (EOFError, KeyboardInterrupt):
+            return "/exit"
+    except (KeyboardInterrupt, EOFError):
+        # Handle Ctrl+C and Ctrl+D gracefully from prompt_toolkit
         return "/exit"
 
 
 def get_multiline_input() -> str:
     """Get multi-line input from user (end with Ctrl+D)."""
-    console.print(f"[{DIM}]Enter multi-line input (Ctrl+D to submit, Ctrl+C to cancel):[/]")
+    console.print(f"  [{DIM}]Enter multi-line input (Ctrl+D to submit, Ctrl+C to cancel):[/]")
     lines = []
     try:
         while True:
-            line = console.input(f"[{DIM}]… [/]")
+            line = console.input(f"  [{DIM}]… [/]")
             lines.append(line)
     except EOFError:
         return "\n".join(lines)

@@ -132,6 +132,13 @@ def test_run_command():
     assert "hello_test" in result
 
 
+def test_run_command_string_timeout():
+    """run_command should handle timeout passed as a string without crashing."""
+    result = execute_tool("run_command", {"command": "echo timeout_test", "timeout": "120"})
+    assert "✅" in result
+    assert "timeout_test" in result
+
+
 def test_run_command_failure():
     """run_command should show exit code for failed commands."""
     result = execute_tool("run_command", {"command": "exit 1"})
@@ -234,3 +241,24 @@ def test_all_tools_execute():
         except TypeError:
             # Some tools require specific args — that's fine
             pass
+
+
+def test_resolve_path():
+    """_resolve_path should correctly map desktop paths and expand home."""
+    from nexus.tools import _resolve_path
+    dt_path = _resolve_path("desktop/calculator/index.html")
+    expected_desktop = Path.home() / "Desktop" / "calculator" / "index.html"
+    assert dt_path == expected_desktop.resolve()
+
+
+def test_normalize_tool_arguments():
+    """normalize_tool_arguments should normalize parameter names."""
+    from nexus.tools import normalize_tool_arguments
+    res1 = normalize_tool_arguments("write_file", {"file_path": "a.py", "content": "1"})
+    assert res1["path"] == "a.py"
+
+    res2 = normalize_tool_arguments("run_command", {"cmd": "ls -l"})
+    assert res2["command"] == "ls -l"
+
+    res3 = normalize_tool_arguments("search_code", {"query": "import"})
+    assert res3["pattern"] == "import"
