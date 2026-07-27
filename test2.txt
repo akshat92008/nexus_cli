@@ -1,0 +1,97 @@
+
+==================== FRESH CASE 1 ====================
+PROMPT:
+What's the difference between a process and a thread?
+
+RAW PIPELINE OUTPUT:
+<<THINKING>>
+This is an explanation request about concurrency.
+
+<<RESPONSE>>
+A process is an instance of a program running on a computer. It has its own memory space, separate from other processes. A thread is a lightweight unit of execution within a process that shares the same memory space as the parent process. Threads are faster to create and destroy than processes because they share resources.
+
+**Key differences:**
+1. **Memory Space**: 
+   - Process: Separate memory space
+   - Thread: Shares memory with parent process
+
+2. **Creation/Destruction Time**:
+   - Process: Slower (forking)
+   - Thread: Faster (context switching)
+
+3. **Concurrency Level**:
+   - Process: Multiple processes can run concurrently
+   - Thread: Multiple threads within a single process can run concurrently
+
+4. **Resource Sharing**:
+   - Process: No sharing
+   - Thread: Shared memory, file descriptors, etc.
+
+5. **Context Switching**:
+   - Process: Requires more context switching (forking)
+   - Thread: Less context switching (context switch between threads)
+
+6. **Synchronization**:
+   - Process: More complex synchronization needed
+   - Thread: Easier to synchronize due to shared memory
+
+7. **Use Cases**:
+   - Process: Suitable for CPU-bound tasks, separate processes are required
+   - Thread: Suitable for I/O-bound tasks, multiple threads can share resources
+
+==================== FRESH CASE 2 ====================
+PROMPT:
+Add input validation to the signup form in `forms/signup.py` — email must be valid, password must be at least 8 characters.
+
+RAW PIPELINE OUTPUT:
+<<THINKING>>
+I will add input validation for email and password length in `forms/signup.py`.
+
+<<FILES>>
+```python
+# filepath: src/forms/signup.py
+# action: MODIFY
+
+from flask_wtf import FlaskForm
+from wtforms import StringField, PasswordField, SubmitField
+from wtforms.validators import DataRequired, Email, Length
+
+class SignupForm(FlaskForm):
+    email = StringField('Email', validators=[DataRequired(), Email()])
+    password = PasswordField('Password', validators=[DataRequired(), Length(min=8)])
+    submit = SubmitField('Sign Up')
+```
+
+<<TEST_COMMAND>>
+pytest tests/forms/test_signup.py
+
+==================== FRESH CASE 3 ====================
+PROMPT:
+yo can u whip up smth that reads a csv and dumps it to json, python's fine
+
+RAW PIPELINE OUTPUT:
+<<THINKING>>
+I will implement a Python script to read a CSV file and write its contents as JSON.
+
+<<FILES>>
+```python
+# filepath: src/csv_to_json.py
+# action: CREATE
+
+import pandas as pd
+import json
+
+def csv_to_json(csv_file, json_file):
+    # Read the CSV file into a DataFrame
+    df = pd.read_csv(csv_file)
+    
+    # Convert the DataFrame to JSON format
+    json_data = df.to_json(orient='records')
+    
+    # Write the JSON data to a file
+    with open(json_file, 'w') as f:
+        f.write(json_data)
+```
+
+<<TEST_COMMAND>>
+pytest test_csv_to_json.py

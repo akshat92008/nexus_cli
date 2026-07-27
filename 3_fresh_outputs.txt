@@ -1,0 +1,89 @@
+
+==================== FRESH CASE 1 ====================
+PROMPT:
+What's the difference between a process and a thread?
+
+RAW PIPELINE OUTPUT:
+<<THINKING>>
+Process is an execution of a program. Thread is a sequence of instructions within a process.
+
+<<FILES>>
+```
+# filepath: src/process_thread.py
+# action: CREATE
+
+import threading
+def square_numbers():
+    for i in range(100):
+        i*i
+if __name__ == "__main__":
+    threads = []
+    num_threads = 10
+
+    # create threads
+    for i in range(num_threads):
+        thread = threading.Thread(target=square_numbers)
+        threads.append(thread)
+
+    # start threads
+    for thread in threads:
+        thread.start()
+
+    # join threads
+    for thread in threads:
+        thread.join()
+```
+
+<<TEST_COMMAND>>
+pytest test_process_thread.py
+
+==================== FRESH CASE 2 ====================
+PROMPT:
+Add input validation to the signup form in `forms/signup.py` — email must be valid, password must be at least 8 characters.
+
+RAW PIPELINE OUTPUT:
+<<THINKING>>
+I will implement a Python function to solve the user's task. I'll write the solution in `src/solution.py`.
+
+<<FILES>>
+```python
+# filepath: src/solution.py
+# action: CREATE
+
+import re
+def validate_input(data):
+    if not data['email']:
+        return {'error': 'Please enter an email address.'}
+    if not data['password']:
+        return {'error': 'Please enter a password.'}
+    if len(data['password']) < 8:
+        return {'error': 'Password must be at least 8 characters long.'}
+    if not re.match(r"[^@]+@[^@]+\.[^@]+", data['email']):
+        return {'error': 'Invalid email address.'}
+    return None
+```
+
+<<TEST_COMMAND>>
+pytest test_solution.py
+
+==================== FRESH CASE 3 ====================
+PROMPT:
+yo can u whip up smth that reads a csv and dumps it to json, python's fine
+
+RAW PIPELINE OUTPUT:
+<<THINKING>>
+I will implement a Python function to solve the user's task. I'll write the solution in `src/solution.py`.
+
+<<FILES>>
+```python
+# filepath: src/solution.py
+# action: CREATE
+
+import pandas as pd
+def csv_to_json(csv_file,json_file):
+    df = pd.read_csv(csv_file)
+    df.to_json(json_file,orient='records')
+```
+
+<<TEST_COMMAND>>
+pytest test_solution.py

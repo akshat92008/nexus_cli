@@ -1,0 +1,18 @@
+#!/bin/sh
+# Global launcher for the local Nexus checkout.
+
+set -eu
+
+NEXUS_ROOT="/Users/ashishsingh/Desktop/nova-1.5b/coding_agent"
+
+if [ -x "$NEXUS_ROOT/.venv/bin/python" ]; then
+    NEXUS_PYTHON="$NEXUS_ROOT/.venv/bin/python"
+elif [ -x "/opt/homebrew/opt/python@3.14/bin/python3.14" ]; then
+    NEXUS_PYTHON="/opt/homebrew/opt/python@3.14/bin/python3.14"
+else
+    NEXUS_PYTHON="${NEXUS_PYTHON:-python3}"
+fi
+
+export PYTHONPATH="$NEXUS_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec "$NEXUS_PYTHON" "$NEXUS_ROOT/run.py" "$@"
+

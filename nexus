@@ -1,0 +1,9 @@
+#!/usr/bin/env zsh
+# Nexus Standalone CLI Launcher
+# Automatically sets PYTHONPATH and launches the standalone Nexus agent interface
+
+SCRIPT_DIR="${0:A:h}"
+export PYTHONPATH="$SCRIPT_DIR/coding_agent:$SCRIPT_DIR:$PYTHONPATH"
+
+# Execute the standalone Nexus CLI with all passed arguments
+exec python3 -m nexus.cli "$@"

@@ -1,0 +1,187 @@
+================ RE-RUNNING CASE 5 (3 TIMES) ================
+
+--- Case 5, Run 1 ---
+<<THINKING>>
+I will locate and fix the bug in `auth.py` to handle missing profile pictures gracefully.
+
+<<FILES>>
+```python
+# filepath: src/auth.py
+# action: MODIFY
+
+def get_user_profile(user_id):
+    user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if not user:
+        return None
+    
+    # Check if the profile picture exists and is not empty
+    profile_pic_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{user_id}.jpg")
+    if not os.path.exists(profile_pic_path) or not os.path.getsize(profile_pic_path):
+        user.profile_picture_url = ""
+    else:
+        user.profile_picture_url = url_for('static', filename=f"uploads/{user_id}.jpg")
+
+    return user
+```
+
+<<TEST_COMMAND>>
+pytest test_auth.py
+
+--- Case 5, Run 2 ---
+<<THINKING>>
+I will investigate `auth.py` at line 40 to fix the bug.
+
+<<FILES>>
+```python
+# filepath: app/auth.py
+# action: MODIFY
+
+def login_user(email, password):
+    user = User.query.filter_by(email=email).first()
+    if not user or not bcrypt.check_password_hash(user.password, password):
+        return None
+    # Modify this line to use a default empty string instead of crashing
+    profile_pic_url = user.profile_pic_url or ''
+    return {
+        'id': user.id,
+        'email': user.email,
+        'profile_pic_url': profile_pic_url
+    }
+```
+
+<<TEST_COMMAND>>
+pytest test_auth.py
+
+--- Case 5, Run 3 ---
+<<THINKING>>
+I will investigate `auth.py` at line 40 to fix the bug.
+
+<<FILES>>
+```python
+# filepath: src/auth.py
+# action: MODIFY
+
+def login_user(email, password):
+    user = User.query.filter_by(email=email).first()
+    if not user or not bcrypt.checkpw(password.encode('utf-8'), user.password_hash):
+        return None
+    # Fix the bug here:
+    profile_pic_url = user.profile_pic_url or ''
+    return {'user_id': user.id, 'profile_pic_url': profile_pic_url}
+```
+
+<<TEST_COMMAND>>
+pytest test_auth.py
+
+
+================ RE-RUNNING CASE 6 (3 TIMES) ================
+
+--- Case 6, Run 1 ---
+<<THINKING>>
+I will implement a try-catch block around the database connection logic in `src/app.js` to handle errors gracefully.
+
+<<FILES>>
+```javascript
+// filepath: src/app.js
+// action: MODIFY
+
+const express = require('express');
+const app = express();
+const port = 3000;
+const db = require('./db');
+
+app.get('/', (req, res) => {
+    try {
+        const connectionStatus = db.getConnectionStatus();
+        if (connectionStatus === 'connected') {
+            return res.status(200).json({ status: 'healthy' });
+        } else {
+            return res.status(503).json({ status: 'degraded', message: 'Database connection failed' });
+        }
+    } catch (error) {
+        console.error('Error checking database connection:', error);
+        return res.status(200).json({ status: 'degraded', message: 'Database connection failed' });
+    }
+});
+
+app.listen(port, () => {
+  console.log(`Server is running on http://localhost:${port}`);
+});
+```
+
+<<TEST_COMMAND>>
+npm start
+
+--- Case 6, Run 2 ---
+<<THINKING>>
+I will implement a try-catch block around the database connection logic in `src/app.js` to handle errors gracefully.
+
+<<FILES>>
+```javascript
+// filepath: src/app.js
+// action: MODIFY
+
+const express = require('express');
+const app = express();
+const db = require('./db'); // Import your database module here
+
+app.get('/healthcheck', (req, res) => {
+  try {
+    const connection = db.getConnection(); // Connect to the database
+    if (!connection) throw new Error('Database connection failed');
+
+    connection.query('SELECT 1 + 1 AS solution', (error, results, fields) => {
+      if (error) throw error;
+
+      connection.release();
+      res.status(200).json({ status: 'healthy' });
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ status: 'degraded', message: err.message });
+  }
+});
+
+app.listen(process.env.PORT || 3000, () => {
+  console.log(`Server is running on port ${process.env.PORT}`);
+});
+```
+
+<<TEST_COMMAND>>
+npm test
+
+--- Case 6, Run 3 ---
+<<THINKING>>
+I will implement a try-catch block around the database connection in `src/app.js` to handle errors gracefully.
+
+<<FILES>>
+```javascript
+// filepath: src/app.js
+// action: MODIFY
+
+const express = require('express');
+const db = require('./db'); // Import the database module
+const app = express();
+const port = 3000;
+
+app.get('/healthcheck', (req, res) => {
+    try {
+        const connection = db.getConnection(); // Attempt to connect to the database
+        if (!connection) {
+            throw new Error('Database connection failed');
+        }
+        connection.end(); // Close the connection
+        return res.status(200).json({ status: 'healthy' });
+    } catch (error) {
+        console.error('Healthcheck error:', error);
+        return res.status(500).json({ status: 'degraded', message: 'Database connection failed' });
+    }
+});
+
+app.listen(port, () => {
+    console.log(`Server is running on http://localhost:${port}`);
+});
+```
+
+<<TEST_COMMAND>>
+npm start

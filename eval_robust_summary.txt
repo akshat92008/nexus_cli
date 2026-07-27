@@ -1,0 +1,6 @@
+Total: 145
+Format Passes: 145
+Code Passes: 62
+Logic Errors: 49
+Execution Errors: 21
+Timeouts (Infinite loops): 1

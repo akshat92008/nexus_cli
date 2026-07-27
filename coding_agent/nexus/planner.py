@@ -1,0 +1,663 @@
+"""
+Planning Engine — decomposes complex user requests into structured task plans.
+
+The planner intercepts user messages, classifies intent, and decides whether
+to execute directly (simple requests) or create a multi-step execution plan
+(complex tasks). Plans are persisted and can be resumed across sessions.
+
+Architecture:
+    User Request → Intent Classification → Plan Generation → Step Execution → Verification
+"""
+
+import json
+import re
+from dataclasses import dataclass, field, asdict
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
+from nexus.paths import nexus_home
+from typing import Optional
+
+
+# ── Plan Types ───────────────────────────────────────────────────────────────
+
+class PlanType(str, Enum):
+    """Whether to execute directly or plan first."""
+    DIRECT = "direct"       # Simple, execute immediately
+    PLANNED = "planned"     # Complex, create a plan first
+    RESEARCH = "research"   # Needs investigation before acting
+
+
+class TaskStatus(str, Enum):
+    """Status of a plan step."""
+    PENDING = "pending"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+    BLOCKED = "blocked"
+
+
+class IntentType(str, Enum):
+    """High-level user intent classification."""
+    BUILD = "build"           # Create something new
+    FIX = "fix"               # Debug / fix a bug
+    REFACTOR = "refactor"     # Improve existing code
+    REVIEW = "review"         # Code review
+    EXPLAIN = "explain"       # Explain code
+    DEPLOY = "deploy"         # Deployment tasks
+    TEST = "test"             # Write or run tests
+    DOCS = "docs"             # Documentation
+    SEARCH = "search"         # Find information
+    MIGRATE = "migrate"       # Migration tasks
+    OPTIMIZE = "optimize"     # Performance optimization
+    SECURITY = "security"     # Security audit
+    CONFIGURE = "configure"   # Configuration tasks
+    CHAT = "chat"             # General conversation
+    UNKNOWN = "unknown"
+
+
+class Difficulty(str, Enum):
+    """Estimated task difficulty."""
+    TRIVIAL = "trivial"     # < 1 tool call
+    SIMPLE = "simple"       # 1-3 tool calls
+    MODERATE = "moderate"   # 4-10 tool calls
+    COMPLEX = "complex"     # 10-25 tool calls
+    MASSIVE = "massive"     # 25+ tool calls
+
+
+# ── Data Classes ─────────────────────────────────────────────────────────────
+
+@dataclass
+class PlanStep:
+    """A single step in an execution plan."""
+    id: int
+    title: str
+    description: str
+    tools_needed: list[str] = field(default_factory=list)
+    depends_on: list[int] = field(default_factory=list)
+    status: TaskStatus = TaskStatus.PENDING
+    result: str = ""
+    error: str = ""
+    started_at: str = ""
+    completed_at: str = ""
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PlanStep":
+        data["status"] = TaskStatus(data.get("status", "pending"))
+        return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
+
+
+@dataclass
+class ExecutionPlan:
+    """A structured execution plan for a complex task."""
+    id: str
+    goal: str
+    intent: IntentType
+    difficulty: Difficulty
+    plan_type: PlanType
+    steps: list[PlanStep] = field(default_factory=list)
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    status: TaskStatus = TaskStatus.PENDING
+    current_step: int = 0
+    skills_needed: list[str] = field(default_factory=list)
+    verification_steps: list[str] = field(default_factory=list)
+
+    @property
+    def progress(self) -> float:
+        """Completion percentage."""
+        if not self.steps:
+            return 0.0
+        completed = sum(1 for s in self.steps if s.status == TaskStatus.COMPLETED)
+        return (completed / len(self.steps)) * 100
+
+    @property
+    def next_step(self) -> PlanStep | None:
+        """Get the next pending step whose dependencies are met."""
+        for step in self.steps:
+            if step.status != TaskStatus.PENDING:
+                continue
+            # Check dependencies
+            deps_met = all(
+                self.steps[dep_id].status == TaskStatus.COMPLETED
+                for dep_id in step.depends_on
+                if dep_id < len(self.steps)
+            )
+            if deps_met:
+                return step
+        return None
+
+    @property
+    def is_complete(self) -> bool:
+        return all(s.status in (TaskStatus.COMPLETED, TaskStatus.SKIPPED) for s in self.steps)
+
+    @property
+    def has_failures(self) -> bool:
+        return any(s.status == TaskStatus.FAILED for s in self.steps)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "goal": self.goal,
+            "intent": self.intent.value,
+            "difficulty": self.difficulty.value,
+            "plan_type": self.plan_type.value,
+            "steps": [s.to_dict() for s in self.steps],
+            "created_at": self.created_at,
+            "status": self.status.value,
+            "current_step": self.current_step,
+            "skills_needed": self.skills_needed,
+            "verification_steps": self.verification_steps,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ExecutionPlan":
+        steps = [PlanStep.from_dict(s) for s in data.get("steps", [])]
+        return cls(
+            id=data["id"],
+            goal=data["goal"],
+            intent=IntentType(data.get("intent", "unknown")),
+            difficulty=Difficulty(data.get("difficulty", "moderate")),
+            plan_type=PlanType(data.get("plan_type", "direct")),
+            steps=steps,
+            created_at=data.get("created_at", ""),
+            status=TaskStatus(data.get("status", "pending")),
+            current_step=data.get("current_step", 0),
+            skills_needed=data.get("skills_needed", []),
+            verification_steps=data.get("verification_steps", []),
+        )
+
+    def format_summary(self) -> str:
+        """Human-readable plan summary."""
+        lines = [
+            f"📋 Plan: {self.goal}",
+            f"   Intent: {self.intent.value} | Difficulty: {self.difficulty.value} | Progress: {self.progress:.0f}%",
+            "",
+        ]
+        for step in self.steps:
+            status_icon = {
+                TaskStatus.PENDING: "⬜",
+                TaskStatus.IN_PROGRESS: "🔄",
+                TaskStatus.COMPLETED: "✅",
+                TaskStatus.FAILED: "❌",
+                TaskStatus.SKIPPED: "⏭️",
+                TaskStatus.BLOCKED: "🔒",
+            }.get(step.status, "⬜")
+            lines.append(f"   {status_icon} {step.id + 1}. {step.title}")
+            if step.depends_on:
+                deps = ", ".join(str(d + 1) for d in step.depends_on)
+                lines.append(f"      ↳ depends on: step {deps}")
+
+        if self.verification_steps:
+            lines.append("")
+            lines.append("   🔍 Verification:")
+            for v in self.verification_steps:
+                lines.append(f"      • {v}")
+
+        return "\n".join(lines)
+
+
+# ── Intent Classification ────────────────────────────────────────────────────
+
+# Keyword patterns for intent classification
+_INTENT_PATTERNS: dict[IntentType, list[str]] = {
+    IntentType.BUILD: [
+        r"\b(build|create|make|implement|add|develop|write|generate|scaffold|setup|init)\b",
+        r"\b(new|feature|component|module|service|endpoint|page|app|application|project)\b",
+    ],
+    IntentType.FIX: [
+        r"\b(fix|bug|error|crash|broken|issue|problem|debug|solve|repair|patch|resolve)\b",
+        r"\b(doesn't work|not working|fails|failing|exception|traceback|stack trace)\b",
+    ],
+    IntentType.REFACTOR: [
+        r"\b(refactor|restructure|reorganize|clean|improve|simplify|extract|split|merge|rename)\b",
+        r"\b(dead code|duplicate|DRY|SOLID|pattern|anti-pattern|code smell|technical debt)\b",
+    ],
+    IntentType.REVIEW: [
+        r"\b(review|audit|check|inspect|analyze|evaluate|assess|critique)\b",
+        r"\b(PR|pull request|code review|quality|best practice)\b",
+    ],
+    IntentType.EXPLAIN: [
+        r"\b(explain|understand|how does|what is|what does|why|describe|walk through|clarify)\b",
+    ],
+    IntentType.DEPLOY: [
+        r"\b(deploy|ship|release|publish|push to|launch|go live|production|staging)\b",
+        r"\b(CI/CD|pipeline|docker|kubernetes|hosting|server|cloud)\b",
+    ],
+    IntentType.TEST: [
+        r"\b(test|spec|coverage|assertion|mock|stub|fixture|jest|pytest|unittest)\b",
+        r"\b(unit test|integration test|e2e|end.to.end|TDD|BDD)\b",
+    ],
+    IntentType.DOCS: [
+        r"\b(document|documentation|readme|docstring|comment|jsdoc|swagger|openapi|wiki)\b",
+        r"\b(API doc|guide|tutorial|onboarding|contributing)\b",
+    ],
+    IntentType.SEARCH: [
+        r"\b(find|search|look for|where|locate|grep|which file|show me)\b",
+    ],
+    IntentType.MIGRATE: [
+        r"\b(migrate|convert|port|upgrade|transition|move from|switch from|replace)\b",
+        r"\b(JavaScript to TypeScript|React to|Vue to|Express to|legacy)\b",
+    ],
+    IntentType.OPTIMIZE: [
+        r"\b(optimize|performance|speed|fast|slow|memory|CPU|cache|lazy|bundle size)\b",
+        r"\b(bottleneck|profil|benchmark|latency|throughput)\b",
+    ],
+    IntentType.SECURITY: [
+        r"\b(security|vulnerab|XSS|CSRF|injection|auth|permission|secret|credential|CVE)\b",
+        r"\b(hardcoded|exposed|unsafe|sanitize|validate|escape|encrypt)\b",
+    ],
+    IntentType.CONFIGURE: [
+        r"\b(config|setting|environment|env|setup|install|dependency|package|version)\b",
+    ],
+}
+
+
+def classify_intent(user_input: str) -> IntentType:
+    """Classify the user's intent based on keyword patterns."""
+    scores: dict[IntentType, int] = {}
+    text = user_input.lower()
+
+    for intent, patterns in _INTENT_PATTERNS.items():
+        score = 0
+        for pattern in patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            score += len(matches)
+        if score > 0:
+            scores[intent] = score
+
+    if not scores:
+        # Check for conversational patterns
+        if re.search(r"\b(hi|hello|hey|thanks|thank you|ok|sure|yes|no|please)\b", text):
+            return IntentType.CHAT
+        return IntentType.UNKNOWN
+
+    return max(scores, key=scores.get)
+
+
+def estimate_difficulty(user_input: str, intent: IntentType) -> Difficulty:
+    """Estimate the difficulty of a task based on the request and intent."""
+    text = user_input.lower()
+    word_count = len(text.split())
+
+    # Simple heuristics
+    if intent in (IntentType.CHAT, IntentType.EXPLAIN, IntentType.SEARCH):
+        return Difficulty.TRIVIAL if word_count < 15 else Difficulty.SIMPLE
+
+    # Complexity indicators
+    complexity_signals = [
+        r"\b(entire|whole|all|every|complete|full|comprehensive)\b",
+        r"\b(multiple|several|many|across|throughout)\b",
+        r"\b(from scratch|production|production.ready|enterprise)\b",
+        r"\b(system|architecture|infrastructure|framework|platform)\b",
+        r"\b(database|API|authentication|payment|deployment)\b",
+        r"\b(frontend|backend|fullstack|full.stack)\b",
+    ]
+
+    complexity_score = sum(
+        len(re.findall(p, text, re.IGNORECASE))
+        for p in complexity_signals
+    )
+
+    if complexity_score >= 5 or word_count > 100:
+        return Difficulty.MASSIVE
+    elif complexity_score >= 3 or word_count > 50:
+        return Difficulty.COMPLEX
+    elif complexity_score >= 1 or word_count > 20:
+        return Difficulty.MODERATE
+    elif word_count > 8:
+        return Difficulty.SIMPLE
+    else:
+        return Difficulty.TRIVIAL
+
+
+def should_plan(difficulty: Difficulty, intent: IntentType) -> PlanType:
+    """Decide if a request needs a plan or can be executed directly."""
+    # Always direct for simple intents
+    if intent in (IntentType.CHAT, IntentType.EXPLAIN, IntentType.SEARCH):
+        return PlanType.DIRECT
+
+    # Plan for complex tasks
+    if difficulty in (Difficulty.COMPLEX, Difficulty.MASSIVE):
+        return PlanType.PLANNED
+
+    # Research for uncertain intents
+    if intent == IntentType.UNKNOWN and difficulty == Difficulty.MODERATE:
+        return PlanType.RESEARCH
+
+    return PlanType.DIRECT
+
+
+# ── Skills Detection ─────────────────────────────────────────────────────────
+
+_SKILL_KEYWORDS: dict[str, list[str]] = {
+    "frontend": ["react", "vue", "angular", "svelte", "next.js", "nextjs", "css", "html", "ui", "component", "jsx", "tsx", "tailwind"],
+    "backend": ["api", "server", "endpoint", "route", "middleware", "fastapi", "express", "django", "flask", "nestjs", "rest", "graphql"],
+    "database": ["database", "sql", "postgres", "mysql", "mongo", "redis", "prisma", "drizzle", "migration", "schema", "query", "index"],
+    "security": ["security", "vulnerability", "xss", "csrf", "injection", "auth", "permission", "encrypt", "hash", "secret", "cve"],
+    "devops": ["docker", "kubernetes", "k8s", "ci/cd", "github actions", "deploy", "nginx", "terraform", "helm", "container"],
+    "testing": ["test", "jest", "pytest", "mocha", "cypress", "playwright", "coverage", "mock", "stub", "e2e", "unit test"],
+    "performance": ["performance", "optimize", "speed", "cache", "lazy", "bundle", "memory", "cpu", "profil", "benchmark"],
+    "refactoring": ["refactor", "clean", "extract", "split", "rename", "restructure", "dry", "solid", "pattern"],
+    "api_design": ["api design", "rest", "graphql", "openapi", "swagger", "endpoint", "schema", "contract"],
+    "debugging": ["debug", "error", "crash", "exception", "stack trace", "breakpoint", "log", "diagnose"],
+    "documentation": ["document", "readme", "docstring", "jsdoc", "swagger", "guide", "wiki"],
+    "git_workflow": ["git", "branch", "merge", "rebase", "cherry-pick", "bisect", "stash", "tag", "release"],
+    "migration": ["migrate", "convert", "port", "upgrade", "typescript", "legacy", "modernize"],
+    "ai_engineer": ["llm", "rag", "embedding", "vector", "langchain", "openai", "anthropic", "prompt", "fine-tune", "agent", "chatbot"],
+    "mobile": ["react native", "flutter", "swift", "kotlin", "ios", "android", "mobile", "expo"],
+}
+
+
+def detect_skills_needed(user_input: str) -> list[str]:
+    """Detect which skills are relevant to the user's request using exact word boundaries."""
+    text = user_input.lower()
+    needed = []
+    for skill, keywords in _SKILL_KEYWORDS.items():
+        for kw in keywords:
+            # Match whole words or phrase boundaries
+            if re.search(r"\b" + re.escape(kw) + r"\b", text):
+                needed.append(skill)
+                break
+    return needed
+
+
+# ── Planning Engine ──────────────────────────────────────────────────────────
+
+PLANS_DIR = nexus_home() / "plans"
+
+
+class PlanningEngine:
+    """
+    The Planning Engine intercepts complex requests and creates structured
+    execution plans. Simple requests pass through directly.
+
+    Usage:
+        planner = PlanningEngine()
+        analysis = planner.analyze(user_input)
+
+        if analysis.plan_type == PlanType.PLANNED:
+            plan = planner.create_plan(user_input, analysis)
+            # Execute plan steps...
+        else:
+            # Execute directly
+    """
+
+    def __init__(self):
+        PLANS_DIR.mkdir(parents=True, exist_ok=True)
+        self.current_plan: ExecutionPlan | None = None
+        self._plan_counter = 0
+
+    def analyze(self, user_input: str) -> dict:
+        """
+        Analyze a user request and return classification data.
+
+        Returns:
+            dict with: intent, difficulty, plan_type, skills_needed
+        """
+        intent = classify_intent(user_input)
+        difficulty = estimate_difficulty(user_input, intent)
+        plan_type = should_plan(difficulty, intent)
+        skills = detect_skills_needed(user_input)
+
+        return {
+            "intent": intent,
+            "difficulty": difficulty,
+            "plan_type": plan_type,
+            "skills_needed": skills,
+        }
+
+    def create_plan(self, goal: str, analysis: dict) -> ExecutionPlan:
+        """
+        Create an execution plan for a complex task.
+
+        The plan is a skeleton — the agent fills in specific tool calls
+        during execution. The plan provides structure and ordering.
+        """
+        self._plan_counter += 1
+        plan_id = f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self._plan_counter}"
+
+        intent = analysis["intent"]
+        difficulty = analysis["difficulty"]
+        skills = analysis.get("skills_needed", [])
+
+        # Generate steps based on intent
+        steps = self._generate_steps(goal, intent, difficulty)
+        verification = self._generate_verification(intent, skills)
+
+        plan = ExecutionPlan(
+            id=plan_id,
+            goal=goal,
+            intent=intent,
+            difficulty=difficulty,
+            plan_type=PlanType.PLANNED,
+            steps=steps,
+            skills_needed=skills,
+            verification_steps=verification,
+        )
+
+        self.current_plan = plan
+        self._save_plan(plan)
+        return plan
+
+    def _generate_steps(self, goal: str, intent: IntentType, difficulty: Difficulty) -> list[PlanStep]:
+        """Generate plan steps based on intent type."""
+        templates = {
+            IntentType.BUILD: [
+                ("Understand requirements", "Analyze the user's request and identify all components needed", ["read_file", "get_project_structure"]),
+                ("Research existing code", "Read relevant existing files to understand the codebase", ["read_file", "search_code", "list_directory"]),
+                ("Plan architecture", "Design the file structure and component architecture", []),
+                ("Implement core logic", "Write the main implementation files", ["write_file", "edit_file"]),
+                ("Add supporting code", "Implement helpers, utilities, types, and configuration", ["write_file", "edit_file"]),
+                ("Wire components together", "Connect all pieces — imports, routes, configuration", ["edit_file", "multi_edit"]),
+                ("Test the implementation", "Run the code and fix any errors", ["run_command"]),
+                ("Polish and document", "Add error handling, comments, and documentation", ["edit_file"]),
+                ("Commit changes", "Stage and commit with a meaningful message", ["git_commit"]),
+            ],
+            IntentType.FIX: [
+                ("Reproduce the error", "Understand the error by reading logs and running the failing code", ["run_command", "read_file"]),
+                ("Trace the root cause", "Search the codebase to find where the error originates", ["search_code", "read_file"]),
+                ("Implement the fix", "Apply the code fix", ["edit_file"]),
+                ("Verify the fix", "Run the code again to confirm the fix works", ["run_command"]),
+                ("Add regression test", "Write a test to prevent this bug from recurring", ["write_file"]),
+                ("Commit the fix", "Commit with a descriptive message referencing the bug", ["git_commit"]),
+            ],
+            IntentType.REFACTOR: [
+                ("Analyze current code", "Read and understand the code to be refactored", ["read_file", "search_code"]),
+                ("Identify improvements", "List specific refactoring opportunities", []),
+                ("Apply refactoring", "Make the code changes", ["edit_file", "multi_edit"]),
+                ("Run tests", "Ensure nothing is broken by the refactoring", ["run_command"]),
+                ("Commit changes", "Commit the refactored code", ["git_commit"]),
+            ],
+            IntentType.REVIEW: [
+                ("Read the code", "Thoroughly read all files to be reviewed", ["read_file"]),
+                ("Check for bugs", "Look for potential bugs, race conditions, edge cases", ["search_code"]),
+                ("Evaluate architecture", "Assess code structure, patterns, and maintainability", []),
+                ("Check security", "Look for security vulnerabilities", ["search_code"]),
+                ("Provide feedback", "Summarize findings with specific recommendations", []),
+            ],
+            IntentType.TEST: [
+                ("Understand the code", "Read the code that needs testing", ["read_file"]),
+                ("Identify test cases", "Determine what scenarios to test", []),
+                ("Write tests", "Implement the test files", ["write_file"]),
+                ("Run tests", "Execute the tests and verify they pass", ["run_command"]),
+                ("Fix failing tests", "Debug and fix any test failures", ["edit_file", "run_command"]),
+                ("Commit tests", "Commit the test files", ["git_commit"]),
+            ],
+            IntentType.DEPLOY: [
+                ("Verify build", "Run build and tests to ensure deployment readiness", ["run_command"]),
+                ("Create deployment config", "Generate Dockerfiles, CI/CD, or cloud configs", ["write_file"]),
+                ("Configure environment", "Set up environment variables and secrets", ["edit_file"]),
+                ("Deploy", "Execute the deployment", ["run_command"]),
+                ("Verify deployment", "Check that the deployment succeeded", ["run_command", "web_fetch"]),
+            ],
+            IntentType.DOCS: [
+                ("Read the codebase", "Understand what to document", ["read_file", "get_project_structure"]),
+                ("Generate documentation", "Write the documentation files", ["write_file"]),
+                ("Review and polish", "Ensure accuracy and completeness", ["edit_file"]),
+                ("Commit docs", "Commit the documentation", ["git_commit"]),
+            ],
+            IntentType.MIGRATE: [
+                ("Analyze source", "Understand the current implementation", ["read_file", "get_project_structure"]),
+                ("Plan migration path", "Map old patterns to new ones", []),
+                ("Migrate core files", "Convert the main files", ["write_file", "edit_file"]),
+                ("Update dependencies", "Change package configs and imports", ["edit_file", "run_command"]),
+                ("Test migration", "Verify everything works in the new form", ["run_command"]),
+                ("Clean up", "Remove old files and dead code", ["run_command"]),
+                ("Commit", "Commit the migrated code", ["git_commit"]),
+            ],
+            IntentType.OPTIMIZE: [
+                ("Profile current performance", "Measure baseline performance", ["run_command"]),
+                ("Identify bottlenecks", "Find slow areas in the code", ["read_file", "search_code"]),
+                ("Apply optimizations", "Implement performance improvements", ["edit_file"]),
+                ("Benchmark improvements", "Measure the impact of changes", ["run_command"]),
+                ("Commit optimizations", "Commit with performance metrics", ["git_commit"]),
+            ],
+            IntentType.SECURITY: [
+                ("Scan for vulnerabilities", "Check for common security issues", ["search_code", "run_command"]),
+                ("Review authentication", "Check auth flows and session management", ["read_file"]),
+                ("Check dependencies", "Audit dependency vulnerabilities", ["run_command"]),
+                ("Fix findings", "Apply security patches", ["edit_file"]),
+                ("Verify fixes", "Re-scan to confirm vulnerabilities are resolved", ["run_command"]),
+                ("Commit fixes", "Commit security improvements", ["git_commit"]),
+            ],
+        }
+
+        template = templates.get(intent, templates[IntentType.BUILD])
+
+        # For simpler tasks, use fewer steps
+        if difficulty == Difficulty.SIMPLE:
+            template = template[:3]
+        elif difficulty == Difficulty.MODERATE:
+            template = template[:5]
+
+        steps = []
+        for i, (title, desc, tools) in enumerate(template):
+            deps = [i - 1] if i > 0 else []
+            steps.append(PlanStep(
+                id=i,
+                title=title,
+                description=desc,
+                tools_needed=tools,
+                depends_on=deps,
+            ))
+
+        return steps
+
+    def _generate_verification(self, intent: IntentType, skills: list[str]) -> list[str]:
+        """Generate verification steps based on intent and skills."""
+        checks = []
+
+        if intent in (IntentType.BUILD, IntentType.FIX, IntentType.REFACTOR):
+            checks.append("Run the project to verify it works")
+            checks.append("Check for lint/type errors")
+
+        if intent == IntentType.TEST:
+            checks.append("Ensure all tests pass")
+            checks.append("Check test coverage")
+
+        if intent == IntentType.DEPLOY:
+            checks.append("Verify deployment is accessible")
+            checks.append("Run smoke tests")
+
+        if "security" in skills or intent == IntentType.SECURITY:
+            checks.append("Run security scan")
+
+        if "testing" in skills:
+            checks.append("Run full test suite")
+
+        return checks
+
+    def advance_step(self, step_id: int, status: TaskStatus, result: str = "") -> bool:
+        """Mark a plan step as complete/failed and advance."""
+        if not self.current_plan:
+            return False
+
+        if step_id < len(self.current_plan.steps):
+            step = self.current_plan.steps[step_id]
+            step.status = status
+            step.result = result
+            if status == TaskStatus.IN_PROGRESS:
+                step.started_at = datetime.now().isoformat()
+            elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                step.completed_at = datetime.now().isoformat()
+
+            self._save_plan(self.current_plan)
+            return True
+        return False
+
+    def get_plan_context(self) -> str:
+        """Generate context string for the agent about the current plan."""
+        if not self.current_plan:
+            return ""
+
+        plan = self.current_plan
+        next_step = plan.next_step
+
+        if not next_step:
+            if plan.is_complete:
+                return f"\n[PLAN COMPLETE] All steps finished. Progress: {plan.progress:.0f}%\n"
+            return ""
+
+        context = f"""
+[EXECUTION PLAN — {plan.goal}]
+Progress: {plan.progress:.0f}% | Step {next_step.id + 1}/{len(plan.steps)}
+
+Current Step: {next_step.title}
+Description: {next_step.description}
+Suggested Tools: {', '.join(next_step.tools_needed) if next_step.tools_needed else 'any'}
+
+Remaining Steps:
+"""
+        for step in plan.steps:
+            if step.status == TaskStatus.PENDING:
+                context += f"  {step.id + 1}. {step.title}\n"
+
+        if plan.verification_steps:
+            context += "\nVerification (after completion):\n"
+            for v in plan.verification_steps:
+                context += f"  • {v}\n"
+
+        return context
+
+    def _save_plan(self, plan: ExecutionPlan):
+        """Persist plan to disk."""
+        filepath = PLANS_DIR / f"{plan.id}.json"
+        with open(filepath, "w") as f:
+            json.dump(plan.to_dict(), f, indent=2)
+
+    def load_plan(self, plan_id: str) -> ExecutionPlan | None:
+        """Load a plan from disk."""
+        filepath = PLANS_DIR / f"{plan_id}.json"
+        if not filepath.exists():
+            return None
+        try:
+            with open(filepath) as f:
+                data = json.load(f)
+            plan = ExecutionPlan.from_dict(data)
+            self.current_plan = plan
+            return plan
+        except (json.JSONDecodeError, KeyError):
+            return None
+
+    def list_plans(self, limit: int = 10) -> list[dict]:
+        """List recent plans."""
+        plans = []
+        for filepath in sorted(PLANS_DIR.glob("*.json"), reverse=True)[:limit]:
+            try:
+                with open(filepath) as f:
+                    data = json.load(f)
+                plans.append({
+                    "id": data["id"],
+                    "goal": data["goal"][:80],
+                    "intent": data.get("intent", "unknown"),
+                    "progress": sum(1 for s in data.get("steps", []) if s.get("status") == "completed"),
+                    "total_steps": len(data.get("steps", [])),
+                    "created_at": data.get("created_at", ""),
+                })
+            except (json.JSONDecodeError, KeyError):
+                continue
+        return plans
