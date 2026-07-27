@@ -10,10 +10,11 @@ import os
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
+from nexus.paths import nexus_home
 from typing import Optional
 
 
-PREFS_FILE = Path.home() / ".nexusai" / "user_prefs.json"
+PREFS_FILE = nexus_home() / "user_prefs.json"
 
 
 @dataclass

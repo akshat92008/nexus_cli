@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-NexusAI — NVIDIA-Powered Coding Agent CLI
+NexusAI — Hosted + Local Coding Agent CLI
 
 Usage:
     nexus                          Start interactive mode with default model
@@ -11,8 +11,10 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import sys
+from pathlib import Path
 
 from nexus.agent import Agent
 from nexus.models import resolve_model, DEFAULT_MODEL, ALIASES
@@ -25,13 +27,14 @@ from nexus.memory import ConversationMemory
 def parse_args():
     parser = argparse.ArgumentParser(
         prog="nexus",
-        description="NexusAI — NVIDIA-Powered Coding Agent (Claude Code Alternative)",
+        description="NexusAI — Hosted NVIDIA + Local Nova Coding Agent",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  nexus                              Interactive mode (default: DeepSeek V4)
+  nexus                              Interactive mode (default: GLM 5.2)
   nexus --model glm-5.2              Use GLM 5.2
-  nexus --model kimi                 Use Kimi K2.6
+  nexus --model kimi                 Use Kimi as Ceiling, Nova Codex v11 as Intern
+  nexus --model nova_codex           Use local Nova Codex v11 directly with automatic guardrails
   nexus --web                        Launch web interface (Cursor-like UI)
   nexus --web --port 8080            Web interface on custom port
   nexus "create a REST API in Go"    Single prompt mode
@@ -39,6 +42,7 @@ Examples:
 
 Environment:
   NVIDIA_API_KEY                     Your NVIDIA API key (from build.nvidia.com)
+  Ollama                             Required for Nova Intern (nova_codex model)
         """,
     )
     parser.add_argument(
@@ -79,7 +83,7 @@ Environment:
         help="Launch the web interface instead of CLI",
     )
     parser.add_argument(
-        "--port", "-p",
+        "--port",
         type=int,
         default=3000,
         help="Port for web interface (default: 3000)",
@@ -88,6 +92,14 @@ Environment:
         "--resume", "-r",
         help="Resume a previous conversation by ID",
     )
+    parser.add_argument("--continue", dest="continue_last", action="store_true", help="Resume the most recent conversation for this directory")
+    parser.add_argument("--print", "-p", dest="print_mode", action="store_true", help="Run non-interactively and exit")
+    parser.add_argument("--output-format", choices=("text", "json", "stream-json"), default="text")
+    parser.add_argument("--max-turns", type=int, default=50)
+    parser.add_argument("--permission-mode", choices=("default", "acceptEdits", "plan"), default="default")
+    parser.add_argument("--allowed-tools", nargs="*", default=[])
+    parser.add_argument("--disallowed-tools", nargs="*", default=[])
+    parser.add_argument("--add-dir", action="append", default=[], help="Authorize an additional existing directory")
     return parser.parse_args()
 
 
@@ -116,7 +128,7 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
 
     elif command == "/model":
         if not arg:
-            ui.print_error("Usage: /model <name>  (e.g., /model kimi)")
+            ui.print_error("Usage: /model <name>  (e.g., /model kimi or /model nova_codex)")
             return True
         if agent.set_model(arg.strip()):
             ui.print_model_info(agent.model_key, agent.model_cfg)
@@ -155,6 +167,7 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
             agent.total_completion_tokens,
             agent.total_prompt_tokens + agent.total_completion_tokens,
         )
+        ui.console.print(agent.get_cost_dashboard())
 
     elif command == "/system":
         if not arg:
@@ -173,11 +186,18 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
         if text.strip():
             agent.run(text)
 
+    elif command == "/run":
+        if not arg:
+            ui.print_error("Usage: /run <shell command>")
+        else:
+            result, success = agent._execute_tool_with_safety("run_command", {"command": arg, "cwd": agent.working_dir})
+            ui.print_tool_result(result, success)
+
     # ─── NEW COMMANDS ────────────────────────────────────────────────
 
     elif command == "/undo":
         history = get_history()
-        success, msg = history.undo_last_change()
+        success, msg = history.undo_changes(int(arg) if arg.strip().isdigit() else 1)
         if success:
             ui.print_success(msg)
         else:
@@ -196,6 +216,33 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
         history = get_history()
         summary = history.get_change_summary()
         ui.console.print(summary)
+
+    elif command == "/confirm":
+        result, success = agent.confirm_pending_operation(arg)
+        ui.print_tool_result(result, success)
+
+    elif command == "/cancel":
+        result, success = agent.cancel_pending_operation(arg)
+        ui.print_tool_result(result, success)
+
+    elif command == "/apply":
+        result, success = agent.apply_pending_edit(arg)
+        ui.print_tool_result(result, success)
+
+    elif command == "/reject":
+        result, success = agent.reject_pending_edit(arg)
+        ui.print_tool_result(result, success)
+
+    elif command == "/pending":
+        ui.console.print(agent.pending_edits_summary())
+
+    elif command == "/edit-pending":
+        edit_parts = arg.split(maxsplit=1)
+        if len(edit_parts) != 2:
+            ui.print_error("Usage: /edit-pending <edit-id> <replacement-file>")
+        else:
+            result, success = agent.replace_pending_edit(edit_parts[0], edit_parts[1])
+            ui.print_tool_result(result, success)
 
     elif command == "/history":
         memory = ConversationMemory()
@@ -251,9 +298,52 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
         ui.console.print(report)
 
     elif command == "/verify":
-        checks = arg.strip().split() if arg else None
-        report = agent.run_verification(checks)
+        if not arg or arg.strip().isdigit() or arg.strip().startswith("evidence"):
+            count_text = arg.replace("evidence", "").strip() if arg else ""
+            report = agent.verify_evidence(int(count_text) if count_text.isdigit() else 10)
+        else:
+            checks = None if arg.strip() == "project" else arg.strip().split()
+            report = agent.run_verification(checks)
         ui.console.print(report)
+
+    elif command in ("/rewind",):
+        history = get_history()
+        success, msg = history.undo_changes(int(arg) if arg.strip().isdigit() else 1)
+        ui.print_tool_result(msg, success)
+
+    elif command in ("/permissions", "/mode"):
+        if not arg:
+            ui.print_info(f"Permission mode: {agent.permission_mode}")
+        elif arg in ("default", "acceptEdits", "plan"):
+            agent.permission_mode = arg
+            ui.print_success(f"Permission mode set to {arg}")
+        else:
+            ui.print_error("Use: /permissions default|acceptEdits|plan")
+
+    elif command == "/trust":
+        trust_parts = arg.split(maxsplit=1)
+        if not trust_parts or not trust_parts[0]:
+            ui.console.print(agent.get_trust_summary())
+        elif len(trust_parts) == 2 and trust_parts[0] in ("approve", "reject"):
+            decision = agent.trust.approve(trust_parts[1]) if trust_parts[0] == "approve" else agent.trust.reject(trust_parts[1])
+            agent.project_mem.reload()
+            agent._load_rules_and_preferences()
+            agent._update_system_prompt()
+            ui.print_success(f"{trust_parts[0].title()}d exact config digest: {decision.path} {decision.digest}")
+        else:
+            ui.print_error("Usage: /trust [approve|reject] <path>")
+
+    elif command == "/init":
+        path = agent.project_mem.create_default_rules()
+        ui.print_info(f"Created {path}. Review it, then run /trust approve {path} before Nexus loads it.")
+
+    elif command == "/context":
+        ui.console.print(agent.context_mgr.get_architecture_context())
+        ui.console.print(agent.context_mgr.get_relevant_context())
+
+    elif command == "/plan":
+        agent.permission_mode = "plan"
+        ui.print_success("Entered read-only plan mode.")
 
     elif command == "/mcp":
         ui.console.print(agent.mcp.get_summary())
@@ -268,7 +358,8 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
 
     elif command == "/web":
         port = int(arg.strip()) if arg.strip().isdigit() else 3000
-        start_background_web_server(agent.client.api_key, agent.model_key, port, agent.working_dir)
+        api_key = agent.client.api_key if agent.client else ""
+        start_background_web_server(api_key, agent.model_key, port, agent.working_dir)
         ui.print_success(f"Web UI server started in background at http://localhost:{port}")
 
     elif command == "/rules":
@@ -307,6 +398,14 @@ def run_interactive(agent: Agent):
             # Handle slash commands
             if user_input.strip().startswith("/"):
                 handle_slash_command(user_input.strip(), agent)
+                continue
+
+            if user_input.lstrip().startswith("!"):
+                command = user_input.lstrip()[1:].strip()
+                result, success = agent._execute_tool_with_safety(
+                    "run_command", {"command": command, "cwd": agent.working_dir}
+                )
+                ui.print_tool_result(result, success)
                 continue
 
             # Run the agent
@@ -374,6 +473,11 @@ def start_background_web_server(api_key: str, model: str, port: int, working_dir
 def main():
     args = parse_args()
 
+    invalid_dirs = [item for item in args.add_dir if not Path(item).expanduser().is_dir()]
+    if invalid_dirs:
+        ui.print_error("Additional directories do not exist: " + ", ".join(invalid_dirs))
+        sys.exit(1)
+
     # List models and exit
     if args.list_models:
         ui.print_models_table()
@@ -391,7 +495,8 @@ def main():
     from nexus.api import _load_env_file
     _load_env_file()
     api_key = args.api_key or os.environ.get("NVIDIA_API_KEY")
-    if not api_key:
+    is_local_nova = model_cfg.get("backend") == "nova"
+    if not api_key and not is_local_nova:
         ui.console.print()
         ui.print_error("No NVIDIA API key found!")
         ui.console.print(
@@ -418,13 +523,23 @@ def main():
             api_key=api_key,
             model_key=args.model,
             working_dir=args.working_dir,
+            permission_mode=args.permission_mode,
+            allowed_tools=args.allowed_tools,
+            disallowed_tools=args.disallowed_tools,
+            additional_dirs=args.add_dir,
+            max_turns=args.max_turns,
         )
     except ValueError as e:
         ui.print_error(str(e))
         sys.exit(1)
 
     # Resume conversation
-    if args.resume:
+    if args.continue_last:
+        candidates = [item for item in agent.memory.list_conversations(limit=100) if item.get("working_dir") == agent.working_dir]
+        if not candidates or not agent.load_conversation(candidates[0]["id"]):
+            ui.print_error("No resumable conversation found for this directory.")
+            sys.exit(1)
+    elif args.resume:
         if agent.load_conversation(args.resume):
             ui.print_success(f"Resumed conversation: {args.resume}")
         else:
@@ -437,7 +552,28 @@ def main():
 
     # Single prompt mode
     if args.prompt:
-        agent.run(args.prompt)
+        if args.prompt.lstrip().startswith("!"):
+            command = args.prompt.lstrip()[1:].strip()
+            result, success = agent._execute_tool_with_safety(
+                "run_command", {"command": command, "cwd": agent.working_dir}
+            )
+            if args.output_format in ("json", "stream-json"):
+                print(json.dumps({"type": "tool_call", "name": "run_command", "result": result, "success": success}))
+            else:
+                print(result)
+            sys.exit(0 if success else 2)
+        if args.print_mode or args.output_format != "text":
+            content, events = agent.run_non_interactive(args.prompt)
+            if args.output_format == "json":
+                print(json.dumps({"result": content, "events": events, "session_id": agent.conversation_id}))
+            elif args.output_format == "stream-json":
+                for event in events:
+                    print(json.dumps(event))
+                print(json.dumps({"type": "result", "result": content, "session_id": agent.conversation_id}))
+            else:
+                print(content)
+        else:
+            agent.run(args.prompt)
         sys.exit(0)
 
     # Interactive mode

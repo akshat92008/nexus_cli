@@ -1,5 +1,5 @@
 """
-Coding tools — the agent's hands. 20 tools for file I/O, shell, git, web, and more.
+Coding tools — the agent's hands. 22 tools for file I/O, shell, git, web, and more.
 
 Tools:
   File:    read_file, write_file, edit_file, patch_file, multi_edit, file_info, diff_files
@@ -23,6 +23,7 @@ from pathlib import Path
 from datetime import datetime
 
 from nexus.history import get_history
+from nexus.paths import nexus_home
 
 
 # ── Tool definitions (OpenAI function-calling format) ────────────────────────
@@ -327,6 +328,30 @@ TOOL_DEFINITIONS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "process_status",
+            "description": "Poll a Nexus-started background process and read its complete stdout/stderr logs.",
+            "parameters": {
+                "type": "object",
+                "properties": {"pid": {"type": "integer"}},
+                "required": ["pid"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "process_stop",
+            "description": "Terminate a background process previously started by Nexus. Cannot target arbitrary system PIDs.",
+            "parameters": {
+                "type": "object",
+                "properties": {"pid": {"type": "integer"}},
+                "required": ["pid"],
+            },
+        },
+    },
     # ─── GIT TOOLS ───────────────────────────────────────────────────────
     {
         "type": "function",
@@ -511,7 +536,9 @@ IGNORE_DIRS = {
     ".git", "__pycache__", "node_modules", ".next", ".venv", "venv",
     "dist", "build", ".cache", ".tox", ".mypy_cache", ".pytest_cache",
     "env", ".env", ".idea", ".vscode", "target", "coverage",
-    ".nexusai", ".ruff_cache",
+    ".nexusai", ".ruff_cache", ".nuxt", ".output", ".turbo",
+    "Library", "Applications", "Pictures", "Music", "Movies", "Downloads",
+    "System", "Volumes", ".Trash", ".DocumentRevisions-V100",
 }
 
 IGNORE_EXTENSIONS = {
@@ -702,6 +729,16 @@ def tool_edit_file(path: str, old_text: str, new_text: str) -> str:
                 if len(matches) == 1:
                     target_old = matches[0][1]
                     count = 1
+
+        if count == 0:
+            # 3. Full-document or major-replacement fallback if exact and line matching fail
+            content_lines = content.splitlines()
+            old_lines = old_text.splitlines()
+            is_doc_envelope = old_text.strip().lower().startswith("<!doctype") or old_text.strip().lower().startswith("<html")
+            is_major_replacement = len(content_lines) > 0 and len(old_lines) >= max(3, int(0.6 * len(content_lines)))
+            if is_doc_envelope or is_major_replacement:
+                target_old = content
+                count = 1
 
         if count == 0:
             # Diagnostic feedback for LLM
@@ -899,10 +936,6 @@ def tool_run_command(command: str, cwd: str | None = None, timeout: float | int 
 
         output = "\n".join(output_parts) or "(no output)"
 
-        # Truncate very long output
-        if len(output) > 20000:
-            output = output[:9000] + f"\n\n... ({len(output) - 18000} chars truncated) ...\n\n" + output[-9000:]
-
         status = "✅" if result.returncode == 0 else f"❌ (exit code {result.returncode})"
         return f"{status} $ {command}\n{output}"
     except subprocess.TimeoutExpired:
@@ -918,7 +951,7 @@ def tool_process_run(command: str, cwd: str | None = None) -> str:
     """Start a background process."""
     try:
         work_dir = cwd or os.getcwd()
-        log_dir = Path.home() / ".nexusai" / "logs"
+        log_dir = nexus_home() / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -961,6 +994,47 @@ def tool_process_run(command: str, cwd: str | None = None) -> str:
         )
     except Exception as e:
         return f"❌ Error starting background process: {e}"
+
+
+def tool_process_status(pid: int) -> str:
+    """Poll a process started by Nexus and return its unedited logs."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return "❌ PID must be an integer"
+    record = _bg_processes.get(pid)
+    if not record:
+        return f"❌ PID {pid} is not a Nexus-managed background process"
+    proc = record["process"]
+    exit_code = proc.poll()
+    stdout = Path(record["stdout_log"]).read_text(encoding="utf-8", errors="replace")
+    stderr = Path(record["stderr_log"]).read_text(encoding="utf-8", errors="replace")
+    state = "running" if exit_code is None else f"exited ({exit_code})"
+    return (
+        f"✅ PID {pid} {state}\n"
+        f"Command: {record['command']}\n"
+        f"[stdout]\n{stdout}\n[stderr]\n{stderr}"
+    )
+
+
+def tool_process_stop(pid: int) -> str:
+    """Terminate only a process that Nexus itself started."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return "❌ PID must be an integer"
+    record = _bg_processes.get(pid)
+    if not record:
+        return f"❌ PID {pid} is not a Nexus-managed background process"
+    proc = record["process"]
+    if proc.poll() is not None:
+        return f"✅ PID {pid} already exited with code {proc.returncode}"
+    try:
+        proc.terminate()
+        proc.wait(timeout=5)
+        return f"✅ Terminated Nexus-managed PID {pid} (exit code {proc.returncode})"
+    except subprocess.TimeoutExpired:
+        return f"❌ PID {pid} did not terminate within 5 seconds"
 
 
 def tool_search_code(pattern: str, directory: str | None = None, file_pattern: str | None = None) -> str:
@@ -1396,6 +1470,8 @@ TOOL_DISPATCH = {
     # Shell tools
     "run_command": tool_run_command,
     "process_run": tool_process_run,
+    "process_status": tool_process_status,
+    "process_stop": tool_process_stop,
     # Git tools
     "git_status": tool_git_status,
     "git_diff": tool_git_diff,
@@ -1417,6 +1493,15 @@ def normalize_tool_arguments(name: str, args: dict) -> dict:
                 if alt in args:
                     args["path"] = args.pop(alt)
                     break
+        if "path" in args and isinstance(args["path"], str):
+            p = args["path"]
+            import getpass
+            curr_user = getpass.getuser()
+            p = re.sub(r"^/Users/\[?(?:username|user|yourname|name)\]?/", f"/Users/{curr_user}/", p, flags=re.I)
+            p = re.sub(r"^/home/\[?(?:username|user|yourname|name)\]?/", f"/home/{curr_user}/", p, flags=re.I)
+            if p.lower().startswith("desktop/"):
+                p = os.path.join(os.path.expanduser("~/Desktop"), p.split("/", 1)[1])
+            args["path"] = p
     elif name in ("run_command", "process_run"):
         if "command" not in args:
             for alt in ("cmd", "shell_command", "script", "exec"):
@@ -1454,4 +1539,3 @@ def execute_tool(name: str, arguments: dict) -> str:
         return fn(**arguments)
     except TypeError as e:
         return f"❌ Invalid arguments for {name}: {e}"
-

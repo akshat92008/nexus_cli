@@ -1,0 +1,178 @@
+SCENARIO: 03_go_executable
+WORKSPACE: /private/tmp/nexus-release-e2e-20260727T022817Z/03_go_executable
+PROMPT: Create exactly main.go as a standalone Go executable. It must parse two integer command-line arguments, print their sum followed by a newline, report invalid input to stderr, and exit nonzero. Include package main and func main().
+
+========================================================================================
+STEP: git init
+COMMAND_JSON: ["git", "init"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+Initialized empty Git repository in /private/tmp/nexus-release-e2e-20260727T022817Z/03_go_executable/.git/
+
+--- STDERR (complete) ---
+hint: Using 'master' as the name for the initial branch. This default branch name
+hint: will change to "main" in Git 3.0. To configure the initial branch name
+hint: to use in all of your new repositories, which will suppress this warning,
+hint: call:
+hint:
+hint: 	git config --global init.defaultBranch <name>
+hint:
+hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+hint: 'development'. The just-created branch can be renamed via this command:
+hint:
+hint: 	git branch -m <name>
+hint:
+hint: Disable this message with "git config set advice.defaultBranchName false"
+
+--- END STEP ---
+
+========================================================================================
+STEP: git identity email
+COMMAND_JSON: ["git", "config", "user.email", "nexus-e2e@example.invalid"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git identity name
+COMMAND_JSON: ["git", "config", "user.name", "Nexus E2E"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git add baseline
+COMMAND_JSON: ["git", "add", "."]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git baseline commit
+COMMAND_JSON: ["git", "commit", "--allow-empty", "-m", "baseline"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+[master (root-commit) 4e06244] baseline
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus CLI
+COMMAND_JSON: ["/opt/homebrew/opt/python@3.14/bin/python3.14", "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/run.py", "--model", "kimi", "--working-dir", "/private/tmp/nexus-release-e2e-20260727T022817Z/03_go_executable", "--permission-mode", "acceptEdits", "--max-turns", "8", "--output-format", "json", "Create exactly main.go as a standalone Go executable. It must parse two integer command-line arguments, print their sum followed by a newline, report invalid input to stderr, and exit nonzero. Include package main and func main()."]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"result": "Two-node execution breakdown\nCeiling: Kimi K2.6\nIntern: nova_codex\n\nDecomposition:\n  [1] scope=atomic expected_files=1 deps=[] :: CREATE main.go as a standalone Go executable in the current directory, which includes package main, imports the 'os' and 'strconv' packages, defines func main() to parse two integer command-line arguments, print their sum followed by a newline to stdout, report invalid input to stderr, and exit with a nonzero status code if the arguments are not integers\n\nExecution:\n  [1] node=Nova-then-escalated attempts=2 verdict=CEILING_PASS\n      [GUARDRAIL \u2705 PASS] task=1 scope=atomic files=0/1\n      GUARDRAIL FAILED attempt=1: Compiler/validator failed: FAIL /private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus_intern_candidate_v2dy1hyi/main.go [go test /private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus_intern_candidate_v2dy1hyi/main.go] exit=1\n      FAIL\tcommand-line-arguments [setup failed]\n      FAIL\n      # command-line-arguments\n      main.go:1:1: expected 'package', found ``\n      GUARDRAIL FAILED attempt=2: Format errors: ['Missing <<THINKING>> block']\n      ESCALATION attempt=1: Ceiling schema, path, disk, constraint, and compiler validation passed.\n      raw:\n        [CEILING ATTEMPT 1]\n        <<THINKING>>\n        To create a standalone Go executable, we need to define a main package and import the necessary packages. We will use the os package to access command-line arguments and the strconv package to parse integers. The main function will check if the correct number of arguments is provided, attempt to parse them as integers, and then print their sum to stdout. If the arguments are not integers, it will report an error to stderr and exit with a nonzero status code.\n        \n        <<FILES>>\n        ```go\n        # filepath: main.go\n        # action: CREATE\n        package main\n        \n        import (\n        \t\"os\"\n        \t\"strconv\"\n        )\n        \n        func main() {\n        \tif len(os.Args) != 3 {\n        \t\tos.Stderr.WriteString(\"Usage: \" + os.Args[0] + \" <integer> <integer>\\n\")\n        \t\tos.Exit(1)\n        \t}\n        \n        \tnum1, err1 := strconv.Atoi(os.Args[1])\n        \tnum2, err2 := strconv.Atoi(os.Args[2])\n        \n        \tif err1 != nil || err2 != nil {\n        \t\tos.Stderr.WriteString(\"Error: Both arguments must be integers.\\n\")\n        \t\tos.Exit(1)\n        \t}\n        \n        \tsum := num1 + num2\n        \tos.Stdout.WriteString(strconv.Itoa(sum) + \"\\n\")\n        }\n        ```", "events": [{"type": "tool_call", "name": "write_file", "args": {"path": "main.go", "content": "package main\n\nimport (\n\t\"os\"\n\t\"strconv\"\n)\n\nfunc main() {\n\tif len(os.Args) != 3 {\n\t\tos.Stderr.WriteString(\"Usage: \" + os.Args[0] + \" <integer> <integer>\\n\")\n\t\tos.Exit(1)\n\t}\n\n\tnum1, err1 := strconv.Atoi(os.Args[1])\n\tnum2, err2 := strconv.Atoi(os.Args[2])\n\n\tif err1 != nil || err2 != nil {\n\t\tos.Stderr.WriteString(\"Error: Both arguments must be integers.\\n\")\n\t\tos.Exit(1)\n\t}\n\n\tsum := num1 + num2\n\tos.Stdout.WriteString(strconv.Itoa(sum) + \"\\n\")\n}"}, "result": "\u2705 Wrote 24 lines to /private/tmp/nexus-release-e2e-20260727T022817Z/03_go_executable/main.go\n\ud83d\udd0e VERIFIED: exact content matched\nEvidence: /private/tmp/nexus-home/.nexusai/evidence/20260727_075842_054171.jsonl", "success": true, "node": "two-node", "guardrail": "[GUARDRAIL \u2705 PASS] task=1 scope=atomic files=0/1\nGUARDRAIL FAILED attempt=1: Compiler/validator failed: FAIL /private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus_intern_candidate_v2dy1hyi/main.go [go test /private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus_intern_candidate_v2dy1hyi/main.go] exit=1\nFAIL\tcommand-line-arguments [setup failed]\nFAIL\n# command-line-arguments\nmain.go:1:1: expected 'package', found ``\nGUARDRAIL FAILED attempt=2: Format errors: ['Missing <<THINKING>> block']\nESCALATION attempt=1: Ceiling schema, path, disk, constraint, and compiler validation passed."}], "session_id": "20260727_075842_054171"}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus evidence trail
+COMMAND_JSON: ["cat", "/private/tmp/nexus-home/.nexusai/evidence/20260727_075842_054171.jsonl"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"id": "ev-000001", "timestamp_utc": "2026-07-27T02:29:18.703702+00:00", "session_id": "20260727_075842_054171", "kind": "file_mutation", "claim": "write_file persisted the requested change", "status": "verified", "tool": "write_file", "command": "", "exit_code": null, "artifacts": [{"path": "/private/tmp/nexus-release-e2e-20260727T022817Z/03_go_executable/main.go", "exists": true, "sha256": "fcbf7560e6d7b12f27b9e62ff4da7f5d62e5477a940739d1df0fadb73f117aa1", "size": 443}], "raw_output": "✅ Wrote 24 lines to /private/tmp/nexus-release-e2e-20260727T022817Z/03_go_executable/main.go", "metadata": {"verification": "exact content matched"}}
+{"id": "ev-000002", "timestamp_utc": "2026-07-27T02:29:18.704139+00:00", "session_id": "20260727_075842_054171", "kind": "routing", "claim": "subtask 1 routed to Ceiling directly", "status": "verified", "tool": "", "command": "", "exit_code": null, "artifacts": [], "raw_output": "[GUARDRAIL ✅ PASS] task=1 scope=atomic files=0/1\nGUARDRAIL FAILED attempt=1: Compiler/validator failed: FAIL /private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus_intern_candidate_v2dy1hyi/main.go [go test /private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus_intern_candidate_v2dy1hyi/main.go] exit=1\nFAIL\tcommand-line-arguments [setup failed]\nFAIL\n# command-line-arguments\nmain.go:1:1: expected 'package', found ``\nGUARDRAIL FAILED attempt=2: Format errors: ['Missing <<THINKING>> block']\nESCALATION attempt=1: Ceiling schema, path, disk, constraint, and compiler validation passed.\n\n[RAW MODEL OUTPUT]\n[CEILING ATTEMPT 1]\n<<THINKING>>\nTo create a standalone Go executable, we need to define a main package and import the necessary packages. We will use the os package to access command-line arguments and the strconv package to parse integers. The main function will check if the correct number of arguments is provided, attempt to parse them as integers, and then print their sum to stdout. If the arguments are not integers, it will report an error to stderr and exit with a nonzero status code.\n\n<<FILES>>\n```go\n# filepath: main.go\n# action: CREATE\npackage main\n\nimport (\n\t\"os\"\n\t\"strconv\"\n)\n\nfunc main() {\n\tif len(os.Args) != 3 {\n\t\tos.Stderr.WriteString(\"Usage: \" + os.Args[0] + \" <integer> <integer>\\n\")\n\t\tos.Exit(1)\n\t}\n\n\tnum1, err1 := strconv.Atoi(os.Args[1])\n\tnum2, err2 := strconv.Atoi(os.Args[2])\n\n\tif err1 != nil || err2 != nil {\n\t\tos.Stderr.WriteString(\"Error: Both arguments must be integers.\\n\")\n\t\tos.Exit(1)\n\t}\n\n\tsum := num1 + num2\n\tos.Stdout.WriteString(strconv.Itoa(sum) + \"\\n\")\n}\n```", "metadata": {"reason": "", "attempts": 2, "verdict": "CEILING_PASS", "escalated": true}}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: go compiler
+COMMAND_JSON: ["go", "test", "main.go"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+?   	command-line-arguments	[no test files]
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: go behavior
+COMMAND_JSON: ["go", "run", "main.go", "4", "5"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: "9\n"
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+9
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus git status
+COMMAND_JSON: ["/opt/homebrew/opt/python@3.14/bin/python3.14", "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/run.py", "--model", "nova_codex", "--working-dir", "/private/tmp/nexus-release-e2e-20260727T022817Z/03_go_executable", "--permission-mode", "acceptEdits", "--max-turns", "8", "--output-format", "json", "!git status --short"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"type": "tool_call", "name": "run_command", "result": "\u2705 $ git status --short\n?? .nexusai/\n?? main.go\n", "success": true}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git diff check
+COMMAND_JSON: ["git", "diff", "--check"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---

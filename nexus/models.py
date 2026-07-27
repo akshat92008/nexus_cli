@@ -1,5 +1,5 @@
 """
-Model registry — all top-tier models available on NVIDIA's free API catalog.
+Model registry — hosted NVIDIA models plus local Nova backends.
 """
 
 MODELS = {
@@ -84,6 +84,20 @@ MODELS = {
         "description": "Meta's highly capable 70B instruction-tuned model",
         "supports_tools": True,
     },
+    "nova3b": {
+        "id": "local/nova3b",
+        "name": "Nova Codex (Nova 3B v11)",
+        "category": "local",
+        "context": 32768,
+        "description": (
+            "Nova Codex (Nova 3B v11) — handles well-specified subtasks fast and free, locally. "
+            "Guardrails validate paths, literal constraints, relevance, and disk-safe "
+            "patching; failures are corrected once or escalated rather than silently applied."
+        ),
+        "supports_tools": True,
+        "backend": "nova",
+        "ollama_model": "nova_codex",
+    },
 }
 
 # Aliases for convenience
@@ -109,23 +123,35 @@ ALIASES = {
     "nemotron": "nemotron-super",
     "code": "codestral",
     "codestral": "codestral",
+    "nova": "nova3b",
+    "nova-3b": "nova3b",
+    "nova3b": "nova3b",
+    "nova345": "nova3b",
+    "nova3b11": "nova3b",
+    "nova_codex": "nova3b",
+    "local": "nova3b",
 }
 
-DEFAULT_MODEL = "deepseek-v4"
+DEFAULT_MODEL = "glm-5.2"
+
+
+def resolve_model_key(name: str) -> str | None:
+    """Resolve a model name or alias to its canonical registry key."""
+    if not name:
+        return DEFAULT_MODEL
+    key = ALIASES.get(name.lower().strip(), name.lower().strip())
+    if key in MODELS:
+        return key
+    for k, cfg in MODELS.items():
+        if name.lower() in k or name.lower() in cfg["name"].lower():
+            return k
+    return None
 
 
 def resolve_model(name: str) -> dict | None:
     """Resolve a model name or alias to its config dict."""
-    if not name:
-        return MODELS[DEFAULT_MODEL]
-    key = ALIASES.get(name.lower().strip(), name.lower().strip())
-    if key in MODELS:
-        return MODELS[key]
-    # Fuzzy match
-    for k, cfg in MODELS.items():
-        if name.lower() in k or name.lower() in cfg["name"].lower():
-            return cfg
-    return None
+    key = resolve_model_key(name)
+    return MODELS[key] if key else None
 
 
 def list_models() -> list[dict]:
@@ -134,4 +160,3 @@ def list_models() -> list[dict]:
     for key, cfg in sorted(MODELS.items(), key=lambda x: (x[1]["category"], x[0])):
         results.append({"key": key, **cfg})
     return results
-

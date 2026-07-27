@@ -46,7 +46,7 @@ def print_banner():
     console.print(banner)
     console.print(
         f"  [bold {CYAN}]✦ NEXUS AI ✦[/] [dim]—[/] [bold {WHITE}]The Autonomous Coding Agent Operating System[/]\n"
-        f"  [dim]🤖 Free NVIDIA API Catalog • 🔧 20 Developer Tools • 💾 Session Memory • ⚡ Auto-Verification[/]",
+        f"  [dim]🤖 Ceiling NVIDIA Planner + Nova Intern • 🔧 20 Developer Tools • 💾 Session Memory • ⚡ Guarded Execution[/]",
         justify="center",
     )
     console.print()
@@ -87,16 +87,23 @@ def print_help():
 
     commands = [
         ("/help", "Show this command helper menu"),
-        ("/models", "List all available AI models in the catalog"),
-        ("/model <name>", "Switch the active AI model (e.g. /model kimi-k3)"),
-        ("/tools", "List all 20 built-in developer tools"),
+        ("/models", "List available Ceiling models and the local Nova Intern option"),
+        ("/model <name>", "Switch the active Ceiling model (e.g. /model kimi; /model nova_codex for local-only Nova)"),
+        ("/tools", "List all 22 built-in developer tools"),
         ("/clear", "Clear session conversation history"),
         ("/reset", "Reset the conversation session and clear terminal"),
         ("/project", "Print structural tree of the working directory"),
         ("/git", "Check the repository Git status"),
-        ("/undo", "Revert the last file modification"),
+        ("/undo [N]", "Revert the last N file operations"),
+        ("/rewind [N]", "Rewind file state by N tracked operations"),
         ("/diff", "View the unified diff of the last change"),
         ("/changes", "Summary list of all files changed in session"),
+        ("/pending", "List file diffs awaiting approval"),
+        ("/apply <id>", "Apply an exact pending file diff"),
+        ("/reject <id>", "Reject a pending file diff without changing disk"),
+        ("/edit-pending <id> <file>", "Replace pending content from a reviewed local file"),
+        ("/confirm <id>", "Explicitly execute the exact pending dangerous operation"),
+        ("/cancel <id>", "Cancel a pending dangerous operation without executing it"),
         ("/history", "Browse saved local conversation logs"),
         ("/resume <id>", "Load and resume a previous conversation"),
         ("/compact", "Compress history context length to save tokens"),
@@ -107,7 +114,13 @@ def print_help():
         ("/skills", "Show active functional automation skills"),
         ("/hooks", "List active workspace lifecycle hooks"),
         ("/subagent <temp> <task>", "Spawn a specialized agent to run isolated work"),
-        ("/verify", "Run workspace automated lint/test/build checks"),
+        ("/verify [N]", "Re-read artifacts for the last N evidence-backed claims"),
+        ("/verify project", "Run real workspace lint/test/build commands"),
+        ("/permissions <mode>", "Set default, acceptEdits, or read-only plan mode"),
+        ("/trust [approve|reject] <path>", "Review and approve an exact config digest"),
+        ("/init", "Create a project NEXUS.md instructions file"),
+        ("/context", "Show architecture and active context summaries"),
+        ("/plan", "Enter read-only plan mode"),
         ("/mcp", "List connected Model Context Protocol servers"),
         ("/plugins", "List loaded plugins and extensions"),
         ("/rules", "Display project instructions loaded from NEXUS.md"),
@@ -116,6 +129,12 @@ def print_help():
     for cmd, desc in commands:
         table.add_row(cmd, desc)
     console.print(table)
+    console.print(
+        "The Ceiling model plans and handles complex or ambiguous work. Nova 3B handles "
+        "well-specified subtasks fast and free, locally. A guardrail layer automatically "
+        "catches and either corrects or escalates Nova's known failure modes.",
+        style=DIM,
+    )
     console.print()
 
 
@@ -177,7 +196,7 @@ def print_models_table():
         header_style=f"bold {CYAN}",
         border_style=DIM,
         box=box.SIMPLE_HEAD,
-        title=f"[bold {GOLD}]✦ Available Models — NVIDIA API Catalog[/]",
+        title=f"[bold {GOLD}]✦ Available Models — Hosted + Local Catalog[/]",
     )
     table.add_column("Key", style=f"bold {PURPLE}", min_width=16)
     table.add_column("Model Name", style=f"bold {WHITE}")
@@ -190,6 +209,7 @@ def print_models_table():
         "reasoning": MAGENTA,
         "coding": GREEN,
         "general": CYAN,
+        "local": ORANGE,
     }
 
     for m in list_models():

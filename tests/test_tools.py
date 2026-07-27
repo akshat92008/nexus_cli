@@ -1,5 +1,5 @@
 """
-Smoke tests for NexusAI tools — verifies all 20 tools execute without crashing.
+Smoke tests for NexusAI tools — verifies all 22 tools execute without crashing.
 """
 import os
 import sys
@@ -20,7 +20,19 @@ def test_all_tools_have_definitions():
     missing_dispatch = definition_names - dispatch_names
     assert not missing_defs, f"Tools without definitions: {missing_defs}"
     assert not missing_dispatch, f"Definitions without dispatch: {missing_dispatch}"
-    assert len(TOOL_DEFINITIONS) == 20, f"Expected 20 tools, got {len(TOOL_DEFINITIONS)}"
+    assert len(TOOL_DEFINITIONS) == 22, f"Expected 22 tools, got {len(TOOL_DEFINITIONS)}"
+
+
+def test_process_status_rejects_unmanaged_pid():
+    result = execute_tool("process_status", {"pid": 99999999})
+    assert result.startswith("❌")
+    assert "not a Nexus-managed" in result
+
+
+def test_process_stop_rejects_unmanaged_pid():
+    result = execute_tool("process_stop", {"pid": 99999999})
+    assert result.startswith("❌")
+    assert "not a Nexus-managed" in result
 
 
 def test_read_file():
@@ -64,6 +76,24 @@ def test_edit_file():
         assert "modified content here" in Path(tmp_path).read_text()
     finally:
         Path(tmp_path).unlink(missing_ok=True)
+
+
+def test_edit_file_doc_envelope_fallback():
+    """edit_file should fall back to replacing full document content when old_text is an HTML envelope."""
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as f:
+        f.write("<!DOCTYPE html>\n<html><head></head><body><h1>Old</h1></body></html>")
+        tmp_path = f.name
+    try:
+        result = execute_tool("edit_file", {
+            "path": tmp_path,
+            "old_text": "<!DOCTYPE html>\n<html><head></head><body><h1>Different Spacing</h1></body></html>",
+            "new_text": "<!DOCTYPE html>\n<html><head><style>body{color:red;}</style></head><body><h1>New</h1></body></html>",
+        })
+        assert "✅" in result
+        assert "New" in Path(tmp_path).read_text()
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
 
 
 def test_edit_file_not_found():

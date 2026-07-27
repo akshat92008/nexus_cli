@@ -1,0 +1,208 @@
+{
+  "created_at": "2026-07-26T20:26:26.878692+00:00",
+  "repository": "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent",
+  "workspace_root": "/private/tmp/nexus-release-e2e-20260726T193518Z",
+  "python": "3.14.5 (main, May 10 2026, 10:21:34) [Clang 21.0.0 (clang-2100.0.123.102)]",
+  "scenarios": [
+    {
+      "name": "02_python_surgical_bugfix",
+      "passed": true,
+      "workspace": "/private/tmp/nexus-release-e2e-20260726T193518Z/02_python_surgical_bugfix",
+      "transcript": "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/verification_evidence/20260726T193518Z/raw/02_python_surgical_bugfix.log",
+      "steps": [
+        {
+          "label": "git init",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity email",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity name",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git add baseline",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git baseline commit",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus CLI",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "behavior assertions",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus git status",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git diff check",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "03_go_executable",
+      "passed": true,
+      "workspace": "/private/tmp/nexus-release-e2e-20260726T193518Z/03_go_executable",
+      "transcript": "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/verification_evidence/20260726T193518Z/raw/03_go_executable.log",
+      "steps": [
+        {
+          "label": "git init",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity email",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity name",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git add baseline",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git baseline commit",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus CLI",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "go compiler",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "go behavior",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus git status",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git diff check",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "05_javascript_recursive_lister",
+      "passed": false,
+      "workspace": "/private/tmp/nexus-release-e2e-20260726T193518Z/05_javascript_recursive_lister",
+      "transcript": "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/verification_evidence/20260726T193518Z/raw/05_javascript_recursive_lister.log",
+      "steps": [
+        {
+          "label": "git init",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity email",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity name",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git add baseline",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git baseline commit",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus CLI",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "JavaScript syntax",
+          "returncode": 1,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "recursive listing behavior",
+          "returncode": 1,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "Nexus git status",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git diff check",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "passed": 2,
+  "failed": 1
+}

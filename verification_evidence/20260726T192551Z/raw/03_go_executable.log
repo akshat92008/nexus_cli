@@ -1,0 +1,165 @@
+SCENARIO: 03_go_executable
+WORKSPACE: /private/tmp/nexus-release-e2e-20260726T192551Z/03_go_executable
+PROMPT: Create exactly main.go as a standalone Go executable. It must parse two integer command-line arguments, print their sum followed by a newline, report invalid input to stderr, and exit nonzero. Include package main and func main().
+
+========================================================================================
+STEP: git init
+COMMAND_JSON: ["git", "init"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+Initialized empty Git repository in /private/tmp/nexus-release-e2e-20260726T192551Z/03_go_executable/.git/
+
+--- STDERR (complete) ---
+hint: Using 'master' as the name for the initial branch. This default branch name
+hint: will change to "main" in Git 3.0. To configure the initial branch name
+hint: to use in all of your new repositories, which will suppress this warning,
+hint: call:
+hint:
+hint: 	git config --global init.defaultBranch <name>
+hint:
+hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+hint: 'development'. The just-created branch can be renamed via this command:
+hint:
+hint: 	git branch -m <name>
+hint:
+hint: Disable this message with "git config set advice.defaultBranchName false"
+
+--- END STEP ---
+
+========================================================================================
+STEP: git identity email
+COMMAND_JSON: ["git", "config", "user.email", "nexus-e2e@example.invalid"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git identity name
+COMMAND_JSON: ["git", "config", "user.name", "Nexus E2E"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git add baseline
+COMMAND_JSON: ["git", "add", "."]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git baseline commit
+COMMAND_JSON: ["git", "commit", "--allow-empty", "-m", "baseline"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+[master (root-commit) cb1c697] baseline
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus CLI
+COMMAND_JSON: ["/opt/homebrew/opt/python@3.14/bin/python3.14", "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/run.py", "--model", "nova_codex", "--working-dir", "/private/tmp/nexus-release-e2e-20260726T192551Z/03_go_executable", "--permission-mode", "acceptEdits", "--max-turns", "8", "--output-format", "json", "Create exactly main.go as a standalone Go executable. It must parse two integer command-line arguments, print their sum followed by a newline, report invalid input to stderr, and exit nonzero. Include package main and func main()."]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"result": "Nova guardrails rejected the output before Nexus tools ran:\nGenerated code has unbalanced delimiters after regeneration.", "events": [{"type": "model_trace", "node": "nova", "raw_output": "<<THINKING>>\nCreating main.go for a Go executable that parses two integer command-line arguments and prints their sum.\n<<FILES>>\n```go\n// filepath: main.go\n// action: MODIFY\n<<<<<<<\npackage main\n\nimport (\n\t\"fmt\"\n)\n\nfunc main() {\n\tfmt.Println(\"Hello, world!\")\n}\n=======\npackage main\n\nimport (\n\t\"flag\"\n\t\"fmt\"\n)\n\nfunc main() {\n\ta := flag.Int(\"a\", 0, \"first integer\")\n\tb := flag.Int(\"b\", 0, \"second integer\")\n\n\tflag.Parse()\n\n\tif *a == 0 || *b == 0 {\n\t\tfmt.Fprintf(flag.CommandLine.Output(), \"invalid input\\n\")\n\t\treturn\n\t}\n\n\tsum := *a + *b\n\n\tfmt.Println(sum)\n>>>>>>>\n```", "guardrail_output": "\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n  \ud83d\ude80 AMAURA Pipeline \u2014 Starting Execution\n\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n  Request: Create exactly main.go as a standalone Go executable. It must parse two integer ...\n\n\ud83e\udde0 [Ceiling] Decomposing request...\n   \u2192 1 atomic task(s)\n   [1] Create exactly main.go as a standalone Go executable. It must parse tw...\n\n\u26a1 [Intern] Executing task 1...\n   Scope: atomic | Expected files: 1\n   \ud83d\udee1\ufe0f  GUARDRAIL FAILED: Format errors: ['Generated code has unbalanced delimiters after regeneration.']\n   \ud83d\udd04 Retrying (1/1)...\n   \ud83d\udee1\ufe0f  GUARDRAIL FAILED: Format errors: ['Generated code has unbalanced delimiters after regeneration.']\n   \u274c Failed after 1 retries. Escalating.\n   \u274c Format errors: ['Generated code has unbalanced delimiters after regeneration.']\n\n\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n  AMAURA \u2014 Pipeline Execution Summary\n\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n  Request: Create exactly main.go as a standalone Go executable. It must parse two integer ...\n  Tasks: 1\n  Completed: 1\n  Format compliance: 0%\n  Total time: 32353ms\n  Ceiling tokens: 0\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  \u274c Task 1: Create exactly main.go as a standalone Go executab...\n     Files: main.go\n\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550"}], "session_id": "20260727_005615_413998"}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: go compiler
+COMMAND_JSON: ["go", "test", "main.go"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 1
+TIMED_OUT: False
+STEP_VERDICT: FAIL
+--- STDOUT (complete) ---
+FAIL	main.go [setup failed]
+FAIL
+
+--- STDERR (complete) ---
+# main.go
+no required module provides package main.go: go.mod file not found in current directory or any parent directory; see 'go help modules'
+
+--- END STEP ---
+
+========================================================================================
+STEP: go behavior
+COMMAND_JSON: ["go", "run", "main.go", "4", "5"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: "9\n"
+ACTUAL_RETURNCODE: 1
+TIMED_OUT: False
+STEP_VERDICT: FAIL
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+stat main.go: no such file or directory
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus git status
+COMMAND_JSON: ["/opt/homebrew/opt/python@3.14/bin/python3.14", "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/run.py", "--model", "nova_codex", "--working-dir", "/private/tmp/nexus-release-e2e-20260726T192551Z/03_go_executable", "--permission-mode", "acceptEdits", "--max-turns", "8", "--output-format", "json", "!git status --short"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"type": "tool_call", "name": "run_command", "result": "\u2705 $ git status --short\n?? guardrail_events.jsonl\n", "success": true}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git diff check
+COMMAND_JSON: ["git", "diff", "--check"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---

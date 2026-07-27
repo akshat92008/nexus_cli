@@ -11,10 +11,11 @@ import difflib
 import shutil
 from datetime import datetime
 from pathlib import Path
+from nexus.paths import nexus_home
 from typing import Optional
 
 
-HISTORY_DIR = Path.home() / ".nexusai" / "history"
+HISTORY_DIR = nexus_home() / "history"
 
 
 class FileHistory:
@@ -22,8 +23,11 @@ class FileHistory:
 
     def __init__(self, session_id: str | None = None):
         self.session_id = session_id or datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.session_dir = HISTORY_DIR / self.session_id
-        self.session_dir.mkdir(parents=True, exist_ok=True)
+        self.session_dir = nexus_home() / "history" / self.session_id
+        try:
+            self.session_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
         self.changes: list[dict] = []
         self._load_changes()
 
@@ -126,6 +130,34 @@ class FileHistory:
             self.changes.pop()
             self._save_changes()
             return False, "Snapshot not available — change record removed but file not restored."
+
+    def undo_changes(self, count: int = 1) -> tuple[bool, str]:
+        """Undo up to *count* operations, newest first, with a complete result list."""
+        try:
+            count = max(1, int(count))
+        except (TypeError, ValueError):
+            return False, "Undo count must be a positive integer."
+        messages = []
+        all_ok = True
+        for _ in range(min(count, len(self.changes))):
+            ok, message = self.undo_last_change()
+            all_ok = all_ok and ok
+            messages.append(message)
+        if not messages:
+            return False, "No changes to undo."
+        return all_ok, f"Undid {len(messages)} operation(s):\n" + "\n".join(f"  {m}" for m in messages)
+
+    def get_recent_diffs(self, count: int = 10) -> str:
+        """Render diffs for the most recent operations without changing history."""
+        if not self.changes:
+            return "No file changes in this session."
+        original = self.changes
+        rendered = []
+        for change in original[-max(1, count):]:
+            self.changes = [change]
+            rendered.append(self.get_last_diff() or "(diff unavailable)")
+        self.changes = original
+        return "\n\n".join(rendered)
 
     def get_last_diff(self) -> str | None:
         """

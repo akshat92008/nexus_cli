@@ -79,13 +79,9 @@ class VerificationReport:
         lines.append("")
         for check in self.checks:
             lines.append(f"  {check.format_result()}")
-            if check.status == CheckStatus.FAILED and check.output:
-                # Show first few lines of error output
-                error_lines = check.output.strip().split("\n")[:5]
-                for el in error_lines:
-                    lines.append(f"    │ {el}")
-                if len(check.output.strip().split("\n")) > 5:
-                    lines.append(f"    │ ... ({len(check.output.strip().split(chr(10)))} total lines)")
+            if check.output:
+                for output_line in check.output.splitlines():
+                    lines.append(f"    │ {output_line}")
 
         passed = sum(1 for c in self.checks if c.passed)
         total = len(self.checks)
@@ -105,14 +101,14 @@ _DEFAULT_COMMANDS: dict[str, dict[str, str]] = {
         "format": "ruff format --check .",
     },
     "javascript": {
-        "test": "npm test -- --passWithNoTests 2>/dev/null || npx jest --passWithNoTests 2>/dev/null || true",
-        "lint": "npx eslint . --no-error-on-unmatched-pattern 2>/dev/null || true",
-        "type_check": "npx tsc --noEmit 2>/dev/null || true",
-        "build": "npm run build 2>/dev/null || true",
+        "test": "npm test",
+        "lint": "npx eslint . --no-error-on-unmatched-pattern",
+        "type_check": "npx tsc --noEmit",
+        "build": "npm run build",
     },
     "typescript": {
-        "test": "npm test -- --passWithNoTests 2>/dev/null || npx jest --passWithNoTests 2>/dev/null || true",
-        "lint": "npx eslint . --no-error-on-unmatched-pattern 2>/dev/null || true",
+        "test": "npm test",
+        "lint": "npx eslint . --no-error-on-unmatched-pattern",
         "type_check": "npx tsc --noEmit",
         "build": "npm run build",
     },
@@ -129,16 +125,16 @@ _DEFAULT_COMMANDS: dict[str, dict[str, str]] = {
         "format": "gofmt -l .",
     },
     "java": {
-        "test": "mvn test -q 2>/dev/null || gradle test --quiet 2>/dev/null || true",
-        "build": "mvn compile -q 2>/dev/null || gradle build --quiet 2>/dev/null || true",
+        "test": "mvn test -q",
+        "build": "mvn compile -q",
     },
     "ruby": {
-        "test": "bundle exec rspec --no-color 2>/dev/null || bundle exec rake test 2>/dev/null || true",
-        "lint": "bundle exec rubocop --no-color 2>/dev/null || true",
+        "test": "bundle exec rspec --no-color",
+        "lint": "bundle exec rubocop --no-color",
     },
     "php": {
-        "test": "php artisan test 2>/dev/null || vendor/bin/phpunit 2>/dev/null || true",
-        "lint": "vendor/bin/phpstan analyse 2>/dev/null || true",
+        "test": "vendor/bin/phpunit",
+        "lint": "vendor/bin/phpstan analyse",
     },
     "dart": {
         "test": "dart test",
@@ -191,7 +187,7 @@ class VerificationEngine:
             if result.status != CheckStatus.NOT_APPLICABLE:
                 report.checks.append(result)
 
-        report.all_passed = all(
+        report.all_passed = bool(report.checks) and all(
             c.passed or c.status == CheckStatus.SKIPPED
             for c in report.checks
         )
@@ -279,13 +275,30 @@ class VerificationEngine:
             root = Path(self.working_dir)
             if not self._command_exists("ruff"):
                 if "lint" in resolved and "ruff" in resolved["lint"]:
-                    resolved["lint"] = "python -m flake8 . 2>/dev/null || true"
+                    if self._python_module_exists("flake8"):
+                        resolved["lint"] = "python -m flake8 ."
+                    else:
+                        resolved.pop("lint", None)
                 if "format" in resolved and "ruff" in resolved["format"]:
                     resolved.pop("format", None)
             if not self._command_exists("mypy"):
                 resolved.pop("type_check", None)
 
         return resolved
+
+    def _python_module_exists(self, module: str) -> bool:
+        """Check a Python module without importing it or masking failures."""
+        try:
+            result = subprocess.run(
+                [os.environ.get("PYTHON", "python3"), "-c", f"import importlib.util; raise SystemExit(importlib.util.find_spec('{module}') is None)"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=self.working_dir,
+            )
+            return result.returncode == 0
+        except (subprocess.TimeoutExpired, OSError):
+            return False
 
     def _command_exists(self, cmd: str) -> bool:
         """Check if a command is available."""
@@ -318,10 +331,6 @@ class VerificationEngine:
             output = result.stdout
             if result.stderr:
                 output += "\n" + result.stderr
-
-            # Truncate very long output
-            if len(output) > 10000:
-                output = output[:5000] + "\n...(truncated)...\n" + output[-5000:]
 
             status = CheckStatus.PASSED if result.returncode == 0 else CheckStatus.FAILED
 

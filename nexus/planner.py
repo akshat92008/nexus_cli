@@ -15,6 +15,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from nexus.paths import nexus_home
 from typing import Optional
 
 
@@ -366,7 +367,7 @@ def detect_skills_needed(user_input: str) -> list[str]:
 
 # ── Planning Engine ──────────────────────────────────────────────────────────
 
-PLANS_DIR = Path.home() / ".nexusai" / "plans"
+PLANS_DIR = nexus_home() / "plans"
 
 
 class PlanningEngine:

@@ -1,0 +1,176 @@
+SCENARIO: 04_cpp_dfs
+WORKSPACE: /private/tmp/nexus-release-e2e-20260727T023624Z/04_cpp_dfs
+PROMPT: Create exactly graph_dfs.cpp as a complete C++17 executable. Build the directed graph 0->{1,2}, 1->{3}; run recursive depth-first traversal from 0; print exactly '0 1 3 2' and a newline. Include all required standard headers and int main().
+
+========================================================================================
+STEP: git init
+COMMAND_JSON: ["git", "init"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+Initialized empty Git repository in /private/tmp/nexus-release-e2e-20260727T023624Z/04_cpp_dfs/.git/
+
+--- STDERR (complete) ---
+hint: Using 'master' as the name for the initial branch. This default branch name
+hint: will change to "main" in Git 3.0. To configure the initial branch name
+hint: to use in all of your new repositories, which will suppress this warning,
+hint: call:
+hint:
+hint: 	git config --global init.defaultBranch <name>
+hint:
+hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+hint: 'development'. The just-created branch can be renamed via this command:
+hint:
+hint: 	git branch -m <name>
+hint:
+hint: Disable this message with "git config set advice.defaultBranchName false"
+
+--- END STEP ---
+
+========================================================================================
+STEP: git identity email
+COMMAND_JSON: ["git", "config", "user.email", "nexus-e2e@example.invalid"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git identity name
+COMMAND_JSON: ["git", "config", "user.name", "Nexus E2E"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git add baseline
+COMMAND_JSON: ["git", "add", "."]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git baseline commit
+COMMAND_JSON: ["git", "commit", "--allow-empty", "-m", "baseline"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+[master (root-commit) cd338b2] baseline
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus CLI
+COMMAND_JSON: ["/opt/homebrew/opt/python@3.14/bin/python3.14", "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/run.py", "--model", "kimi", "--working-dir", "/private/tmp/nexus-release-e2e-20260727T023624Z/04_cpp_dfs", "--permission-mode", "acceptEdits", "--max-turns", "8", "--output-format", "json", "Create exactly graph_dfs.cpp as a complete C++17 executable. Build the directed graph 0->{1,2}, 1->{3}; run recursive depth-first traversal from 0; print exactly '0 1 3 2' and a newline. Include all required standard headers and int main()."]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"result": "\u26a0\ufe0f UNVERIFIED TEST CLAIM: no real passing test/build command was recorded this turn.\n\nTwo-node execution breakdown\nCeiling: Kimi K2.6\nIntern: nova_codex\n\nDecomposition:\n  [1] scope=atomic expected_files=1 deps=[] :: Create graph_dfs.cpp with a complete C++17 executable containing a directed graph (0->{1,2}, 1->{3}), a recursive depth-first traversal function, and a main() function that prints '0 1 3 2\\n'\n\nExecution:\n  [1] node=Nova attempts=1 verdict=VALIDATED\n      route: atomic, explicit, single-file task within Nova's guarded capability\n      [GUARDRAIL \u2705 PASS] task=1 scope=atomic files=0/1\n      VALIDATED attempt=1: schema, constraints, disk replay, and compiler checks passed\n      raw:\n        <<THINKING>>\n        Creating graph_dfs.cpp with a directed graph, DFS function, and main().\n        \n        <<FILES>>\n        ```cpp\n        // filepath: graph_dfs.cpp\n        // action: CREATE\n        #include <iostream>\n        using namespace std;\n        \n        vector<int> adj[10];\n        bool visited[10];\n        \n        void dfs(int node) {\n            if (visited[node]) return;\n            visited[node] = true;\n            cout << node << ' ';\n            for (int i : adj[node]) dfs(i);\n        }\n        \n        int main() {\n            adj[0].push_back(1); adj[0].push_back(2);\n            adj[1].push_back(3);\n            dfs(0);\n            return 0;\n        }\n        ```", "events": [{"type": "tool_call", "name": "write_file", "args": {"path": "graph_dfs.cpp", "content": "#include <iostream>\nusing namespace std;\n\nvector<int> adj[10];\nbool visited[10];\n\nvoid dfs(int node) {\n    if (visited[node]) return;\n    visited[node] = true;\n    cout << node << ' ';\n    for (int i : adj[node]) dfs(i);\n}\n\nint main() {\n    adj[0].push_back(1); adj[0].push_back(2);\n    adj[1].push_back(3);\n    dfs(0);\n    return 0;\n}"}, "result": "\u2705 Wrote 19 lines to /private/tmp/nexus-release-e2e-20260727T023624Z/04_cpp_dfs/graph_dfs.cpp\n\ud83d\udd0e VERIFIED: exact content matched\nEvidence: /private/tmp/nexus-home/.nexusai/evidence/20260727_080641_220428.jsonl", "success": true, "node": "two-node", "guardrail": "[GUARDRAIL \u2705 PASS] task=1 scope=atomic files=0/1\nVALIDATED attempt=1: schema, constraints, disk replay, and compiler checks passed"}], "session_id": "20260727_080641_220428"}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus evidence trail
+COMMAND_JSON: ["cat", "/private/tmp/nexus-home/.nexusai/evidence/20260727_080641_220428.jsonl"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"id": "ev-000001", "timestamp_utc": "2026-07-27T02:36:55.463280+00:00", "session_id": "20260727_080641_220428", "kind": "file_mutation", "claim": "write_file persisted the requested change", "status": "verified", "tool": "write_file", "command": "", "exit_code": null, "artifacts": [{"path": "/private/tmp/nexus-release-e2e-20260727T023624Z/04_cpp_dfs/graph_dfs.cpp", "exists": true, "sha256": "6517dd0e0c43ffcef5e4586958354fef07152c83cb778a6df1fcc72f04c63207", "size": 335}], "raw_output": "✅ Wrote 19 lines to /private/tmp/nexus-release-e2e-20260727T023624Z/04_cpp_dfs/graph_dfs.cpp", "metadata": {"verification": "exact content matched"}}
+{"id": "ev-000002", "timestamp_utc": "2026-07-27T02:36:55.463784+00:00", "session_id": "20260727_080641_220428", "kind": "routing", "claim": "subtask 1 routed to Nova", "status": "verified", "tool": "", "command": "", "exit_code": null, "artifacts": [], "raw_output": "[GUARDRAIL ✅ PASS] task=1 scope=atomic files=0/1\nVALIDATED attempt=1: schema, constraints, disk replay, and compiler checks passed\n\n[RAW MODEL OUTPUT]\n<<THINKING>>\nCreating graph_dfs.cpp with a directed graph, DFS function, and main().\n\n<<FILES>>\n```cpp\n// filepath: graph_dfs.cpp\n// action: CREATE\n#include <iostream>\nusing namespace std;\n\nvector<int> adj[10];\nbool visited[10];\n\nvoid dfs(int node) {\n    if (visited[node]) return;\n    visited[node] = true;\n    cout << node << ' ';\n    for (int i : adj[node]) dfs(i);\n}\n\nint main() {\n    adj[0].push_back(1); adj[0].push_back(2);\n    adj[1].push_back(3);\n    dfs(0);\n    return 0;\n}\n```", "metadata": {"reason": "atomic, explicit, single-file task within Nova's guarded capability", "attempts": 1, "verdict": "VALIDATED", "escalated": false}}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: C++ compiler
+COMMAND_JSON: ["g++", "-std=c++17", "graph_dfs.cpp", "-o", "graph_dfs"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: C++ behavior
+COMMAND_JSON: ["./graph_dfs"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: "0 1 3 2\n"
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: FAIL
+--- STDOUT (complete) ---
+0 1 3 2 
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus git status
+COMMAND_JSON: ["/opt/homebrew/opt/python@3.14/bin/python3.14", "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/run.py", "--model", "nova_codex", "--working-dir", "/private/tmp/nexus-release-e2e-20260727T023624Z/04_cpp_dfs", "--permission-mode", "acceptEdits", "--max-turns", "8", "--output-format", "json", "!git status --short"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"type": "tool_call", "name": "run_command", "result": "\u2705 $ git status --short\n?? graph_dfs\n?? graph_dfs.cpp\n", "success": true}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git diff check
+COMMAND_JSON: ["git", "diff", "--check"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---

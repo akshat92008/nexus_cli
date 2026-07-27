@@ -1,1 +1,1 @@
-# NexusAI — NVIDIA-Powered Coding Agent
+# NexusAI — Hosted + Local Coding Agent

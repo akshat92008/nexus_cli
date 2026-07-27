@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from nexus.models import MODELS, ALIASES, resolve_model, DEFAULT_MODEL, list_models
+from nexus.models import MODELS, ALIASES, resolve_model, resolve_model_key, DEFAULT_MODEL, list_models
 
 
 def test_models_registry():
@@ -40,6 +40,16 @@ def test_resolve_model_alias():
     cfg = resolve_model("ds")
     assert cfg is not None
     assert cfg["name"] == "DeepSeek V4 Pro"
+
+    cfg = resolve_model("nova")
+    assert cfg is not None
+    assert cfg["name"] == "Nova Codex (Nova 3B v11)"
+    assert cfg["backend"] == "nova"
+    assert resolve_model_key("nova-3b") == "nova3b"
+    assert resolve_model_key("nova345") == "nova3b"
+    assert resolve_model_key("nova3b11") == "nova3b"
+    assert resolve_model_key("nova_codex") == "nova3b"
+    assert cfg["ollama_model"] == "nova_codex"
 
 
 def test_resolve_model_unknown():

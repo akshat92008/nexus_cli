@@ -1,0 +1,146 @@
+SCENARIO: 06_registry_checked_package_json
+WORKSPACE: /private/tmp/nexus-release-e2e-20260727T021905Z/06_registry_checked_package_json
+PROMPT: Create exactly package.json as valid JSON with name 'nexus-e2e', version '1.0.0', private true, and exactly one runtime dependency: lodash at version '^4.17.21'.
+
+========================================================================================
+STEP: git init
+COMMAND_JSON: ["git", "init"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+Initialized empty Git repository in /private/tmp/nexus-release-e2e-20260727T021905Z/06_registry_checked_package_json/.git/
+
+--- STDERR (complete) ---
+hint: Using 'master' as the name for the initial branch. This default branch name
+hint: will change to "main" in Git 3.0. To configure the initial branch name
+hint: to use in all of your new repositories, which will suppress this warning,
+hint: call:
+hint:
+hint: 	git config --global init.defaultBranch <name>
+hint:
+hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+hint: 'development'. The just-created branch can be renamed via this command:
+hint:
+hint: 	git branch -m <name>
+hint:
+hint: Disable this message with "git config set advice.defaultBranchName false"
+
+--- END STEP ---
+
+========================================================================================
+STEP: git identity email
+COMMAND_JSON: ["git", "config", "user.email", "nexus-e2e@example.invalid"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git identity name
+COMMAND_JSON: ["git", "config", "user.name", "Nexus E2E"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git add baseline
+COMMAND_JSON: ["git", "add", "."]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git baseline commit
+COMMAND_JSON: ["git", "commit", "--allow-empty", "-m", "baseline"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+[master (root-commit) 16019c1] baseline
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus CLI
+COMMAND_JSON: ["/opt/homebrew/opt/python@3.14/bin/python3.14", "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/run.py", "--model", "nova_codex", "--working-dir", "/private/tmp/nexus-release-e2e-20260727T021905Z/06_registry_checked_package_json", "--permission-mode", "acceptEdits", "--max-turns", "8", "--output-format", "json", "Create exactly package.json as valid JSON with name 'nexus-e2e', version '1.0.0', private true, and exactly one runtime dependency: lodash at version '^4.17.21'."]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"result": "Nova guardrails passed; prepared 1 Nexus tool call(s).", "events": [{"type": "model_trace", "node": "nova", "raw_output": "<<THINKING>>\nCreating new package.json file.\n<<FILES>>\n```json\n# filepath: package.json\n# action: CREATE\n{\n  \"name\": \"nexus-e2e\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"dependencies\": {\n    \"lodash\": \"^4.17.21\"\n  }\n}\n```\n(TEST_COMMAND)", "guardrail_output": "\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n  \ud83d\ude80 AMAURA Pipeline \u2014 Starting Execution\n\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n  Request: Create exactly package.json as valid JSON with name 'nexus-e2e', version '1.0.0'...\n\n\ud83e\udde0 [Ceiling] Decomposing request...\n   \u2192 1 atomic task(s)\n   [1] Create exactly package.json as valid JSON with name 'nexus-e2e', versi...\n\n\u26a1 [Intern] Executing task 1...\n   Scope: atomic | Expected files: 1\n   \ud83d\udee1\ufe0f  GUARDRAIL FAILED: Format errors: ['Missing # filepath: in code block']\n   \ud83d\udd04 Retrying (1/1)...\n   \u26a0\ufe0f UNTESTED | Files: package.json | 2979ms\n\n\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n  AMAURA \u2014 Pipeline Execution Summary\n\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n  Request: Create exactly package.json as valid JSON with name 'nexus-e2e', version '1.0.0'...\n  Tasks: 1\n  Completed: 1\n  Format compliance: 100%\n  Total time: 8018ms\n  Ceiling tokens: 0\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n  \u2705 Task 1: Create exactly package.json as valid JSON with nam...\n     Files: package.json\n\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550"}, {"type": "tool_call", "name": "write_file", "args": {"path": "package.json", "content": "{\n  \"name\": \"nexus-e2e\",\n  \"version\": \"1.0.0\",\n  \"private\": true,\n  \"dependencies\": {\n    \"lodash\": \"^4.17.21\"\n  }\n}"}, "result": "\u2705 Wrote 8 lines to /private/tmp/nexus-release-e2e-20260727T021905Z/06_registry_checked_package_json/package.json\n\ud83d\udd0e VERIFIED: exact content matched\nEvidence: /private/tmp/nexus-home/.nexusai/evidence/20260727_075107_305621.jsonl", "success": true, "nova_guardrail": "\u26a1 [Intern] Executing task 1...\n\ud83d\udee1\ufe0f  GUARDRAIL FAILED: Format errors: ['Missing # filepath: in code block']\nPASS /private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus_nova_verify_18otz4rr/_nexus_clean_candidate/package.json [json.loads] exit=0\nJSON parse succeeded"}], "session_id": "20260727_075107_305621"}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: manifest assertions
+COMMAND_JSON: ["python3", "-c", "import json; d=json.load(open('package.json')); assert d['name']=='nexus-e2e'; assert d['version']=='1.0.0'; assert d['private'] is True; assert d['dependencies']=={'lodash':'^4.17.21'}"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus git status
+COMMAND_JSON: ["/opt/homebrew/opt/python@3.14/bin/python3.14", "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/run.py", "--model", "nova_codex", "--working-dir", "/private/tmp/nexus-release-e2e-20260727T021905Z/06_registry_checked_package_json", "--permission-mode", "acceptEdits", "--max-turns", "8", "--output-format", "json", "!git status --short"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"type": "tool_call", "name": "run_command", "result": "\u2705 $ git status --short\n?? guardrail_events.jsonl\n?? package.json\n", "success": true}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git diff check
+COMMAND_JSON: ["git", "diff", "--check"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---

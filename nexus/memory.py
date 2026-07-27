@@ -6,9 +6,10 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from nexus.paths import nexus_home
 from typing import Optional
 
-MEMORY_DIR = Path.home() / ".nexusai" / "conversations"
+MEMORY_DIR = nexus_home() / "conversations"
 
 
 class ConversationMemory:

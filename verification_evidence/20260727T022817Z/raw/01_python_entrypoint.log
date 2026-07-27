@@ -1,0 +1,163 @@
+SCENARIO: 01_python_entrypoint
+WORKSPACE: /private/tmp/nexus-release-e2e-20260727T022817Z/01_python_entrypoint
+PROMPT: Create exactly one file hello.py with a main function that prints exactly hello-nexus, and call main() under an if __name__ == '__main__' guard.
+
+========================================================================================
+STEP: git init
+COMMAND_JSON: ["git", "init"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+Initialized empty Git repository in /private/tmp/nexus-release-e2e-20260727T022817Z/01_python_entrypoint/.git/
+
+--- STDERR (complete) ---
+hint: Using 'master' as the name for the initial branch. This default branch name
+hint: will change to "main" in Git 3.0. To configure the initial branch name
+hint: to use in all of your new repositories, which will suppress this warning,
+hint: call:
+hint:
+hint: 	git config --global init.defaultBranch <name>
+hint:
+hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+hint: 'development'. The just-created branch can be renamed via this command:
+hint:
+hint: 	git branch -m <name>
+hint:
+hint: Disable this message with "git config set advice.defaultBranchName false"
+
+--- END STEP ---
+
+========================================================================================
+STEP: git identity email
+COMMAND_JSON: ["git", "config", "user.email", "nexus-e2e@example.invalid"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git identity name
+COMMAND_JSON: ["git", "config", "user.name", "Nexus E2E"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git add baseline
+COMMAND_JSON: ["git", "add", "."]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git baseline commit
+COMMAND_JSON: ["git", "commit", "--allow-empty", "-m", "baseline"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+[master (root-commit) 53cb7c1] baseline
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus CLI
+COMMAND_JSON: ["/opt/homebrew/opt/python@3.14/bin/python3.14", "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/run.py", "--model", "kimi", "--working-dir", "/private/tmp/nexus-release-e2e-20260727T022817Z/01_python_entrypoint", "--permission-mode", "acceptEdits", "--max-turns", "8", "--output-format", "json", "Create exactly one file hello.py with a main function that prints exactly hello-nexus, and call main() under an if __name__ == '__main__' guard."]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"result": "\u26a0\ufe0f UNVERIFIED TEST CLAIM: no real passing test/build command was recorded this turn.\n\nTwo-node execution breakdown\nCeiling: Kimi K2.6\nIntern: nova_codex\n\nDecomposition:\n  [1] scope=atomic expected_files=1 deps=[] :: CREATE src/hello.py with a main function that prints 'hello-nexus' and call main() under an if __name__ == '__main__' guard\n\nExecution:\n  [1] node=Nova attempts=1 verdict=VALIDATED\n      route: atomic, explicit, single-file task within Nova's guarded capability\n      [GUARDRAIL \u2705 PASS] task=1 scope=atomic files=0/1\n      CONSTRAINT string_output: hello-nexus\n      VALIDATED attempt=1: schema, constraints, disk replay, and compiler checks passed\n      raw:\n        <<THINKING>>\n        Creating src/hello.py with a main function to print 'hello-nexus'.\n        \n        <<FILES>>\n        ```python\n        # filepath: src/hello.py\n        # action: CREATE\n        def main():\n            print('hello-nexus')\n        if __name__ == '__main__':\n            main()\n        ```", "events": [{"type": "tool_call", "name": "write_file", "args": {"path": "src/hello.py", "content": "def main():\n    print('hello-nexus')\nif __name__ == '__main__':\n    main()"}, "result": "\u2705 Wrote 4 lines to /private/tmp/nexus-release-e2e-20260727T022817Z/01_python_entrypoint/src/hello.py\n\ud83d\udd0e VERIFIED: exact content matched\nEvidence: /private/tmp/nexus-home/.nexusai/evidence/20260727_075818_801945.jsonl", "success": true, "node": "two-node", "guardrail": "[GUARDRAIL \u2705 PASS] task=1 scope=atomic files=0/1\nCONSTRAINT string_output: hello-nexus\nVALIDATED attempt=1: schema, constraints, disk replay, and compiler checks passed"}], "session_id": "20260727_075818_801945"}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus evidence trail
+COMMAND_JSON: ["cat", "/private/tmp/nexus-home/.nexusai/evidence/20260727_075818_801945.jsonl"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"id": "ev-000001", "timestamp_utc": "2026-07-27T02:28:28.628057+00:00", "session_id": "20260727_075818_801945", "kind": "file_mutation", "claim": "write_file persisted the requested change", "status": "verified", "tool": "write_file", "command": "", "exit_code": null, "artifacts": [{"path": "/private/tmp/nexus-release-e2e-20260727T022817Z/01_python_entrypoint/src/hello.py", "exists": true, "sha256": "d723ef80c8eb132aa38fb332a4d7c72b21a0e850a257e6ee61b2384b19b305c6", "size": 74}], "raw_output": "✅ Wrote 4 lines to /private/tmp/nexus-release-e2e-20260727T022817Z/01_python_entrypoint/src/hello.py", "metadata": {"verification": "exact content matched"}}
+{"id": "ev-000002", "timestamp_utc": "2026-07-27T02:28:28.628280+00:00", "session_id": "20260727_075818_801945", "kind": "routing", "claim": "subtask 1 routed to Nova", "status": "verified", "tool": "", "command": "", "exit_code": null, "artifacts": [], "raw_output": "[GUARDRAIL ✅ PASS] task=1 scope=atomic files=0/1\nCONSTRAINT string_output: hello-nexus\nVALIDATED attempt=1: schema, constraints, disk replay, and compiler checks passed\n\n[RAW MODEL OUTPUT]\n<<THINKING>>\nCreating src/hello.py with a main function to print 'hello-nexus'.\n\n<<FILES>>\n```python\n# filepath: src/hello.py\n# action: CREATE\ndef main():\n    print('hello-nexus')\nif __name__ == '__main__':\n    main()\n```", "metadata": {"reason": "atomic, explicit, single-file task within Nova's guarded capability", "attempts": 1, "verdict": "VALIDATED", "escalated": false}}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: native execution
+COMMAND_JSON: ["python3", "hello.py"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: "hello-nexus\n"
+ACTUAL_RETURNCODE: 2
+TIMED_OUT: False
+STEP_VERDICT: FAIL
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+/opt/homebrew/Cellar/python@3.14/3.14.5/Frameworks/Python.framework/Versions/3.14/Resources/Python.app/Contents/MacOS/Python: can't open file '/private/tmp/nexus-release-e2e-20260727T022817Z/01_python_entrypoint/hello.py': [Errno 2] No such file or directory
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus git status
+COMMAND_JSON: ["/opt/homebrew/opt/python@3.14/bin/python3.14", "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/run.py", "--model", "nova_codex", "--working-dir", "/private/tmp/nexus-release-e2e-20260727T022817Z/01_python_entrypoint", "--permission-mode", "acceptEdits", "--max-turns", "8", "--output-format", "json", "!git status --short"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"type": "tool_call", "name": "run_command", "result": "\u2705 $ git status --short\n?? src/\n", "success": true}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git diff check
+COMMAND_JSON: ["git", "diff", "--check"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---

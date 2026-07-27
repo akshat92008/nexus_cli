@@ -17,13 +17,13 @@ class AutoFormatHook(BaseHook):
     def get_command(self, context: HookContext) -> str:
         path = context.file_path
         if path.endswith(".py"):
-            return f"ruff format {path} 2>/dev/null || black {path} 2>/dev/null || true"
+            return f"ruff format {path}"
         elif path.endswith((".js", ".jsx", ".ts", ".tsx", ".css", ".json", ".md")):
-            return f"npx prettier --write {path} 2>/dev/null || true"
+            return f"npx prettier --write {path}"
         elif path.endswith(".go"):
             return f"gofmt -w {path}"
         elif path.endswith(".rs"):
-            return f"rustfmt {path} 2>/dev/null || true"
+            return f"rustfmt {path}"
         return ""
 
 
@@ -39,11 +39,11 @@ class AutoLintHook(BaseHook):
     def get_command(self, context: HookContext) -> str:
         path = context.file_path
         if path.endswith(".py"):
-            return f"ruff check {path} --no-fix 2>/dev/null || true"
+            return f"ruff check {path} --no-fix"
         elif path.endswith((".js", ".jsx", ".ts", ".tsx")):
-            return f"npx eslint {path} --no-error-on-unmatched-pattern 2>/dev/null || true"
+            return f"npx eslint {path} --no-error-on-unmatched-pattern"
         elif path.endswith(".rs"):
-            return f"cargo clippy --quiet 2>/dev/null || true"
+            return f"cargo clippy --quiet"
         return ""
 
 
@@ -57,11 +57,11 @@ class PreCommitTestHook(BaseHook):
     priority = 80
 
     _test_commands = {
-        ".py": "python -m pytest -x -q 2>/dev/null || true",
-        ".js": "npm test -- --passWithNoTests 2>/dev/null || true",
-        ".ts": "npm test -- --passWithNoTests 2>/dev/null || true",
-        ".rs": "cargo test --quiet 2>/dev/null || true",
-        ".go": "go test ./... 2>/dev/null || true",
+        ".py": "python -m pytest -x -q",
+        ".js": "npm test",
+        ".ts": "npm test",
+        ".rs": "cargo test --quiet",
+        ".go": "go test ./...",
     }
 
     def get_command(self, context: HookContext) -> str:
@@ -69,7 +69,7 @@ class PreCommitTestHook(BaseHook):
         if context.metadata.get("test_command"):
             return context.metadata["test_command"]
         # Default: run Python tests (most common for this project)
-        return "python -m pytest -x -q 2>/dev/null || true"
+        return "python -m pytest -x -q"
 
 
 class SecurityScanHook(BaseHook):
@@ -84,10 +84,10 @@ class SecurityScanHook(BaseHook):
     def get_command(self, context: HookContext) -> str:
         # Use git-secrets or trufflehog if available, otherwise basic grep
         return (
-            "git secrets --scan 2>/dev/null || "
-            "grep -rn 'password\\|secret\\|api_key\\|private_key' --include='*.py' --include='*.js' --include='*.ts' --include='*.env' . "
-            "| grep -v 'node_modules\\|.git\\|__pycache__\\|Binary' "
-            "| head -20 || true"
+            "if command -v git-secrets >/dev/null 2>&1; then git secrets --scan; "
+            "else ! grep -rnE 'password|secret|api_key|private_key' "
+            "--include='*.py' --include='*.js' --include='*.ts' --include='*.env' . "
+            "--exclude-dir=node_modules --exclude-dir=.git --exclude-dir=__pycache__; fi"
         )
 
 

@@ -11,6 +11,7 @@ import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
+from nexus.paths import nexus_home
 
 
 @dataclass
@@ -245,7 +246,7 @@ class MCPClient:
 
     def load_default_config(self):
         """Load MCP config from ~/.nexusai/mcp_servers.json."""
-        config_path = Path.home() / ".nexusai" / "mcp_servers.json"
+        config_path = nexus_home() / "mcp_servers.json"
         if config_path.exists():
             self.load_from_config(str(config_path))
 

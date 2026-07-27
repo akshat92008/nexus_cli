@@ -160,7 +160,6 @@ class SafetyLayer:
     """
 
     def __init__(self):
-        self._confirmed_patterns: set[str] = set()  # Previously confirmed dangerous ops
         self._project_rules: dict[str, list[str]] = {}  # From NEXUS.md
         self._blocked_commands: list[str] = []  # User-defined blocked commands
         self._allowed_commands: list[str] = []  # User-defined always-allowed commands
@@ -192,15 +191,6 @@ class SafetyLayer:
                     reason=f"Blocked by project rules: matches '{pattern}'",
                 )
 
-        # Check user-defined allowed commands
-        for pattern in self._allowed_commands:
-            if re.search(pattern, command, re.IGNORECASE):
-                return SafetyCheck(
-                    level=SafetyLevel.SAFE,
-                    operation=command,
-                    reason="Allowed by project rules",
-                )
-
         # Check against built-in patterns
         for pattern, level, reason in _COMMAND_PATTERNS:
             if re.search(pattern, command, re.IGNORECASE):
@@ -212,11 +202,17 @@ class SafetyLayer:
                     requires_confirmation=(level == SafetyLevel.DANGEROUS),
                 )
 
-                # Auto-confirm if previously confirmed
-                if level == SafetyLevel.DANGEROUS and pattern in self._confirmed_patterns:
-                    check.confirmed = True
-
                 return check
+
+        # Project allow rules may suppress ordinary prompts, but can never
+        # downgrade a built-in dangerous or blocked classification.
+        for pattern in self._allowed_commands:
+            if re.search(pattern, command, re.IGNORECASE):
+                return SafetyCheck(
+                    level=SafetyLevel.SAFE,
+                    operation=command,
+                    reason="Allowed by project rules",
+                )
 
         return SafetyCheck(
             level=SafetyLevel.SAFE,
@@ -264,9 +260,8 @@ class SafetyLayer:
         return warnings
 
     def confirm_operation(self, operation: str, pattern: str = ""):
-        """Record that the user confirmed a dangerous operation."""
-        if pattern:
-            self._confirmed_patterns.add(pattern)
+        """Deprecated: confirmations are single-use exact pending operations."""
+        return None
 
     def check_git_operation(self, git_args: list[str]) -> SafetyCheck:
         """Evaluate the safety of a git operation."""

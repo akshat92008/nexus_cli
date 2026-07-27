@@ -1,0 +1,78 @@
+{
+  "created_at": "2026-07-27T02:18:52.237860+00:00",
+  "repository": "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent",
+  "workspace_root": "/private/tmp/nexus-release-e2e-20260727T021825Z",
+  "python": "3.14.5 (main, May 10 2026, 10:21:34) [Clang 21.0.0 (clang-2100.0.123.102)]",
+  "scenarios": [
+    {
+      "name": "05_javascript_recursive_lister",
+      "passed": true,
+      "workspace": "/private/tmp/nexus-release-e2e-20260727T021825Z/05_javascript_recursive_lister",
+      "transcript": "/Users/ashishsingh/Desktop/nova-1.5b/coding_agent/verification_evidence/20260727T021825Z/raw/05_javascript_recursive_lister.log",
+      "steps": [
+        {
+          "label": "git init",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity email",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity name",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git add baseline",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git baseline commit",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus CLI",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "JavaScript syntax",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "recursive listing behavior",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus git status",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git diff check",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "passed": 1,
+  "failed": 0
+}

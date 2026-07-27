@@ -132,6 +132,8 @@ IGNORE_DIRS = {
     "dist", "build", ".cache", ".tox", ".mypy_cache", ".pytest_cache",
     "env", ".env", ".idea", ".vscode", "target", "coverage",
     ".nexusai", ".ruff_cache", ".nuxt", ".output", ".turbo",
+    "Library", "Applications", "Pictures", "Music", "Movies", "Downloads",
+    "System", "Volumes", ".Trash", ".DocumentRevisions-V100",
 }
 
 
@@ -441,14 +443,20 @@ class ContextManager:
                     arch.source_directories.append(d.name)
 
         # Build module map
-        for src_dir in arch.source_directories or ["."]:
+        for src_dir in arch.source_directories:
             src_path = root / src_dir
             if src_path.is_dir():
-                for item in src_path.iterdir():
-                    if item.is_dir() and item.name not in IGNORE_DIRS:
-                        files = [f.name for f in item.rglob("*") if f.is_file() and f.suffix in _EXTENSION_LANGUAGE]
-                        if files:
-                            arch.modules[item.name] = files[:10]  # Cap at 10 files per module
+                try:
+                    for item in src_path.iterdir():
+                        if item.is_dir() and item.name not in IGNORE_DIRS and not item.name.startswith("."):
+                            try:
+                                files = [f.name for f in item.iterdir() if f.is_file() and f.suffix in _EXTENSION_LANGUAGE]
+                                if files:
+                                    arch.modules[item.name] = files[:10]  # Cap at 10 files per module
+                            except (PermissionError, OSError):
+                                pass
+                except (PermissionError, OSError):
+                    pass
 
         return arch
 
@@ -458,16 +466,19 @@ class ContextManager:
         lines = [f"{root.name}/"]
 
         def _walk(path: Path, prefix: str, depth: int):
-            if depth >= max_depth:
+            if depth >= max_depth or len(lines) >= 100:
                 return
             try:
-                entries = sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
-            except PermissionError:
+                raw_entries = list(path.iterdir())
+                entries = sorted(raw_entries, key=lambda x: (not x.is_dir(), x.name.lower()))
+            except (PermissionError, OSError):
                 return
 
             entries = [e for e in entries if e.name not in IGNORE_DIRS and not e.name.startswith(".")]
-            for i, entry in enumerate(entries):
-                is_last = i == len(entries) - 1
+            for i, entry in enumerate(entries[:30]):
+                if len(lines) >= 100:
+                    break
+                is_last = i == len(entries[:30]) - 1
                 connector = "└── " if is_last else "├── "
                 if entry.is_dir():
                     lines.append(f"{prefix}{connector}{entry.name}/")
