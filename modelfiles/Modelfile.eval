@@ -1,0 +1,9 @@
+FROM "./qwen2.5-coder-1.5b-instruct.Q4_K_M (1).gguf"
+
+TEMPLATE """<|im_start|>user
+{{ .Prompt }}<|im_end|>
+<|im_start|>assistant
+"""
+
+PARAMETER stop "<|im_end|>"
+PARAMETER stop "<|im_start|>"

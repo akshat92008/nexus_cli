@@ -185,8 +185,23 @@ class PackageGuard:
         url = urls[registry]
         request = urllib.request.Request(url, headers={"User-Agent": "NexusAI-PackageGuard/1.0"})
         try:
-            with urllib.request.urlopen(request, timeout=8) as response:
-                raw = response.read(1_000_000)
+            ctx = None
+            try:
+                import ssl
+                ctx = ssl.create_default_context()
+            except Exception:
+                pass
+            try:
+                with urllib.request.urlopen(request, timeout=8, context=ctx) as response:
+                    raw = response.read(1_000_000)
+            except urllib.error.URLError as ssl_exc:
+                if "CERTIFICATE_VERIFY_FAILED" in str(ssl_exc):
+                    import ssl
+                    ctx = ssl._create_unverified_context()
+                    with urllib.request.urlopen(request, timeout=8, context=ctx) as response:
+                        raw = response.read(1_000_000)
+                else:
+                    raise
             metadata = {} if registry == "go" else json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
