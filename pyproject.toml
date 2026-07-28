@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "nova-code"
+version = "12.0.0-dev"
+description = "Amaura Nova Code — Local-first coding model family"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+authors = [
+    {name = "Amaura Labs"},
+]
+keywords = ["llm", "code", "local", "inference", "fine-tuning"]
+
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# Data pipeline
+data = [
+    "datasets>=2.18",
+    "tokenizers>=0.15",
+    "datasketch>=1.6",          # MinHash deduplication
+]
+
+# Training
+train = [
+    "torch>=2.1",
+    "transformers>=4.40",
+    "peft>=0.10",
+    "trl>=0.8",
+    "accelerate>=0.27",
+    "bitsandbytes>=0.43",
+    "datasets>=2.18",
+    "wandb",
+]
+
+# Evaluation
+eval = [
+    "torch>=2.1",
+    "transformers>=4.40",
+    "datasets>=2.18",
+    "evalplus>=0.2",             # HumanEval+/MBPP+
+]
+
+# Inference
+inference = [
+    "transformers>=4.40",
+    "torch>=2.1",
+]
+
+# Development
+dev = [
+    "pytest>=7.4",
+    "ruff>=0.3",
+    "mypy>=1.8",
+]
+
+# All dependencies
+all = [
+    "nova-code[data,train,eval,inference,dev]",
+]
+
+[tool.setuptools.packages.find]
+include = ["data*", "training*", "eval*", "inference*", "bakeoff*", "nexus*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

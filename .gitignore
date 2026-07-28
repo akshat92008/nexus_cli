@@ -69,3 +69,8 @@ Thumbs.db
 
 # Embedded subfolder git
 coding_agent/.git
+
+# Databases & Runtime state
+*.db
+.nexusai/
+

@@ -1,0 +1,45 @@
+# Nova v12 — Phase 1 Pilot Data Configuration
+# Target: 50 million tokens for pipeline validation
+
+total_budget: 50_000_000  # 50M tokens
+
+language_weights:
+  python: 0.25
+  javascript: 0.125
+  typescript: 0.125
+  java: 0.10
+  cpp: 0.10
+  go: 0.075
+  rust: 0.075
+  sql: 0.05
+  bash: 0.05
+  other: 0.05
+
+quality:
+  min_score: 0.70
+  min_file_size: 50
+  max_file_size: 500000
+  max_line_length: 200
+
+deduplication:
+  exact: true
+  near_dedup: true
+  near_dedup_threshold: 0.85
+
+contamination:
+  check_humaneval: true
+  check_mbpp: true
+  check_livecode: true
+  ngram_threshold: 0.60
+
+output:
+  format: jsonl
+  include_provenance: true
+  max_files_per_language: 50000
+
+# Expected outcomes from pilot:
+# - Validate crawler pipeline
+# - Validate licensing metadata
+# - Detect contamination rates
+# - Test continued-pretraining stability
+# - Determine whether Nova improves at all
