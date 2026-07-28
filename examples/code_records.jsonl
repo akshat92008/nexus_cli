@@ -1,0 +1,1 @@
+{"source":"amaura-example","repository":"amaura/example","revision":"v1","path":"src/math_utils.py","licence":"MIT","language":"python","content":"\"\"\"Small arithmetic helpers.\"\"\"\n\ndef add_values(left, right):\n    return left + right\n"}
