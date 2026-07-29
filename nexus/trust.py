@@ -82,6 +82,10 @@ class TrustStore:
         candidates: set[Path] = set()
         for name in TRUSTED_CONFIG_NAMES:
             candidates.update(self.working_dir.rglob(name))
+        candidates.update((self.working_dir / ".nexus" / "skills").glob("*.md"))
+        candidates.update((self.working_dir / ".nexus").glob("policies.*"))
+        candidates.update((self.working_dir / ".nexus").glob("config.*"))
+        candidates.update((self.working_dir / ".nexus").glob("verify.json"))
         ignored = {".git", ".nexusai", "node_modules", ".venv", "venv", "dist", "build", "__pycache__"}
         return [self.inspect(p) for p in sorted(candidates) if not ignored.intersection(p.parts)]
 

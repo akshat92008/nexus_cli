@@ -55,18 +55,34 @@ def main() -> int:
                 "-c",
                 (
                     "import importlib.metadata; import nexus; import nexus.nova_backend; "
-                    "import nexus.two_node_backend; "
+                    "import nexus.two_node_backend; import nexus.behavioral; "
+                    "import nexus.benchmark; import nexus.execution; "
+                    "import nexus.extensions; import nexus.language_intelligence; "
+                    "import nexus.policy; import nexus.run_catalog; import nexus.sandbox; "
                     "from nexus.webapp.server import create_app; "
                     "assert create_app('release-smoke').routes; "
                     "dist = importlib.metadata.distribution('nexusai-cli'); "
                     "assert any(ep.name == 'nexus' for ep in dist.entry_points); "
-                    "assert nexus.__version__ == '2.1.0'"
+                    "assert nexus.__version__ == '3.0.0'"
                 ),
             ],
             cwd=root,
             env=smoke_env,
         )
         run([python, "-m", "nexus", "--version"], cwd=root, env=smoke_env)
+        run(
+            [
+                python,
+                "-m",
+                "nexus",
+                "benchmark",
+                "--manifest",
+                str(REPO / "benchmarks" / "core.json"),
+                "--dry-run",
+            ],
+            cwd=root,
+            env=smoke_env,
+        )
 
         doctor_env = dict(smoke_env)
         doctor_env["NVIDIA_API_KEY"] = "nvapi-release-smoke"

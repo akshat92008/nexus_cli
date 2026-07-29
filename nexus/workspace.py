@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import asdict, dataclass
@@ -23,6 +24,7 @@ class WorktreeInfo:
     base_commit: str
     branch: str
     created_at: str
+    backend: str = "git-worktree"
 
 
 class GitWorktreeSession:
@@ -51,6 +53,8 @@ class GitWorktreeSession:
         """Create and return an isolated worktree on a dedicated branch."""
         if self.path.exists():
             raise WorktreeError(f"Worktree path already exists: {self.path}")
+        if not (self.repository / ".git").exists():
+            return self._create_temporary_copy()
         top = self._git(["rev-parse", "--show-toplevel"]).strip()
         if Path(top).resolve() != self.repository:
             raise WorktreeError(
@@ -98,10 +102,56 @@ class GitWorktreeSession:
         )
         return self.info
 
+    def _create_temporary_copy(self) -> WorktreeInfo:
+        """Isolate a greenfield/non-Git directory with a persistent temporary copy."""
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+
+        def ignore(_directory: str, names: list[str]) -> set[str]:
+            return {
+                name
+                for name in names
+                if name
+                in {
+                    ".git",
+                    ".nexusai",
+                    ".pytest_cache",
+                    ".ruff_cache",
+                    "__pycache__",
+                    "node_modules",
+                    ".venv",
+                    "venv",
+                    "dist",
+                    "build",
+                }
+            }
+
+        try:
+            shutil.copytree(self.repository, self.path, ignore=ignore)
+        except OSError as exc:
+            raise WorktreeError(f"Could not create temporary isolated copy: {exc}") from exc
+        self.info = WorktreeInfo(
+            source_repository=str(self.repository),
+            path=str(self.path),
+            base_commit="",
+            branch="",
+            created_at=datetime.now(timezone.utc).isoformat(),
+            backend="temporary-copy",
+        )
+        self.info_path.write_text(
+            __import__("json").dumps(asdict(self.info), indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return self.info
+
     def status(self) -> dict[str, str]:
         """Return branch and diff status without mutating either worktree."""
         if not self.info:
             return {}
+        if self.info.backend != "git-worktree":
+            return {
+                **asdict(self.info),
+                "git_status": "Non-Git source isolated in a persistent temporary copy.",
+            }
         result = subprocess.run(
             ["git", "status", "--short", "--branch"],
             cwd=self.path,

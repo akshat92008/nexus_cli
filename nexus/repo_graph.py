@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,7 +22,7 @@ from typing import Any, Iterable
 
 from nexus.paths import nexus_home
 
-GRAPH_SCHEMA_VERSION = "nexus.repograph.v1"
+GRAPH_SCHEMA_VERSION = "nexus.repograph.v2"
 SUPPORTED_SUFFIXES = {
     ".py",
     ".pyi",
@@ -34,6 +35,20 @@ SUPPORTED_SUFFIXES = {
     ".go",
     ".rs",
     ".java",
+    ".kt",
+    ".kts",
+    ".rb",
+    ".php",
+    ".cs",
+    ".swift",
+    ".sql",
+    ".graphql",
+    ".prisma",
+    ".json",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".xml",
 }
 IGNORED_PARTS = {
     ".git",
@@ -48,6 +63,8 @@ IGNORED_PARTS = {
     "dist",
     "node_modules",
     "vendor",
+    "coverage",
+    "verification_evidence",
     ".venv",
     "venv",
 }
@@ -76,6 +93,10 @@ class FileRecord:
     imports: list[str] = field(default_factory=list)
     symbols: list[SymbolRecord] = field(default_factory=list)
     references: list[str] = field(default_factory=list)
+    routes: list[str] = field(default_factory=list)
+    database_models: list[str] = field(default_factory=list)
+    configuration: bool = False
+    owners: list[str] = field(default_factory=list)
     is_test: bool = False
     parse_error: str = ""
 
@@ -272,11 +293,180 @@ class RepoGraph:
                 impacted.add(path)
         return sorted(impacted)[: max(1, limit)]
 
+    def relevant_files(self, query: str, *, limit: int = 40) -> list[dict[str, Any]]:
+        """Rank files using names, symbols, routes, models, tests, and Git changes."""
+        terms = {
+            term
+            for term in re.findall(r"[A-Za-z_][A-Za-z0-9_-]{2,}", query.lower())
+            if term
+            not in {
+                "add",
+                "build",
+                "create",
+                "fix",
+                "make",
+                "implement",
+                "with",
+                "from",
+                "this",
+                "that",
+                "the",
+                "and",
+            }
+        }
+        changed = set(self.git_changed_files())
+        ranked: list[tuple[int, str, list[str]]] = []
+        for record in self.files.values():
+            haystacks = {
+                "path": record.path.lower(),
+                "symbols": " ".join(item.name for item in record.symbols).lower(),
+                "routes": " ".join(record.routes).lower(),
+                "models": " ".join(record.database_models).lower(),
+                "imports": " ".join(record.imports).lower(),
+            }
+            score = 0
+            reasons: list[str] = []
+            for term in terms:
+                if term in haystacks["path"]:
+                    score += 8
+                    reasons.append(f"path:{term}")
+                if term in haystacks["symbols"]:
+                    score += 6
+                    reasons.append(f"symbol:{term}")
+                if term in haystacks["routes"]:
+                    score += 7
+                    reasons.append(f"route:{term}")
+                if term in haystacks["models"]:
+                    score += 7
+                    reasons.append(f"model:{term}")
+                if term in haystacks["imports"]:
+                    score += 2
+            if record.path in changed:
+                score += 2
+                reasons.append("recent-git-change")
+            if record.is_test and any(
+                token in query.lower() for token in ("test", "bug", "fix", "regression")
+            ):
+                score += 4
+                reasons.append("test")
+            if score:
+                ranked.append((score, record.path, list(dict.fromkeys(reasons))))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return [
+            {"path": path, "score": score, "reasons": reasons}
+            for score, path, reasons in ranked[: max(1, limit)]
+        ]
+
+    def routes(self, query: str = "") -> list[dict[str, Any]]:
+        """Return discovered API/UI routes."""
+        needle = query.lower().strip()
+        results = []
+        for record in self.files.values():
+            for route in record.routes:
+                if needle and needle not in route.lower():
+                    continue
+                results.append(
+                    {
+                        "path": record.path,
+                        "route": route,
+                        "language": record.language,
+                    }
+                )
+        return sorted(results, key=lambda item: (item["route"], item["path"]))
+
+    def models(self, query: str = "") -> list[dict[str, Any]]:
+        """Return discovered ORM/schema model declarations."""
+        needle = query.lower().strip()
+        results = []
+        for record in self.files.values():
+            for model in record.database_models:
+                if needle and needle not in model.lower():
+                    continue
+                results.append(
+                    {
+                        "path": record.path,
+                        "model": model,
+                        "language": record.language,
+                    }
+                )
+        return sorted(results, key=lambda item: (item["model"], item["path"]))
+
+    def ownership(self, path: str | Path) -> list[str]:
+        """Return deterministic CODEOWNERS matches for a repository path."""
+        relative = self._relative_key(path)
+        record = self.files.get(relative)
+        return list(record.owners) if record else self._owners_for(relative)
+
+    def git_changed_files(self, *, limit: int = 200) -> list[str]:
+        """Return working-tree and recently committed files when Git is available."""
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "status",
+                    "--porcelain=v1",
+                    "--untracked-files=all",
+                ],
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                return []
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        paths = []
+        for line in result.stdout.splitlines():
+            raw = line[3:].split(" -> ")[-1].strip()
+            if raw:
+                paths.append(raw)
+        return list(dict.fromkeys(paths))[: max(1, limit)]
+
+    def git_history(self, path: str | Path, *, limit: int = 10) -> list[dict[str, str]]:
+        """Return recent commits affecting a file for Git-aware relevance."""
+        relative = self._relative_key(path)
+        try:
+            result = subprocess.run(
+                [
+                    "git",
+                    "log",
+                    f"-n{max(1, min(int(limit), 100))}",
+                    "--format=%H%x09%an%x09%aI%x09%s",
+                    "--",
+                    relative,
+                ],
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            if result.returncode != 0:
+                return []
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        entries = []
+        for line in result.stdout.splitlines():
+            parts = line.split("\t", 3)
+            if len(parts) == 4:
+                entries.append(
+                    {
+                        "commit": parts[0],
+                        "author": parts[1],
+                        "date": parts[2],
+                        "subject": parts[3],
+                    }
+                )
+        return entries
+
     def summary(self) -> dict[str, Any]:
         """Return compact graph statistics for prompt context and diagnostics."""
         symbols = sum(len(record.symbols) for record in self.files.values())
         imports = sum(len(record.imports) for record in self.files.values())
         tests = sum(1 for record in self.files.values() if record.is_test)
+        routes = sum(len(record.routes) for record in self.files.values())
+        models = sum(len(record.database_models) for record in self.files.values())
+        configurations = sum(1 for record in self.files.values() if record.configuration)
         errors = sum(1 for record in self.files.values() if record.parse_error)
         languages: dict[str, int] = {}
         for record in self.files.values():
@@ -289,10 +479,44 @@ class RepoGraph:
             "symbols": symbols,
             "imports": imports,
             "tests": tests,
+            "routes": routes,
+            "database_models": models,
+            "configuration_files": configurations,
             "parse_errors": errors,
             "languages": dict(sorted(languages.items())),
+            "frameworks": self.frameworks(),
+            "git_changed_files": self.git_changed_files(),
             "cache_path": str(self.cache_path),
         }
+
+    def frameworks(self) -> list[str]:
+        """Detect common frameworks from indexed imports and config files."""
+        imports = {
+            item.lower()
+            for record in self.files.values()
+            for item in record.imports
+        }
+        paths = set(self.files)
+        detected = []
+        mapping = (
+            ("fastapi", "FastAPI"),
+            ("django", "Django"),
+            ("flask", "Flask"),
+            ("express", "Express"),
+            ("next", "Next.js"),
+            ("react", "React"),
+            ("vue", "Vue"),
+            ("@angular/core", "Angular"),
+            ("spring", "Spring"),
+        )
+        for marker, label in mapping:
+            if any(marker in item for item in imports):
+                detected.append(label)
+        if "next.config.js" in paths or "next.config.mjs" in paths:
+            detected.append("Next.js")
+        if "prisma/schema.prisma" in paths:
+            detected.append("Prisma")
+        return list(dict.fromkeys(detected))
 
     def _iter_source_files(self) -> Iterable[Path]:
         for path in sorted(self.root.rglob("*")):
@@ -332,16 +556,39 @@ class RepoGraph:
         imports: list[str] = []
         symbols: list[SymbolRecord] = []
         references: list[str] = []
+        routes: list[str] = []
+        database_models: list[str] = []
         parse_error = ""
 
         if path.suffix.lower() in {".py", ".pyi"}:
             try:
                 tree = ast.parse(source, filename=relative)
                 imports, symbols, references = self._index_python(tree, relative)
+                routes, database_models = self._index_python_frameworks(tree)
             except SyntaxError as exc:
                 parse_error = f"{exc.msg} at line {exc.lineno}"
         else:
             imports, symbols, references = self._index_generic(source, relative, language)
+            if Path(relative).name == "package.json":
+                try:
+                    package_data = json.loads(source)
+                except json.JSONDecodeError:
+                    pass
+                else:
+                    for section in (
+                        "dependencies",
+                        "devDependencies",
+                        "peerDependencies",
+                        "optionalDependencies",
+                    ):
+                        values = package_data.get(section, {})
+                        if isinstance(values, dict):
+                            imports.extend(str(name) for name in values)
+            routes, database_models = self._index_generic_frameworks(
+                source,
+                relative,
+                language,
+            )
 
         return FileRecord(
             path=relative,
@@ -352,6 +599,10 @@ class RepoGraph:
             imports=sorted(dict.fromkeys(imports)),
             symbols=symbols,
             references=sorted(dict.fromkeys(references)),
+            routes=sorted(dict.fromkeys(routes)),
+            database_models=sorted(dict.fromkeys(database_models)),
+            configuration=self._is_configuration(relative),
+            owners=self._owners_for(relative),
             is_test=self._is_test(relative),
             parse_error=parse_error,
         )
@@ -406,6 +657,45 @@ class RepoGraph:
         return imports, symbols, references
 
     @staticmethod
+    def _index_python_frameworks(tree: ast.AST) -> tuple[list[str], list[str]]:
+        routes: list[str] = []
+        models: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                for decorator in node.decorator_list:
+                    if not isinstance(decorator, ast.Call):
+                        continue
+                    func = decorator.func
+                    method = func.attr.lower() if isinstance(func, ast.Attribute) else ""
+                    if method not in {
+                        "get",
+                        "post",
+                        "put",
+                        "patch",
+                        "delete",
+                        "route",
+                        "websocket",
+                    }:
+                        continue
+                    if decorator.args and isinstance(decorator.args[0], ast.Constant):
+                        value = decorator.args[0].value
+                        if isinstance(value, str):
+                            routes.append(f"{method.upper()} {value}")
+            elif isinstance(node, ast.ClassDef):
+                base_names = []
+                for base in node.bases:
+                    if isinstance(base, ast.Name):
+                        base_names.append(base.id)
+                    elif isinstance(base, ast.Attribute):
+                        base_names.append(base.attr)
+                if any(
+                    name in {"Base", "Model", "Document", "DeclarativeBase"}
+                    for name in base_names
+                ):
+                    models.append(node.name)
+        return routes, models
+
+    @staticmethod
     def _index_generic(
         source: str,
         relative: str,
@@ -446,6 +736,42 @@ class RepoGraph:
             and name not in {"if", "for", "while", "switch", "catch", "return"}
         ]
         return imports, symbols, references
+
+    @staticmethod
+    def _index_generic_frameworks(
+        source: str,
+        relative: str,
+        language: str,
+    ) -> tuple[list[str], list[str]]:
+        routes = []
+        route_patterns = (
+            r"\b(?:app|router|server)\.(get|post|put|patch|delete|use)\s*\(\s*['\"]([^'\"]+)",
+            r"\b(?:GET|POST|PUT|PATCH|DELETE)\s+['\"]([^'\"]+)['\"]",
+        )
+        for match in re.finditer(route_patterns[0], source, re.I):
+            routes.append(f"{match.group(1).upper()} {match.group(2)}")
+        for match in re.finditer(route_patterns[1], source):
+            routes.append(match.group(0).strip("'\""))
+
+        models = []
+        if Path(relative).suffix.lower() == ".prisma":
+            models.extend(re.findall(r"^\s*model\s+([A-Za-z_]\w*)", source, re.MULTILINE))
+        if Path(relative).suffix.lower() == ".sql":
+            models.extend(
+                re.findall(
+                    r"\bCREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[\"`]?([A-Za-z_]\w*)",
+                    source,
+                    re.I,
+                )
+            )
+        if language in {"typescript", "javascript"}:
+            models.extend(
+                re.findall(
+                    r"\b(?:mongoose\.model|sequelize\.define)\s*\(\s*['\"]([^'\"]+)",
+                    source,
+                )
+            )
+        return routes, models
 
     def _relative_key(self, path: str | Path) -> str:
         item = Path(path).expanduser()
@@ -493,6 +819,20 @@ class RepoGraph:
             ".go": "go",
             ".rs": "rust",
             ".java": "java",
+            ".kt": "kotlin",
+            ".kts": "kotlin",
+            ".rb": "ruby",
+            ".php": "php",
+            ".cs": "csharp",
+            ".swift": "swift",
+            ".sql": "sql",
+            ".graphql": "graphql",
+            ".prisma": "prisma",
+            ".json": "configuration",
+            ".toml": "configuration",
+            ".yaml": "configuration",
+            ".yml": "configuration",
+            ".xml": "configuration",
         }.get(suffix.lower(), "unknown")
 
     @staticmethod
@@ -508,6 +848,64 @@ class RepoGraph:
             or ".spec." in name
             or name.endswith("_test.go")
         )
+
+    @staticmethod
+    def _is_configuration(relative: str) -> bool:
+        path = Path(relative)
+        lowered = path.name.lower()
+        return (
+            lowered
+            in {
+                "package.json",
+                "pyproject.toml",
+                "cargo.toml",
+                "go.mod",
+                "pom.xml",
+                "build.gradle",
+                "dockerfile",
+                "makefile",
+                "tsconfig.json",
+                "vite.config.ts",
+                "next.config.js",
+                "next.config.mjs",
+            }
+            or any(part in {".github", ".nexus", "config", "configs"} for part in path.parts)
+            or path.suffix.lower() in {".yaml", ".yml", ".toml"}
+        )
+
+    def _owners_for(self, relative: str) -> list[str]:
+        candidates = (
+            self.root / ".github" / "CODEOWNERS",
+            self.root / "CODEOWNERS",
+            self.root / "docs" / "CODEOWNERS",
+        )
+        codeowners = next((path for path in candidates if path.is_file()), None)
+        if not codeowners:
+            return []
+        owners: list[str] = []
+        try:
+            lines = codeowners.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            return []
+        import fnmatch
+
+        for raw in lines:
+            line = raw.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 2:
+                continue
+            pattern = parts[0].lstrip("/")
+            normalized = pattern
+            if pattern.endswith("/"):
+                normalized += "**"
+            if fnmatch.fnmatch(relative, normalized) or fnmatch.fnmatch(
+                relative,
+                f"**/{normalized}",
+            ):
+                owners = parts[1:]
+        return owners
 
     def _save(self) -> None:
         self.cache_dir.mkdir(parents=True, exist_ok=True)

@@ -1,0 +1,157 @@
+"""Structured repository permissions loaded from ``.nexus/policies.yml``."""
+
+from __future__ import annotations
+
+import fnmatch
+import json
+import re
+from dataclasses import dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any
+
+
+class PermissionDecision(str, Enum):
+    ALLOW = "allow"
+    ASK = "ask"
+    DENY = "deny"
+
+
+@dataclass(frozen=True)
+class CapabilityRule:
+    decision: PermissionDecision
+    capability: str
+    pattern: str
+
+    @classmethod
+    def parse(cls, decision: PermissionDecision, value: str) -> "CapabilityRule":
+        if ":" in value:
+            capability, pattern = value.split(":", 1)
+        else:
+            capability, pattern = value, "*"
+        capability = capability.strip().lower().replace("-", "_")
+        pattern = pattern.strip() or "*"
+        if not re.fullmatch(r"[a-z_][a-z0-9_]*", capability):
+            raise ValueError(f"Invalid capability name: {capability!r}")
+        return cls(decision, capability, pattern)
+
+
+@dataclass
+class Policy:
+    rules: list[CapabilityRule] = field(default_factory=list)
+    source: str = ""
+    defaults: dict[str, PermissionDecision] = field(default_factory=dict)
+
+    def decide(self, capability: str, target: str = "") -> PermissionDecision:
+        normalized = capability.lower().replace("-", "_")
+        matching = [
+            rule
+            for rule in self.rules
+            if rule.capability == normalized and fnmatch.fnmatch(target or "", rule.pattern)
+        ]
+        if matching:
+            # A deny can never be shadowed by a broader allow.
+            if any(rule.decision == PermissionDecision.DENY for rule in matching):
+                return PermissionDecision.DENY
+            if any(rule.decision == PermissionDecision.ASK for rule in matching):
+                return PermissionDecision.ASK
+            return PermissionDecision.ALLOW
+        return self.defaults.get(normalized, PermissionDecision.ASK)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "source": self.source,
+            "defaults": {key: value.value for key, value in self.defaults.items()},
+            "rules": [
+                {
+                    "decision": rule.decision.value,
+                    "capability": rule.capability,
+                    "pattern": rule.pattern,
+                }
+                for rule in self.rules
+            ],
+        }
+
+
+DEFAULT_DECISIONS = {
+    "read": PermissionDecision.ALLOW,
+    "write": PermissionDecision.ASK,
+    "command": PermissionDecision.ASK,
+    "package_install": PermissionDecision.ASK,
+    "database_migration": PermissionDecision.ASK,
+    "network_access": PermissionDecision.ASK,
+    "git_push": PermissionDecision.ASK,
+    "deployment": PermissionDecision.ASK,
+}
+
+
+class PolicyLoader:
+    """Parse JSON or the documented conservative YAML subset."""
+
+    FILENAMES = (".nexus/policies.yml", ".nexus/policies.yaml", ".nexus/policies.json")
+
+    def __init__(self, root: str | Path):
+        self.root = Path(root).expanduser().resolve()
+
+    def load(self) -> Policy:
+        for relative in self.FILENAMES:
+            path = self.root / relative
+            if path.is_file():
+                data = self._parse(path)
+                return self._from_mapping(data, path)
+        return Policy(defaults=dict(DEFAULT_DECISIONS))
+
+    def _parse(self, path: Path) -> dict[str, Any]:
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".json":
+            value = json.loads(text)
+            if not isinstance(value, dict):
+                raise ValueError(f"Policy root must be an object: {path}")
+            return value
+        return self._parse_yaml_subset(text)
+
+    @staticmethod
+    def _parse_yaml_subset(text: str) -> dict[str, Any]:
+        """Parse top-level ``allow/ask/deny`` lists without executing YAML tags."""
+        result: dict[str, Any] = {}
+        section = ""
+        for line_number, raw in enumerate(text.splitlines(), 1):
+            stripped = raw.split("#", 1)[0].rstrip()
+            if not stripped.strip():
+                continue
+            if not raw.startswith((" ", "\t")) and stripped.endswith(":"):
+                section = stripped[:-1].strip()
+                result.setdefault(section, [])
+                continue
+            item = re.match(r"^\s*-\s+(.+?)\s*$", stripped)
+            if item and section:
+                value = item.group(1).strip().strip("'\"")
+                result.setdefault(section, []).append(value)
+                continue
+            scalar = re.match(r"^\s*([A-Za-z_][\w-]*)\s*:\s*(\S+)\s*$", stripped)
+            if scalar:
+                result[scalar.group(1)] = scalar.group(2).strip("'\"")
+                section = ""
+                continue
+            raise ValueError(f"Unsupported policy syntax at line {line_number}")
+        return result
+
+    @staticmethod
+    def _from_mapping(data: dict[str, Any], path: Path) -> Policy:
+        rules = []
+        for label, decision in (
+            ("allow", PermissionDecision.ALLOW),
+            ("ask", PermissionDecision.ASK),
+            ("deny", PermissionDecision.DENY),
+        ):
+            values = data.get(label, [])
+            if not isinstance(values, list):
+                raise ValueError(f"{label} must be a list in {path}")
+            for value in values:
+                rules.append(CapabilityRule.parse(decision, str(value)))
+        defaults = dict(DEFAULT_DECISIONS)
+        raw_defaults = data.get("defaults", {})
+        if isinstance(raw_defaults, dict):
+            for capability, value in raw_defaults.items():
+                defaults[str(capability)] = PermissionDecision(str(value))
+        return Policy(rules=rules, source=str(path), defaults=defaults)

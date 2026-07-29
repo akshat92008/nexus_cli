@@ -3,13 +3,43 @@ Skill Loader — auto-discovery, registration, and trigger matching for skills.
 
 Discovers skills from:
 1. nexus/skills/builtin/ — built-in skills
-2. ~/.nexusai/skills/ — user-defined custom skills
-3. Plugin skills — loaded via the plugin system
+2. trusted .nexus/skills/*.md — repository workflows
+3. ~/.nexusai/skills/ — user-defined custom skills
+4. Plugin skills — loaded via the plugin system
 """
 
+import re
 from pathlib import Path
+from typing import Callable
 
-from nexus.skills.base import BaseSkill
+from nexus.skills.base import BaseSkill, SkillTrigger
+
+
+class DeclarativeSkill(BaseSkill):
+    """Non-executable repository skill loaded from a trusted Markdown file."""
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        description: str,
+        prompt: str,
+        checklist: list[str],
+        keywords: list[str],
+    ):
+        super().__init__()
+        self.name = name
+        self.description = description
+        self.category = "project"
+        self.trigger = SkillTrigger(keywords=keywords, priority=80)
+        self._prompt = prompt
+        self._checklist = checklist
+
+    def get_system_prompt(self) -> str:
+        return self._prompt
+
+    def get_quality_checklist(self) -> list[str]:
+        return list(self._checklist)
 
 
 class SkillRegistry:
@@ -161,12 +191,20 @@ class SkillLoader:
     2. ~/.nexusai/skills/ — user-defined custom skills
     """
 
-    def __init__(self, registry: SkillRegistry):
+    def __init__(
+        self,
+        registry: SkillRegistry,
+        working_dir: str | Path | None = None,
+        trusted: Callable[[str | Path], bool] | None = None,
+    ):
         self.registry = registry
+        self.working_dir = Path(working_dir).resolve() if working_dir else None
+        self.trusted = trusted
 
     def load_all(self):
         """Load all skills from all sources."""
         self.load_builtin()
+        self.load_project()
         self.load_custom()
 
     def load_builtin(self):
@@ -210,6 +248,69 @@ class SkillLoader:
                             self.registry.register(skill)
             except Exception:
                 pass  # Don't let bad custom skills break anything
+
+    def load_project(self):
+        """Load trusted, declarative ``.nexus/skills/*.md`` workflows."""
+        if not self.working_dir:
+            return
+        directory = self.working_dir / ".nexus" / "skills"
+        if not directory.is_dir():
+            return
+        for path in sorted(directory.glob("*.md")):
+            if self.trusted is not None and not self.trusted(path):
+                continue
+            try:
+                content = path.read_text(encoding="utf-8")
+                metadata, prompt = self._parse_markdown_skill(content, path)
+                skill = DeclarativeSkill(
+                    name=metadata["name"],
+                    description=metadata["description"],
+                    prompt=prompt,
+                    checklist=metadata["checklist"],
+                    keywords=metadata["keywords"],
+                )
+                self.registry.register(skill)
+            except (OSError, ValueError, KeyError):
+                continue
+
+    @staticmethod
+    def _parse_markdown_skill(content: str, path: Path) -> tuple[dict, str]:
+        metadata = {
+            "name": path.stem,
+            "description": f"Repository workflow from {path.name}",
+            "keywords": [path.stem.replace("-", " ")],
+            "checklist": [],
+        }
+        body = content
+        if content.startswith("---\n") and "\n---\n" in content[4:]:
+            header, body = content[4:].split("\n---\n", 1)
+            for line in header.splitlines():
+                if ":" not in line:
+                    continue
+                key, value = line.split(":", 1)
+                normalized = key.strip().lower()
+                raw = value.strip().strip("'\"")
+                if normalized in {"name", "description"} and raw:
+                    metadata[normalized] = raw
+                elif normalized == "keywords":
+                    metadata["keywords"] = [
+                        item.strip() for item in raw.split(",") if item.strip()
+                    ]
+        checklist_match = re.search(
+            r"(?ims)^##\s+(?:quality\s+)?checklist\s*$\n(?P<body>.*?)(?=^##\s|\Z)",
+            body,
+        )
+        if checklist_match:
+            metadata["checklist"] = [
+                match.group(1).strip()
+                for match in re.finditer(
+                    r"(?m)^\s*[-*]\s+(.+)$",
+                    checklist_match.group("body"),
+                )
+            ]
+        if not body.strip():
+            raise ValueError(f"Project skill is empty: {path}")
+        return metadata, body.strip()
 
     def load_from_plugin(self, skills: list[BaseSkill]):
         """Load skills provided by a plugin."""

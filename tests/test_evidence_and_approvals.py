@@ -68,6 +68,20 @@ def test_package_guard_requires_confirmation_when_registry_is_unavailable():
     assert check.requires_confirmation
 
 
+def test_package_guard_parses_uv_install_commands():
+    seen = []
+
+    def resolver(registry, name):
+        seen.append((registry, name))
+        return PackageCheck(name, registry, "pass", "exists")
+
+    checks = PackageGuard(resolver=resolver).check_command(
+        "uv pip install 'httpx>=0.27' pytest"
+    )
+    assert [item.name for item in checks] == ["httpx", "pytest"]
+    assert seen == [("pypi", "httpx"), ("pypi", "pytest")]
+
+
 def test_agent_holds_unverified_dependency_for_confirmation(tmp_path, monkeypatch):
     monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
     old_cwd = os.getcwd()

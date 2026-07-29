@@ -1,33 +1,32 @@
 # NexusAI CLI
 
-NexusAI is a guarded coding agent for the terminal and browser. A hosted
-model can plan and decompose complex work while local Nova 3B v11 executes
-well-scoped coding subtasks through Ollama. Every Nova edit must pass
-deterministic format, path, constraint, disk-replay, canonicalization, and
-compiler checks before it becomes a Nexus tool proposal.
+NexusAI is an open-source, model-agnostic software-engineering runtime for the
+terminal, browser, and headless CI. A hosted model plans and reviews difficult
+work; local Nova V11 executes suitable atomic changes through Ollama. Nexus
+owns repository understanding, permissions, workspaces, tools, tests, repair,
+evidence, budgets, rollback, and recovery.
 
-The launch version focuses on a smaller promise that can be verified:
+Version 3.0 is the single integrated runtime described by the product
+specification:
 
-- installed wheels contain the complete Nexus and Nova v11 adapter runtime;
-- file changes are scope-checked and presented as diffs before execution;
-- dangerous operations require an exact, one-use confirmation;
-- dependency changes are checked against real package registries;
-- applied changes and verification commands produce persistent evidence;
-- failed non-interactive runs return a non-zero process exit code;
-- `nexus --doctor` identifies missing local or hosted backends.
-
-Version 2.1 adds the durable runtime required for longer engineering work:
-
-- every request persists a versioned run directory with its request, plan,
-  task contract, tool events, checkpoints, acceptance results, costs, and
-  final report;
-- `--workspace` creates a dedicated Git branch/worktree before Nexus starts;
-- persistent repository indexing supports symbol, caller, dependency, and
-  impacted-test lookup without sending the entire repository to a model;
-- hosted calls, prompt tokens, completion tokens, and configured currency can
-  be capped with hard limits;
-- hosted direct execution uses the `nova.patch.v1` JSON schema while the local
-  Nova V11 adapter remains compatible with its trained Markdown protocol.
+- requests become acceptance criteria and dependency-aware execution
+  contracts with risk, file scope, checks, retries, and budgets;
+- modifying sessions open an isolated Git worktree, or a persistent temporary
+  copy for non-Git projects, unless the user explicitly opts out;
+- commands support shell-free argv execution, filtered environments, timeouts,
+  output ceilings, native Linux/macOS isolation, and fail-closed isolation;
+- persistent RepoGraph indexing covers symbols, imports, callers, tests,
+  routes, models, configuration, ownership, frameworks, and Git relevance;
+- LSP clients and optional Tree-sitter parsing provide precise navigation;
+- Nova V11 and hosted candidates use strict patch contracts, temporary-tree
+  replay, compiler checks, bounded repair, escalation, and independent review;
+- verification can combine lint, types, tests, build, security, read-only
+  database checks, HTTP contracts, and optional browser workflows;
+- every run persists request, plan, task, model, tool, cost, patch, test,
+  checkpoint, state, and final-report artifacts;
+- interrupted work can resume from its latest verified checkpoint;
+- SDK contracts, skills, hooks, plugins, subagents, MCP, CI mode, issue
+  solving, and a versioned benchmark harness are included.
 
 See [CAPABILITIES.md](CAPABILITIES.md) for the measured capability boundary,
 [ROADMAP.md](ROADMAP.md) for the complete long-term product contract, and
@@ -63,6 +62,14 @@ python3 -m venv .venv
 
 The distribution name is `nexusai-cli`; the installed command is `nexus`.
 The similarly named `nexusai` project on PyPI is unrelated.
+
+Optional deterministic adapters:
+
+```bash
+pip install "nexusai-cli[intelligence]"  # Tree-sitter language pack
+pip install "nexusai-cli[browser]"       # Playwright API
+playwright install chromium              # Browser executable
+```
 
 ## Configure a backend
 
@@ -102,7 +109,7 @@ and escalation runtime needed for Nova v11 output.
 nexus
 
 # One prompt with structured automation-friendly output
-nexus --print --output-format json "add a health endpoint and tests"
+nexus run --prompt "add a health endpoint and tests" --mode autonomous --output json
 
 # Local-only Nova v11
 nexus --model nova_codex
@@ -111,14 +118,22 @@ nexus --model nova_codex
 nexus --model glm-5.2
 
 # Read-only planning
-nexus --permission-mode plan "plan the authentication migration"
+nexus run --prompt "plan the authentication migration" --mode plan
 
-# Isolated Git branch/worktree for modifying work
-nexus --workspace --permission-mode acceptEdits "implement the feature and test it"
+# Review-only and autonomous execution
+nexus run --prompt "implement the feature and test it" --mode review
+nexus run --prompt "implement the feature and test it" --mode autonomous
 
 # Hard hosted-usage limits
 nexus --max-hosted-calls 8 --max-prompt-tokens 100000 \
-  --max-completion-tokens 30000 "fix the failing integration tests"
+  --max-completion-tokens 30000 --max-cost 1.00 \
+  "fix the failing integration tests"
+
+# Local, budget, quality, and CI policy presets
+nexus run --prompt "add regression tests" --local-only
+nexus run --prompt "fix the bug" --prefer-cheap
+nexus run --prompt "review authentication" --quality maximum
+nexus run --prompt "fix failing checks" --mode ci --output json
 
 # Browser interface
 nexus --web --port 3000
@@ -197,23 +212,39 @@ python3 -m venv .venv
 The separate `scripts/run_release_e2e.py` harness makes real model calls and is
 therefore an opt-in integration benchmark, not part of offline CI.
 
+The public benchmark manifest is versioned and shell-free:
+
+```bash
+nexus benchmark --manifest benchmarks/core.json --dry-run
+nexus benchmark --manifest benchmarks/core.json \
+  --output benchmarks/results/nexus-3.0.0.json
+```
+
 ## Durable runs and recovery
 
-Every turn is saved under the Nexus state directory with a machine-readable
-`request.json`, `plan.json`, `events.jsonl`, checkpoint directory,
-`state.json`, and `final-report.json`. Use `/run-status` to inspect the active
-run and `/rollback-run` to reverse every applied file operation from that run.
-`--continue` and `--resume` restore the associated conversation, plan, and
-latest durable checkpoint metadata.
+Every turn is saved under the Nexus state directory with `request.json`,
+`plan.json`, `tasks.json`, `events.jsonl`, `model_calls.jsonl`,
+`tool_calls.jsonl`, `costs.json`, `patches/`, `tests/`, `checkpoints/`,
+`state.json`, and `final_report.json`.
+
+```bash
+nexus runs
+nexus inspect <run-id>
+nexus replay <run-id>
+nexus resume <run-id>
+nexus rollback <run-id>
+```
+
+Resume reloads the same workspace, completed task state, and latest verified
+checkpoint, then continues only pending or failed work.
 
 ## Built-in tools
 
-Nexus exposes 25 tools across file reading and editing, repository graph
-indexing, project search, shell and managed background processes, Git, and web
-retrieval. `repo_index`, `repo_symbols`, and `repo_impact` provide persistent
-symbol/caller lookup and targeted test-impact analysis. Tool execution is
-wrapped by the scope, approval, trust, dependency, budget, run-state, and
-evidence layers in `nexus/agent.py`.
+Nexus exposes 34 built-in tools across file editing, repository intelligence,
+LSP/Tree-sitter navigation, shell-free and managed processes, Git, web
+retrieval, API checks, browser workflows, database integrity, and bounded
+security analysis. Tool execution is wrapped by scope, policy, approval,
+trust, package, budget, run-state, and evidence layers.
 
 Key interactive commands include `/models`, `/project`, `/pending`,
 `/permissions`, `/trust`, `/changes`, `/undo`, `/verify`, `/history`,

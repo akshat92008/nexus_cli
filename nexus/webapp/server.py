@@ -92,6 +92,7 @@ def _get_agent(session_id: str) -> Agent:
             api_key=_api_key,
             model_key=_default_model,
             working_dir=_working_dir,
+            workspace_isolation=True,
         )
     return _agents[session_id]
 

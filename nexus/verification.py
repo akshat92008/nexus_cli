@@ -6,6 +6,7 @@ Architecture:
     Detect Project Type → Select Checks → Execute → Report Results
 """
 
+import json
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -21,6 +22,9 @@ class CheckType(str, Enum):
     BUILD = "build"
     FORMAT = "format"
     SECURITY = "security"
+    API = "api"
+    BROWSER = "browser"
+    DATABASE = "database"
 
 
 class CheckStatus(str, Enum):
@@ -177,7 +181,16 @@ class VerificationEngine:
     def run_all(self, checks: list[CheckType] | None = None) -> VerificationReport:
         """Run all applicable verification checks."""
         if checks is None:
-            checks = [CheckType.LINT, CheckType.TYPE_CHECK, CheckType.TEST, CheckType.BUILD]
+            checks = [
+                CheckType.LINT,
+                CheckType.TYPE_CHECK,
+                CheckType.TEST,
+                CheckType.BUILD,
+                CheckType.SECURITY,
+                CheckType.DATABASE,
+                CheckType.API,
+                CheckType.BROWSER,
+            ]
 
         report = VerificationReport(project_type=self.project_type)
 
@@ -195,6 +208,14 @@ class VerificationEngine:
 
     def run_check(self, check_type: CheckType) -> CheckResult:
         """Run a single verification check."""
+        if check_type == CheckType.SECURITY:
+            return self._run_security()
+        if check_type == CheckType.DATABASE:
+            return self._run_database()
+        if check_type == CheckType.API:
+            return self._run_api()
+        if check_type == CheckType.BROWSER:
+            return self._run_browser()
         command = self.commands.get(check_type.value)
 
         if not command:
@@ -312,17 +333,25 @@ class VerificationEngine:
     def _execute_check(self, check_type: CheckType, command: str) -> CheckResult:
         """Execute a verification command and parse the result."""
         import time
+
+        from nexus.safety import SafetyLayer, SafetyLevel
+        from nexus.sandbox import SandboxRunner
         start = time.monotonic()
 
         try:
-            result = subprocess.run(
+            safety = SafetyLayer().check_command(command)
+            if safety.level in {SafetyLevel.BLOCKED, SafetyLevel.DANGEROUS}:
+                return CheckResult(
+                    check_type=check_type,
+                    status=CheckStatus.ERROR,
+                    command=command,
+                    output=f"Verification command rejected: {safety.reason}",
+                )
+            result = SandboxRunner(self.working_dir).run_shell(
                 command,
-                shell=True,
-                capture_output=True,
-                text=True,
                 cwd=self.working_dir,
-                timeout=120,
-                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "CI": "true"},
+                timeout_seconds=120,
+                network=False,
             )
 
             duration = int((time.monotonic() - start) * 1000)
@@ -330,7 +359,7 @@ class VerificationEngine:
             if result.stderr:
                 output += "\n" + result.stderr
 
-            status = CheckStatus.PASSED if result.returncode == 0 else CheckStatus.FAILED
+            status = CheckStatus.PASSED if result.success else CheckStatus.FAILED
 
             # Count errors and warnings from output
             error_count = output.lower().count("error")
@@ -346,13 +375,6 @@ class VerificationEngine:
                 duration_ms=duration,
             )
 
-        except subprocess.TimeoutExpired:
-            return CheckResult(
-                check_type=check_type,
-                status=CheckStatus.ERROR,
-                command=command,
-                output="Command timed out after 120 seconds",
-            )
         except Exception as e:
             return CheckResult(
                 check_type=check_type,
@@ -360,3 +382,182 @@ class VerificationEngine:
                 command=command,
                 output=f"Error: {e}",
             )
+
+    def _run_security(self) -> CheckResult:
+        from nexus.behavioral import SecurityScanner
+
+        result = SecurityScanner().scan(self.working_dir)
+        return CheckResult(
+            check_type=CheckType.SECURITY,
+            status=CheckStatus.PASSED if result.passed else CheckStatus.FAILED,
+            command="nexus:security_scan",
+            output=json.dumps(result.to_dict(), indent=2),
+            error_count=len(result.evidence.get("findings", [])),
+            duration_ms=result.duration_ms,
+        )
+
+    def _run_database(self) -> CheckResult:
+        from nexus.behavioral import DatabaseVerifier
+
+        root = Path(self.working_dir)
+        databases = sorted(
+            {
+                *root.glob("*.db"),
+                *root.glob("*.sqlite"),
+                *root.glob("*.sqlite3"),
+                *root.glob("data/*.db"),
+                *root.glob("data/*.sqlite"),
+            }
+        )
+        migration_files = sorted(
+            {
+                *root.glob("migrations/**/*.sql"),
+                *root.glob("alembic/**/*.sql"),
+                *root.glob("prisma/migrations/**/*.sql"),
+            }
+        )
+        if not databases and not migration_files:
+            return CheckResult(
+                check_type=CheckType.DATABASE,
+                status=CheckStatus.NOT_APPLICABLE,
+                command="",
+            )
+        verifier = DatabaseVerifier()
+        results = [verifier.verify_sqlite(path) for path in databases]
+        migration_risks = []
+        for path in migration_files:
+            try:
+                sql = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            for finding in verifier.migration_risks(sql):
+                migration_risks.append({"path": str(path.relative_to(root)), **finding})
+        passed = all(item.passed for item in results) and not migration_risks
+        return CheckResult(
+            check_type=CheckType.DATABASE,
+            status=CheckStatus.PASSED if passed else CheckStatus.FAILED,
+            command="nexus:database_check",
+            output=json.dumps(
+                {
+                    "databases": [item.to_dict() for item in results],
+                    "migration_risks": migration_risks,
+                },
+                indent=2,
+            ),
+            error_count=sum(not item.passed for item in results) + len(migration_risks),
+            duration_ms=sum(item.duration_ms for item in results),
+        )
+
+    def _verification_config(self) -> dict:
+        path = Path(self.working_dir) / ".nexus" / "verify.json"
+        if not path.is_file():
+            return {}
+        from nexus.trust import TrustStore
+
+        if not TrustStore(self.working_dir).is_approved(path):
+            return {}
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def _run_api(self) -> CheckResult:
+        from nexus.behavioral import ApiProbeSpec, ApiVerifier
+
+        configured = self._verification_config().get("api", [])
+        if not isinstance(configured, list) or not configured:
+            return CheckResult(
+                check_type=CheckType.API,
+                status=CheckStatus.NOT_APPLICABLE,
+                command="",
+            )
+        results = []
+        for raw in configured:
+            if not isinstance(raw, dict) or "url" not in raw:
+                continue
+            results.append(
+                ApiVerifier().verify(
+                    ApiProbeSpec(
+                        method=str(raw.get("method", "GET")),
+                        url=str(raw["url"]),
+                        expected_status=int(raw.get("expected_status", 200)),
+                        expected_json=raw.get("expected_json"),
+                        expected_text=str(raw.get("expected_text", "")),
+                        json_body=raw.get("json_body"),
+                        allow_external=False,
+                    )
+                )
+            )
+        if not results:
+            return CheckResult(
+                check_type=CheckType.API,
+                status=CheckStatus.ERROR,
+                command="nexus:api_check",
+                output="No valid API probes were configured.",
+            )
+        return CheckResult(
+            check_type=CheckType.API,
+            status=(
+                CheckStatus.PASSED
+                if all(item.passed for item in results)
+                else CheckStatus.FAILED
+            ),
+            command="nexus:api_check",
+            output=json.dumps([item.to_dict() for item in results], indent=2),
+            error_count=sum(not item.passed for item in results),
+            duration_ms=sum(item.duration_ms for item in results),
+        )
+
+    def _run_browser(self) -> CheckResult:
+        from nexus.behavioral import BrowserProbeSpec, BrowserStep, BrowserVerifier
+
+        configured = self._verification_config().get("browser", [])
+        if not isinstance(configured, list) or not configured:
+            return CheckResult(
+                check_type=CheckType.BROWSER,
+                status=CheckStatus.NOT_APPLICABLE,
+                command="",
+            )
+        results = []
+        for raw in configured:
+            if not isinstance(raw, dict) or "url" not in raw:
+                continue
+            steps = tuple(
+                BrowserStep(
+                    action=str(item.get("action", "")),
+                    selector=str(item.get("selector", "")),
+                    value=str(item.get("value", "")),
+                )
+                for item in raw.get("steps", [])
+                if isinstance(item, dict)
+            )
+            results.append(
+                BrowserVerifier().verify(
+                    BrowserProbeSpec(
+                        url=str(raw["url"]),
+                        steps=steps,
+                        screenshot_path=str(raw.get("screenshot_path", "")),
+                        allow_external=False,
+                    )
+                )
+            )
+        if not results:
+            return CheckResult(
+                check_type=CheckType.BROWSER,
+                status=CheckStatus.ERROR,
+                command="nexus:browser_check",
+                output="No valid browser probes were configured.",
+            )
+        return CheckResult(
+            check_type=CheckType.BROWSER,
+            status=(
+                CheckStatus.PASSED
+                if all(item.passed for item in results)
+                else CheckStatus.FAILED
+            ),
+            command="nexus:browser_check",
+            output=json.dumps([item.to_dict() for item in results], indent=2),
+            error_count=sum(not item.passed for item in results),
+            duration_ms=sum(item.duration_ms for item in results),
+        )

@@ -24,6 +24,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from nexus.code_validation import GeneratedCodeValidator
+from nexus.execution import (
+    ExecutionEngine,
+    ReviewOutcome,
+    TaskOutcome,
+    classify_failure,
+)
 from nexus.nova_backend import PROMPT_PATH, NovaPipelineBackend, NovaToolProposal
 from nexus.nova_runtime import (
     CEILING_SYSTEM_PROMPT,
@@ -37,6 +43,17 @@ from nexus.nova_runtime import (
     TestExecutor,
     extract_prompt_paths,
 )
+from nexus.planner import (
+    Difficulty,
+    ExecutionPlan,
+    IntentType,
+    PlanStep,
+    PlanType,
+    TaskStatus,
+)
+from nexus.repo_graph import RepoGraph
+from nexus.safety import SafetyLayer, SafetyLevel
+from nexus.sandbox import SandboxRunner
 
 
 class CeilingCallTimeout(TimeoutError):
@@ -115,6 +132,22 @@ Do not wrap the JSON in Markdown. Never invent a path, add shell commands, or in
 outside the JSON object. For CREATE or MODIFY, content must be the complete file."""
 
 
+class _NoopExecutionLedger:
+    """Preserve execution semantics for direct backend use outside a managed run."""
+
+    def record_tasks(self, _tasks) -> None:
+        pass
+
+    def append_event(self, *_args, **_kwargs) -> None:
+        pass
+
+    def record_plan(self, _plan) -> None:
+        pass
+
+    def checkpoint(self, *_args, **_kwargs) -> None:
+        pass
+
+
 @dataclass
 class SubtaskExecution:
     """Visible execution record for one two-node subtask."""
@@ -130,6 +163,8 @@ class SubtaskExecution:
     escalated: bool = False
     error: str = ""
     route_reason: str = ""
+    failure_kind: str = ""
+    test_output: str = ""
 
 
 @dataclass
@@ -142,9 +177,15 @@ class TwoNodeResult:
     tasks: list[AtomicTask] = field(default_factory=list)
     executions: list[SubtaskExecution] = field(default_factory=list)
     decomposition_raw: str = ""
+    review_approved: bool = False
+    review_summary: str = ""
+    review_findings: list[str] = field(default_factory=list)
+    execution_plan: ExecutionPlan | None = None
 
     @property
     def proposals(self) -> list[NovaToolProposal]:
+        if self.review_summary and not self.review_approved:
+            return []
         all_proposals: list[NovaToolProposal] = []
         for execution in self.executions:
             all_proposals.extend(execution.proposals)
@@ -178,6 +219,12 @@ class TwoNodeResult:
                 lines.append(f"      route: {execution.route_reason}")
             if execution.error:
                 lines.append(f"      error: {execution.error}")
+            if execution.failure_kind:
+                lines.append(f"      failure_kind: {execution.failure_kind}")
+            if execution.test_output:
+                lines.append("      test evidence:")
+                for test_line in execution.test_output.splitlines()[-30:]:
+                    lines.append(f"        {test_line}")
             if execution.guardrail_log:
                 for log_line in execution.guardrail_log.splitlines():
                     lines.append(f"      {log_line}")
@@ -185,6 +232,15 @@ class TwoNodeResult:
                 lines.append("      raw:")
                 for raw_line in execution.raw_output.splitlines():
                     lines.append(f"        {raw_line}")
+        lines.append("")
+        lines.append(
+            "Independent review: "
+            + ("APPROVED" if self.review_approved else "NOT APPROVED")
+        )
+        if self.review_summary:
+            lines.append(f"  {self.review_summary}")
+        for finding in self.review_findings:
+            lines.append(f"  - {finding}")
         return "\n".join(lines)
 
 
@@ -257,18 +313,22 @@ class NvidiaCeilingNode:
             tasks = self._parser_node._parse_tasks(text)
             if tasks:
                 return tasks, text
-        except Exception:
-            # Fallback to single atomic local task when remote API is rate limited or unavailable
-            pass
+        except Exception as exc:
+            decomposition_error = str(exc)
+        else:
+            decomposition_error = "provider returned no valid typed tasks"
 
+        explicit_paths = extract_prompt_paths(request)
         fallback_task = AtomicTask(
             id=1,
             description=request,
-            scope_level="atomic",
-            expected_files=1,
+            scope_level="atomic" if explicit_paths else "vague",
+            expected_files=max(1, len(explicit_paths)),
             depends_on=[],
         )
-        return [fallback_task], f"Decomposition local fallback for: {request}"
+        return [
+            fallback_task
+        ], f"Decomposition fallback ({decomposition_error}) for: {request}"
 
     def execute_direct(self, task: AtomicTask, context: str, failure_reason: str) -> str:
         prompt = (
@@ -295,6 +355,46 @@ class NvidiaCeilingNode:
         except Exception as e:
             return f"<<THINKING>>\nCeiling remote call failed ({e}). Proceeding with local resolution.\n\n<<FILES>>\n"
 
+    def review(self, request: str, context: str) -> tuple[bool, str, list[str]]:
+        """Run an independent read-only reviewer call over validated candidate changes."""
+        timeout = int(os.environ.get("NEXUS_CEILING_CALL_TIMEOUT", "60"))
+        system = (
+            "You are the independent Nexus code reviewer. Review only the supplied "
+            "request and validated candidate excerpts. Return one JSON object with "
+            '{"approved": boolean, "summary": string, "findings": [string]}. '
+            "Reject missing requirements, unsafe behavior, architectural inconsistency, "
+            "or missing tests. Do not propose file writes or tool calls."
+        )
+        try:
+            response = _run_ceiling_call(
+                lambda: self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {
+                            "role": "user",
+                            "content": f"Request:\n{request}\n\nCandidate:\n{context[:30000]}",
+                        },
+                    ],
+                    temperature=0.0,
+                    max_tokens=1600,
+                ),
+                timeout,
+            )
+            raw = response.choices[0].message.content or ""
+            self.tokens_used += getattr(response.usage, "total_tokens", 0)
+            if "```" in raw:
+                raw = raw.split("```", 1)[1].split("```", 1)[0]
+                raw = raw.removeprefix("json").strip()
+            value = json.loads(raw)
+            approved = value.get("approved") is True
+            findings = [
+                str(item)[:1000] for item in value.get("findings", []) if str(item).strip()
+            ]
+            return approved, str(value.get("summary", ""))[:2000], findings[:20]
+        except Exception as exc:
+            return False, f"Independent reviewer unavailable: {exc}", []
+
 
 class TwoNodeBackend:
     """Run a Nexus request through Ceiling decomposition and Nova Intern execution."""
@@ -306,21 +406,44 @@ class TwoNodeBackend:
         ceiling_model_name: str,
         working_dir: str,
         intern_model: str = "nova_codex",
+        run_ledger=None,
     ):
         self.working_dir = Path(working_dir).resolve()
         self.ceiling = NvidiaCeilingNode(client, ceiling_model_id)
         self.ceiling_model_name = ceiling_model_name
         self.intern_model = intern_model
+        self.run_ledger = run_ledger or _NoopExecutionLedger()
         self.parser = NovaOutputParser()
         self.escalation_log_path = self.working_dir / ".nexusai" / "escalations.jsonl"
+        self.repo_graph = RepoGraph(self.working_dir)
+        self.repo_graph.build()
 
     def run(self, request: str, planner_analysis: dict | None = None) -> TwoNodeResult:
-        planner_context = self._planner_context(planner_analysis)
-        try:
-            tasks, raw_decomposition = self.ceiling.decompose(request, planner_context=planner_context)
-        except Exception as err:
-            tasks = [AtomicTask(id=1, description=request)]
-            raw_decomposition = f"Single-task fallback due to decomposition error: {err}"
+        planner_context = self._planner_context(planner_analysis, request)
+        resumed_plan = self._resumed_plan(planner_analysis)
+        if resumed_plan is not None:
+            tasks = [
+                AtomicTask(
+                    id=step.id,
+                    description=step.description,
+                    scope_level=step.risk,
+                    expected_files=max(1, len(step.permitted_files)),
+                    depends_on=list(step.depends_on),
+                )
+                for step in resumed_plan.steps
+            ]
+            raw_decomposition = "Recovered the persisted task DAG from the latest checkpoint."
+            execution_plan = resumed_plan
+        else:
+            try:
+                tasks, raw_decomposition = self.ceiling.decompose(
+                    request,
+                    planner_context=planner_context,
+                )
+            except Exception as err:
+                tasks = [AtomicTask(id=1, description=request)]
+                raw_decomposition = f"Single-task fallback due to decomposition error: {err}"
+            execution_plan = self._execution_plan(request, tasks, planner_analysis)
 
         result = TwoNodeResult(
             request=request,
@@ -328,6 +451,7 @@ class TwoNodeBackend:
             intern_model=self.intern_model,
             tasks=tasks,
             decomposition_raw=raw_decomposition,
+            execution_plan=execution_plan,
         )
 
         with tempfile.TemporaryDirectory(prefix="nexus_two_node_") as tmp:
@@ -340,10 +464,16 @@ class TwoNodeBackend:
             constraint_extractor = ConstraintExtractor(manual_constraint_node)
             constraint_verifier = ConstraintVerifier(manual_constraint_node)
 
-            context_accumulator = ""
-            converter = NovaPipelineBackend(model=self.intern_model, working_dir=str(self.working_dir))
+            context_accumulator = [""]
+            converter = NovaPipelineBackend(
+                model=self.intern_model,
+                working_dir=str(self.working_dir),
+            )
+            task_by_id = {task.id: task for task in tasks}
+            executions: dict[int, SubtaskExecution] = {}
 
-            for task in tasks:
+            def execute_step(step: PlanStep) -> TaskOutcome:
+                task = task_by_id[step.id]
                 route, route_reason = self._route_task(task)
                 if route == "ceiling":
                     execution = self._escalate_to_ceiling(
@@ -358,7 +488,7 @@ class TwoNodeBackend:
                         ),
                         test_executor=test_executor,
                         converter=converter,
-                        context_accumulator=context_accumulator,
+                        context_accumulator=context_accumulator[0],
                     )
                     execution.route_reason = route_reason
                 else:
@@ -370,31 +500,200 @@ class TwoNodeBackend:
                         constraint_extractor=constraint_extractor,
                         constraint_verifier=constraint_verifier,
                         test_executor=test_executor,
-                        context_accumulator=context_accumulator,
+                        context_accumulator=context_accumulator[0],
                         converter=converter,
                     )
                     execution.route_reason = route_reason
 
-                if execution.proposals and not execution.escalated:
-                    context_accumulator += self._context_from_output(execution.raw_output)
-
-                if not execution.proposals and execution.verdict != "VALIDATED":
-                    execution = self._escalate_to_ceiling(
-                        task=task,
-                        validation_prompt=request,
-                        previous=execution,
-                        test_executor=test_executor,
-                        converter=converter,
-                        context_accumulator=context_accumulator,
-                    )
-                    self._log_escalation(request, execution)
-
+                executions[task.id] = execution
                 if execution.proposals:
-                    context_accumulator += self._context_from_output(execution.raw_output)
+                    context_accumulator[0] += self._context_from_output(
+                        execution.raw_output
+                    )
+                return self._task_outcome(execution)
 
+            def repair_step(
+                step: PlanStep,
+                _outcome: TaskOutcome,
+                failure,
+                _attempt: int,
+            ) -> TaskOutcome:
+                task = task_by_id[step.id]
+                previous = executions[task.id]
+                execution = self._escalate_to_ceiling(
+                    task=task,
+                    validation_prompt=request,
+                    previous=previous,
+                    test_executor=test_executor,
+                    converter=converter,
+                    context_accumulator=context_accumulator[0],
+                )
+                execution.failure_kind = execution.failure_kind or failure.value
+                execution.route_reason = (
+                    previous.route_reason
+                    or f"focused {failure.value} repair escalated to Ceiling"
+                )
+                executions[task.id] = execution
+                self._log_escalation(request, execution)
+                if execution.proposals:
+                    context_accumulator[0] += self._context_from_output(
+                        execution.raw_output
+                    )
+                return self._task_outcome(execution)
+
+            def review_plan(_plan: ExecutionPlan) -> ReviewOutcome:
+                approved, summary, findings = self.ceiling.review(
+                    request,
+                    context_accumulator[0] or planner_context,
+                )
+                return ReviewOutcome(
+                    approved=approved,
+                    summary=summary,
+                    findings=findings,
+                )
+
+            execution_result = ExecutionEngine(
+                execution_plan,
+                self.run_ledger,
+            ).run(
+                execute_step,
+                repair=repair_step,
+                reviewer=review_plan,
+            )
+            result.review_approved = bool(
+                execution_result.review and execution_result.review.approved
+            )
+            if execution_result.review:
+                result.review_summary = execution_result.review.summary
+                result.review_findings = execution_result.review.findings
+            else:
+                result.review_summary = (
+                    "Review skipped because one or more DAG tasks failed."
+                )
+            for task in tasks:
+                execution = executions.get(task.id)
+                if execution is None:
+                    step = next(
+                        item for item in execution_plan.steps if item.id == task.id
+                    )
+                    execution = SubtaskExecution(
+                        task=task,
+                        node="Nexus DAG",
+                        verdict=step.status.value.upper(),
+                        error=step.error or step.result,
+                        failure_kind=(
+                            "dependency"
+                            if step.status == TaskStatus.BLOCKED
+                            else ""
+                        ),
+                        route_reason=(
+                            "recovered verified checkpoint"
+                            if step.status == TaskStatus.COMPLETED
+                            else "dependency gate"
+                        ),
+                    )
                 result.executions.append(execution)
 
         return result
+
+    @staticmethod
+    def _task_outcome(execution: SubtaskExecution) -> TaskOutcome:
+        success = bool(execution.proposals) and execution.verdict in {
+            "VALIDATED",
+            "CEILING_PASS",
+        }
+        return TaskOutcome(
+            success=success,
+            summary=(
+                f"{execution.node} produced {len(execution.proposals)} validated patch(es)"
+                if success
+                else execution.error or execution.verdict
+            ),
+            output=execution.error or execution.guardrail_log,
+            changed_files=[
+                proposal.source_path
+                for proposal in execution.proposals
+                if proposal.source_path
+            ],
+            metadata={
+                "node": execution.node,
+                "verdict": execution.verdict,
+                "escalated": execution.escalated,
+            },
+        )
+
+    @staticmethod
+    def _resumed_plan(planner_analysis: dict | None) -> ExecutionPlan | None:
+        raw = (planner_analysis or {}).get("resume_plan")
+        if not isinstance(raw, dict) or not raw.get("id"):
+            return None
+        plan = ExecutionPlan.from_dict(raw)
+        review_failed = plan.status == TaskStatus.FAILED
+        for step in plan.steps:
+            if review_failed or step.status in {
+                TaskStatus.IN_PROGRESS,
+                TaskStatus.FAILED,
+                TaskStatus.BLOCKED,
+            }:
+                step.status = TaskStatus.PENDING
+                step.error = ""
+        plan.status = TaskStatus.PENDING
+        return plan
+
+    @staticmethod
+    def _execution_plan(
+        request: str,
+        tasks: list[AtomicTask],
+        planner_analysis: dict | None,
+    ) -> ExecutionPlan:
+        analysis = planner_analysis or {}
+        raw_intent = analysis.get("intent", IntentType.BUILD)
+        raw_difficulty = analysis.get("difficulty", Difficulty.COMPLEX)
+        try:
+            intent = (
+                raw_intent
+                if isinstance(raw_intent, IntentType)
+                else IntentType(raw_intent)
+            )
+        except ValueError:
+            intent = IntentType.BUILD
+        try:
+            difficulty = (
+                raw_difficulty
+                if isinstance(raw_difficulty, Difficulty)
+                else Difficulty(raw_difficulty)
+            )
+        except ValueError:
+            difficulty = Difficulty.COMPLEX
+        permitted = [str(item) for item in analysis.get("permitted_files", [])]
+        return ExecutionPlan(
+            id=f"two-node-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S%f')}",
+            goal=request,
+            intent=intent,
+            difficulty=difficulty,
+            plan_type=PlanType.PLANNED,
+            steps=[
+                PlanStep(
+                    id=task.id,
+                    title=task.description[:100],
+                    description=task.description,
+                    depends_on=list(task.depends_on),
+                    permitted_files=extract_prompt_paths(task.description),
+                    acceptance_criteria=[
+                        "Candidate passes schema, path, disk, constraint, and compiler checks"
+                    ],
+                    checks=["candidate validation", "independent review"],
+                    risk="high" if task.scope_level == "vague" else "medium",
+                    retry_limit=1,
+                )
+                for task in tasks
+            ],
+            acceptance_criteria=[
+                str(item) for item in analysis.get("acceptance_criteria", [])
+            ],
+            permitted_files=permitted,
+            retry_policy={"per_task": 1, "total_repairs": max(1, len(tasks))},
+        )
 
     def _execute_with_intern(
         self,
@@ -478,6 +777,7 @@ class TwoNodeBackend:
             raw_output=last_raw,
             guardrail_log="\n".join(logs),
             error=last_failure,
+            failure_kind=classify_failure(last_failure).value,
         )
 
     def _check_intern_response(
@@ -532,6 +832,13 @@ class TwoNodeBackend:
         failed = [check for check in code_checks if not check.passed]
         if failed:
             return "Compiler/validator failed: " + " | ".join(check.format() for check in failed)
+
+        test_failure = self._run_model_test_command(
+            response.test_command,
+            test_executor.workspace_dir,
+        )
+        if test_failure:
+            return test_failure
 
         return ""
 
@@ -600,6 +907,12 @@ class TwoNodeBackend:
                     passed, reason = ConstraintVerifier(manual).verify(constraints, parsed.files)
                     if not passed:
                         raise ValueError(reason)
+                    test_failure = self._run_model_test_command(
+                        parsed.test_command,
+                        candidate_tmp,
+                    )
+                    if test_failure:
+                        raise ValueError(test_failure)
                     self._promote_candidate_files(parsed.files, candidate_tmp, test_executor.workspace_dir)
                 except ValueError as exc:
                     error = f"Ceiling direct validation failed: {exc}"
@@ -618,7 +931,7 @@ class TwoNodeBackend:
             f"[CEILING ATTEMPT {index}]\n{item}" for index, item in enumerate(raw_attempts, 1)
         )
 
-        return SubtaskExecution(
+        execution = SubtaskExecution(
             task=task,
             node="Ceiling directly",
             verdict=verdict,
@@ -630,6 +943,8 @@ class TwoNodeBackend:
             escalated=True,
             error=error,
         )
+        execution.failure_kind = classify_failure(error).value if error else ""
+        return execution
 
     @staticmethod
     def _promote_candidate_files(files, candidate_dir: str, workspace_dir: str) -> None:
@@ -670,7 +985,11 @@ class TwoNodeBackend:
 
     def _seed_workspace(self, request: str, tasks: list[AtomicTask], verification_dir: Path):
         text = request + "\n" + "\n".join(task.description for task in tasks)
-        for raw_path in set(PROMPT_PATH.findall(text)):
+        relevant = {
+            item["path"]
+            for item in self.repo_graph.relevant_files(request, limit=24)
+        }
+        for raw_path in set(PROMPT_PATH.findall(text)) | relevant:
             clean_name = raw_path.lstrip("/\\")
             if not clean_name or "." not in clean_name:
                 continue
@@ -690,7 +1009,11 @@ class TwoNodeBackend:
 
     def _task_context(self, task: AtomicTask, workspace_dir: str, context_accumulator: str) -> str:
         chunks = [context_accumulator] if context_accumulator else []
-        for raw_path in set(PROMPT_PATH.findall(task.description)):
+        relevant = {
+            item["path"]
+            for item in self.repo_graph.relevant_files(task.description, limit=12)
+        }
+        for raw_path in set(PROMPT_PATH.findall(task.description)) | relevant:
             clean_name = raw_path.lstrip("/\\")
             if not clean_name or "." not in clean_name:
                 continue
@@ -748,6 +1071,24 @@ class TwoNodeBackend:
         except Exception:
             pass
 
+    @staticmethod
+    def _run_model_test_command(command: str, workspace: str) -> str:
+        """Run a model-proposed test only after command-policy validation."""
+        if not command.strip():
+            return ""
+        safety = SafetyLayer().check_command(command)
+        if safety.level in {SafetyLevel.BLOCKED, SafetyLevel.DANGEROUS}:
+            return f"Test command rejected by safety policy: {safety.reason}"
+        result = SandboxRunner(workspace).run_shell(
+            command,
+            cwd=workspace,
+            timeout_seconds=120,
+            network=False,
+        )
+        if not result.success:
+            return "Targeted test failed:\n" + result.format_tool_output()[-12000:]
+        return ""
+
     def _context_from_output(self, raw_output: str) -> str:
         parsed = self.parser.parse(raw_output)
         chunks = []
@@ -755,9 +1096,8 @@ class TwoNodeBackend:
             chunks.append(f"# File: {file_action.path}\n{file_action.content[:1200]}")
         return "\n\n".join(chunks)
 
-    def _planner_context(self, analysis: dict | None) -> str:
-        if not analysis:
-            return ""
+    def _planner_context(self, analysis: dict | None, request: str) -> str:
+        analysis = analysis or {}
         intent = analysis.get("intent")
         difficulty = analysis.get("difficulty")
         plan_type = analysis.get("plan_type")
@@ -767,12 +1107,29 @@ class TwoNodeBackend:
         task_dag = analysis.get("task_dag", [])
         def val(item):
             return item.value if hasattr(item, "value") else str(item)
+        graph_summary = self.repo_graph.summary()
+        relevant = self.repo_graph.relevant_files(request, limit=30)
         context = (
             "Nexus planner analysis:\n"
             f"- intent: {val(intent)}\n"
             f"- difficulty: {val(difficulty)}\n"
             f"- plan_type: {val(plan_type)}\n"
-            f"- skills_needed: {', '.join(skills) if skills else 'none'}"
+            f"- skills_needed: {', '.join(skills) if skills else 'none'}\n"
+            f"- repository_languages: "
+            f"{json.dumps(graph_summary.get('languages', {}), sort_keys=True)}\n"
+            f"- repository_frameworks: "
+            f"{', '.join(graph_summary.get('frameworks', [])) or 'none'}\n"
+            f"- discovered_routes: {graph_summary.get('routes', 0)}\n"
+            f"- discovered_models: {graph_summary.get('database_models', 0)}\n"
+            "- task_relevant_files:\n"
+            + (
+                "\n".join(
+                    f"  - {item['path']} score={item['score']} "
+                    f"reasons={','.join(item['reasons'])}"
+                    for item in relevant
+                )
+                or "  - none deterministically ranked"
+            )
         )
         if permitted_files:
             context += "\n- permitted_files: " + ", ".join(permitted_files)

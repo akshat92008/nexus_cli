@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nexusai-cli"
-version = "2.1.0"
-description = "NexusAI — a guarded two-node coding agent with hosted planning and local Nova execution"
+version = "3.0.0"
+description = "NexusAI — a model-agnostic, verification-driven software-engineering runtime"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -40,6 +40,12 @@ dev = [
     "pytest>=8.3,<10",
     "pytest-cov>=6,<8",
     "ruff>=0.11,<1",
+]
+browser = [
+    "playwright>=1.50,<2",
+]
+intelligence = [
+    "tree-sitter-language-pack>=0.9,<1",
 ]
 
 [project.scripts]

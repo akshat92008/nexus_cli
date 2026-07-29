@@ -19,7 +19,7 @@ from typing import Any
 
 from nexus.paths import nexus_home
 
-RUN_SCHEMA_VERSION = "nexus.run.v1"
+RUN_SCHEMA_VERSION = "nexus.run.v2"
 
 
 class RunStatus(str, Enum):
@@ -96,7 +96,7 @@ class RunLedger:
             events.jsonl
             state.json
             checkpoints/0001-*.json
-            final-report.json
+            final_report.json
     """
 
     def __init__(
@@ -144,6 +144,8 @@ class RunLedger:
         self.turn_dir = self.session_dir / self.turn_id
         self.turn_dir.mkdir(parents=True, exist_ok=False)
         (self.turn_dir / "checkpoints").mkdir()
+        (self.turn_dir / "patches").mkdir()
+        (self.turn_dir / "tests").mkdir()
         self._event_counter = 0
         self._checkpoint_counter = 0
 
@@ -164,6 +166,17 @@ class RunLedger:
         _atomic_write_json(self.turn_dir / "request.json", request_record)
         if plan is not None:
             self.record_plan(plan)
+            plan_steps = (
+                getattr(plan, "steps", [])
+                if not isinstance(plan, dict)
+                else plan.get("steps", [])
+            )
+            self.record_tasks(plan_steps)
+        else:
+            self.record_tasks([])
+        _atomic_write_json(self.turn_dir / "costs.json", {})
+        for filename in ("events.jsonl", "model_calls.jsonl", "tool_calls.jsonl"):
+            (self.turn_dir / filename).touch()
 
         state = {
             "schema_version": RUN_SCHEMA_VERSION,
@@ -194,6 +207,114 @@ class RunLedger:
         turn_dir = self._require_turn()
         data = plan.to_dict() if hasattr(plan, "to_dict") else plan
         _atomic_write_json(turn_dir / "plan.json", data)
+
+    def record_tasks(self, tasks: Any) -> None:
+        """Persist task DAG state independently from the planner snapshot."""
+        turn_dir = self._require_turn()
+        normalized = []
+        for task in tasks or []:
+            if hasattr(task, "to_dict"):
+                normalized.append(task.to_dict())
+            elif hasattr(task, "__dataclass_fields__"):
+                normalized.append(asdict(task))
+            elif isinstance(task, dict):
+                normalized.append(dict(task))
+            else:
+                normalized.append({"value": str(task)})
+        _atomic_write_json(
+            turn_dir / "tasks.json",
+            {
+                "schema_version": RUN_SCHEMA_VERSION,
+                "session_id": self.session_id,
+                "turn_id": self.turn_id,
+                "tasks": normalized,
+                "updated_at": _utc_now(),
+            },
+        )
+
+    def record_costs(self, costs: dict[str, Any]) -> None:
+        """Persist the current cost and token snapshot."""
+        turn_dir = self._require_turn()
+        _atomic_write_json(
+            turn_dir / "costs.json",
+            {
+                "schema_version": RUN_SCHEMA_VERSION,
+                "session_id": self.session_id,
+                "turn_id": self.turn_id,
+                "costs": costs,
+                "updated_at": _utc_now(),
+            },
+        )
+
+    def append_model_call(
+        self,
+        *,
+        role: str,
+        model: str,
+        status: str,
+        usage: dict[str, Any] | None = None,
+        task_id: int | str | None = None,
+        detail: str = "",
+    ) -> str:
+        """Append redacted model-call metadata without persisting prompts or secrets."""
+        return self._append_jsonl(
+            "model_calls.jsonl",
+            {
+                "role": role,
+                "model": model,
+                "status": status,
+                "usage": usage or {},
+                "task_id": task_id,
+                "detail": detail,
+            },
+            prefix="model",
+        )
+
+    def append_tool_call(
+        self,
+        *,
+        tool: str,
+        status: str,
+        arguments: dict[str, Any] | None = None,
+        task_id: int | str | None = None,
+        evidence_id: str = "",
+        duration_ms: int = 0,
+    ) -> str:
+        """Append a machine-readable tool call separate from the event narrative."""
+        return self._append_jsonl(
+            "tool_calls.jsonl",
+            {
+                "tool": tool,
+                "status": status,
+                "arguments": arguments or {},
+                "task_id": task_id,
+                "evidence_id": evidence_id,
+                "duration_ms": duration_ms,
+            },
+            prefix="tool",
+        )
+
+    def store_artifact(
+        self,
+        category: str,
+        name: str,
+        content: str | bytes,
+    ) -> Path:
+        """Store a patch or test artifact under the active run directory."""
+        if category not in {"patches", "tests"}:
+            raise ValueError("Run artifacts must use the patches or tests category")
+        turn_dir = self._require_turn()
+        safe_name = "".join(
+            char if char.isalnum() or char in "._-" else "-" for char in name
+        ).strip(".-")
+        if not safe_name:
+            raise ValueError("Artifact name is empty after normalization")
+        target = turn_dir / category / safe_name[:160]
+        if isinstance(content, bytes):
+            target.write_bytes(content)
+        else:
+            target.write_text(content, encoding="utf-8")
+        return target
 
     def append_event(
         self,
@@ -263,6 +384,13 @@ class RunLedger:
         checks: list[dict[str, Any]] | None = None,
         costs: dict[str, Any] | None = None,
         risks: list[str] | None = None,
+        work_completed: list[str] | None = None,
+        checks_skipped: list[str] | None = None,
+        dependencies_added: list[str] | None = None,
+        permissions_used: list[str] | None = None,
+        network_calls: list[str] | None = None,
+        model_providers: list[str] | None = None,
+        assumptions: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Write the final report and close the current turn."""
@@ -280,14 +408,22 @@ class RunLedger:
                 }
                 for item in (criteria or [])
             ],
+            "work_completed": work_completed or [],
             "files_changed": files_changed or [],
             "checks": checks or [],
+            "checks_skipped": checks_skipped or [],
+            "dependencies_added": dependencies_added or [],
+            "permissions_used": permissions_used or [],
+            "network_calls": network_calls or [],
+            "model_providers": model_providers or [],
             "costs": costs or {},
+            "assumptions": assumptions or [],
             "remaining_risks": risks or [],
             "metadata": metadata or {},
             "completed_at": _utc_now(),
         }
-        _atomic_write_json(turn_dir / "final-report.json", report)
+        _atomic_write_json(turn_dir / "final_report.json", report)
+        self.record_costs(costs or {})
         self._update_state(status=status.value, completed_at=report["completed_at"])
 
         session = self._read_json(self.session_path) or {}
@@ -309,7 +445,9 @@ class RunLedger:
             completed_at=completed_at,
         )
         turn_dir = self._require_turn()
-        report_path = turn_dir / "final-report.json"
+        report_path = turn_dir / "final_report.json"
+        if not report_path.is_file():
+            report_path = turn_dir / "final-report.json"
         report = self._read_json(report_path)
         if report is not None:
             report["status"] = RunStatus.ROLLED_BACK.value
@@ -353,9 +491,24 @@ class RunLedger:
         return {
             "request": self._read_json(turn_dir / "request.json") or {},
             "plan": self._read_json(turn_dir / "plan.json") or {},
+            "tasks": self._read_json(turn_dir / "tasks.json") or {},
             "state": self._read_json(turn_dir / "state.json") or {},
+            "costs": self._read_json(turn_dir / "costs.json") or {},
             "checkpoint": self.latest_checkpoint() or {},
-            "final_report": self._read_json(turn_dir / "final-report.json") or {},
+            "final_report": (
+                self._read_json(turn_dir / "final_report.json")
+                or self._read_json(turn_dir / "final-report.json")
+                or {}
+            ),
+            "resumable": (
+                (self._read_json(turn_dir / "state.json") or {}).get("status")
+                in {
+                    RunStatus.RUNNING.value,
+                    RunStatus.FAILED.value,
+                    RunStatus.BLOCKED.value,
+                    RunStatus.PARTIALLY_VERIFIED.value,
+                }
+            ),
         }
 
     def current_paths(self) -> dict[str, str]:
@@ -366,8 +519,14 @@ class RunLedger:
             "request": str(turn_dir / "request.json"),
             "plan": str(turn_dir / "plan.json"),
             "events": str(turn_dir / "events.jsonl"),
+            "tasks": str(turn_dir / "tasks.json"),
+            "model_calls": str(turn_dir / "model_calls.jsonl"),
+            "tool_calls": str(turn_dir / "tool_calls.jsonl"),
+            "costs": str(turn_dir / "costs.json"),
+            "patches": str(turn_dir / "patches"),
+            "tests": str(turn_dir / "tests"),
             "state": str(turn_dir / "state.json"),
-            "final_report": str(turn_dir / "final-report.json"),
+            "final_report": str(turn_dir / "final_report.json"),
         }
 
     def _latest_turn_dir(self) -> Path | None:
@@ -386,6 +545,35 @@ class RunLedger:
         state.update(updates)
         state["updated_at"] = _utc_now()
         _atomic_write_json(state_path, state)
+
+    def _append_jsonl(
+        self,
+        filename: str,
+        payload: dict[str, Any],
+        *,
+        prefix: str,
+    ) -> str:
+        turn_dir = self._require_turn()
+        path = turn_dir / filename
+        count = 0
+        try:
+            count = sum(
+                1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+            )
+        except OSError:
+            pass
+        record_id = f"{prefix}-{count + 1:06d}"
+        record = {
+            "schema_version": RUN_SCHEMA_VERSION,
+            "id": record_id,
+            "timestamp_utc": _utc_now(),
+            **payload,
+        }
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, default=_json_default) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        return record_id
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any] | None:

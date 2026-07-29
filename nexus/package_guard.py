@@ -70,6 +70,14 @@ class PackageGuard:
         if executable in {"pip", "pip3"} and "install" in parts:
             registry = "pypi"
             names = self._positional_after(parts, "install")
+        elif (
+            executable == "uv"
+            and len(parts) > 2
+            and parts[1] == "pip"
+            and "install" in parts
+        ):
+            registry = "pypi"
+            names = self._positional_after(parts, "install")
         elif executable in {"python", "python3"} and len(parts) > 3 and parts[1:3] == ["-m", "pip"] and "install" in parts:
             registry = "pypi"
             names = self._positional_after(parts, "install")

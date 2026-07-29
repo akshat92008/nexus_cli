@@ -17,6 +17,7 @@ import json
 import mimetypes
 import os
 import re
+import shlex
 import subprocess
 import urllib.error
 import urllib.request
@@ -368,6 +369,18 @@ TOOL_DEFINITIONS = [
                         "type": "integer",
                         "description": "Timeout in seconds (default 120).",
                     },
+                    "network": {
+                        "type": "boolean",
+                        "description": "Request explicit network access (default: false).",
+                        "default": False,
+                    },
+                    "require_os_isolation": {
+                        "type": "boolean",
+                        "description": (
+                            "Fail closed unless a native OS sandbox is available."
+                        ),
+                        "default": False,
+                    },
                 },
                 "required": ["command"],
             },
@@ -388,6 +401,13 @@ TOOL_DEFINITIONS = [
                     "cwd": {
                         "type": "string",
                         "description": "Optional working directory.",
+                    },
+                    "network": {
+                        "type": "boolean",
+                        "description": (
+                            "Declare that the background process requires network access."
+                        ),
+                        "default": False,
                     },
                 },
                 "required": ["command"],
@@ -594,6 +614,188 @@ TOOL_DEFINITIONS = [
         },
     },
 ]
+
+TOOL_DEFINITIONS.extend(
+    [
+        {
+            "type": "function",
+            "function": {
+                "name": "repo_context",
+                "description": (
+                    "Rank repository files relevant to a task using paths, symbols, routes, "
+                    "database models, imports, tests, and current Git changes."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {"type": "string"},
+                        "limit": {"type": "integer", "default": 40},
+                    },
+                    "required": ["query"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "repo_routes",
+                "description": "List API and UI routes discovered by the repository index.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "repo_models",
+                "description": "List ORM, Prisma, and SQL models discovered by the repository index.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "repo_navigate",
+                "description": (
+                    "Use a persistent LSP server for document symbols, definitions, or "
+                    "references, with Tree-sitter/RepoGraph fallback for symbols."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "language": {"type": "string"},
+                        "operation": {
+                            "type": "string",
+                            "enum": ["symbols", "definition", "references"],
+                        },
+                        "line": {"type": "integer", "default": 0},
+                        "character": {"type": "integer", "default": 0},
+                    },
+                    "required": ["path", "language", "operation"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "run_process",
+                "description": (
+                    "Run a typed argv command without a shell inside Nexus' strongest available "
+                    "sandbox. Network is off unless explicitly approved."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "argv": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                        },
+                        "cwd": {"type": "string"},
+                        "timeout": {"type": "number", "default": 120},
+                        "network": {"type": "boolean", "default": False},
+                        "require_os_isolation": {"type": "boolean", "default": False},
+                    },
+                    "required": ["argv"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "api_check",
+                "description": "Verify a local HTTP API status, JSON fields, and response text.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "method": {"type": "string", "default": "GET"},
+                        "expected_status": {"type": "integer", "default": 200},
+                        "expected_json": {"type": "object"},
+                        "expected_text": {"type": "string"},
+                        "json_body": {},
+                        "allow_external": {"type": "boolean", "default": False},
+                    },
+                    "required": ["url"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "database_check",
+                "description": "Run read-only SQLite integrity, foreign-key, and schema checks.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "sql": {
+                            "type": "string",
+                            "description": "Optional migration SQL to inspect without executing.",
+                        },
+                    },
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "security_scan",
+                "description": (
+                    "Run Nexus' deterministic secret and unsafe-code pattern scan. "
+                    "This does not claim a complete security audit."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "paths": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": [],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "browser_check",
+                "description": (
+                    "Run a deterministic Playwright browser workflow against localhost "
+                    "(optional nexusai-cli[browser] extra)."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                        "steps": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "action": {"type": "string"},
+                                    "selector": {"type": "string"},
+                                    "value": {"type": "string"},
+                                },
+                                "required": ["action"],
+                            },
+                        },
+                        "screenshot_path": {"type": "string"},
+                        "allow_external": {"type": "boolean", "default": False},
+                    },
+                    "required": ["url"],
+                },
+            },
+        },
+    ]
+)
 
 
 # ── Ignore patterns ─────────────────────────────────────────────────────────
@@ -960,59 +1162,73 @@ def tool_diff_files(file_a: str, file_b: str) -> str:
         return f"❌ Error diffing files: {e}"
 
 
-def tool_run_command(command: str, cwd: str | None = None, timeout: float | int | str = 120) -> str:
-    """Execute a shell command."""
+def tool_run_command(
+    command: str,
+    cwd: str | None = None,
+    timeout: float | int | str = 120,
+    network: bool = False,
+    require_os_isolation: bool = False,
+) -> str:
+    """Execute a reviewed compatibility shell command through SandboxRunner."""
     try:
-        work_dir = cwd or os.getcwd()
+        from nexus.sandbox import SandboxRunner
+
+        work_dir = str(Path(cwd or os.getcwd()).expanduser().resolve())
         if timeout is not None:
             try:
                 timeout = float(timeout)
             except (ValueError, TypeError):
                 timeout = 120.0
-
-        env = {
-            **os.environ,
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "CI": "true",
-            "DEBIAN_FRONTEND": "noninteractive",
-            "PAGER": "cat",
-            "PYTHONUNBUFFERED": "1",
-            "TERM": "dumb",
-        }
-
-        result = subprocess.run(
+        result = SandboxRunner(work_dir).run_shell(
             command,
-            shell=True,
-            capture_output=True,
-            text=True,
             cwd=work_dir,
-            timeout=timeout,
-            env=env,
+            timeout_seconds=timeout,
+            network=network,
+            require_os_isolation=require_os_isolation,
         )
-
-        output_parts = []
-        if result.stdout:
-            output_parts.append(result.stdout)
-        if result.stderr:
-            output_parts.append(f"[stderr]\n{result.stderr}")
-
-        output = "\n".join(output_parts) or "(no output)"
-
-        status = "✅" if result.returncode == 0 else f"❌ (exit code {result.returncode})"
-        return f"{status} $ {command}\n{output}"
-    except subprocess.TimeoutExpired:
-        return f"⏰ Command timed out after {timeout}s: {command}"
+        return result.format_tool_output()
     except Exception as e:
         return f"❌ Error running command: {e}"
+
+
+def tool_run_process(
+    argv: list[str],
+    cwd: str | None = None,
+    timeout: float | int | str = 120,
+    network: bool = False,
+    require_os_isolation: bool = False,
+) -> str:
+    """Execute an argv vector without a shell."""
+    try:
+        from nexus.sandbox import CommandSpec, SandboxRunner
+
+        work_dir = str(Path(cwd or os.getcwd()).expanduser().resolve())
+        spec = CommandSpec.create(
+            argv,
+            work_dir,
+            timeout_seconds=float(timeout),
+            network=network,
+            require_os_isolation=require_os_isolation,
+        )
+        return SandboxRunner(work_dir).run(spec).format_tool_output()
+    except Exception as exc:
+        return f"❌ Error running typed process: {exc}"
 
 
 # Background processes tracking
 _bg_processes: dict[int, dict] = {}
 
-def tool_process_run(command: str, cwd: str | None = None) -> str:
-    """Start a background process."""
+def tool_process_run(
+    command: str,
+    cwd: str | None = None,
+    network: bool = False,
+) -> str:
+    """Start a shell-free background process with a filtered environment."""
     try:
         work_dir = cwd or os.getcwd()
+        argv = shlex.split(command, posix=os.name != "nt")
+        if not argv:
+            return "❌ Background command is empty"
         log_dir = nexus_home() / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1023,14 +1239,41 @@ def tool_process_run(command: str, cwd: str | None = None) -> str:
         stdout_f = open(stdout_log, "w")
         stderr_f = open(stderr_log, "w")
 
+        safe_env = {
+            key: value
+            for key, value in os.environ.items()
+            if key
+            in {
+                "PATH",
+                "LANG",
+                "LC_ALL",
+                "TZ",
+                "TMPDIR",
+                "TEMP",
+                "TMP",
+                "SYSTEMROOT",
+                "WINDIR",
+                "PATHEXT",
+                "VIRTUAL_ENV",
+                "PYTHONPATH",
+                "NODE_PATH",
+                "JAVA_HOME",
+                "GOROOT",
+                "GOPATH",
+                "CARGO_HOME",
+            }
+            or key.startswith("NEXUS_")
+        }
+        safe_env["NEXUS_SANDBOX"] = "restricted-background"
         try:
             proc = subprocess.Popen(
-                command,
-                shell=True,
+                argv,
+                shell=False,
                 stdout=stdout_f,
                 stderr=stderr_f,
                 cwd=work_dir,
-                env={**os.environ},
+                env=safe_env,
+                start_new_session=True,
             )
         finally:
             # Close file handles in the parent — the child process
@@ -1040,6 +1283,7 @@ def tool_process_run(command: str, cwd: str | None = None) -> str:
 
         _bg_processes[proc.pid] = {
             "command": command,
+            "argv": argv,
             "pid": proc.pid,
             "stdout_log": str(stdout_log),
             "stderr_log": str(stderr_log),
@@ -1051,6 +1295,7 @@ def tool_process_run(command: str, cwd: str | None = None) -> str:
             f"✅ Background process started\n"
             f"  PID:    {proc.pid}\n"
             f"  CMD:    {command}\n"
+            f"  Network isolation: policy-only ({'allowed' if network else 'undeclared'})\n"
             f"  Stdout: {stdout_log}\n"
             f"  Stderr: {stderr_log}"
         )
@@ -1312,6 +1557,213 @@ def tool_repo_impact(paths: list[str]) -> str:
         )
     except Exception as exc:
         return f"❌ Repository impact analysis failed: {exc}"
+
+
+def _built_graph():
+    from nexus.repo_graph import RepoGraph
+
+    graph = RepoGraph(os.getcwd())
+    graph.build()
+    return graph
+
+
+def tool_repo_context(query: str, limit: int = 40) -> str:
+    """Return relevance-ranked repository context."""
+    try:
+        graph = _built_graph()
+        return json.dumps(
+            {
+                "query": query,
+                "results": graph.relevant_files(query, limit=max(1, int(limit))),
+                "frameworks": graph.frameworks(),
+                "summary": graph.summary(),
+            },
+            indent=2,
+        )
+    except Exception as exc:
+        return f"❌ Repository context selection failed: {exc}"
+
+
+def tool_repo_routes(query: str = "") -> str:
+    """Return indexed routes."""
+    try:
+        return json.dumps(_built_graph().routes(query), indent=2)
+    except Exception as exc:
+        return f"❌ Repository route discovery failed: {exc}"
+
+
+def tool_repo_models(query: str = "") -> str:
+    """Return indexed database models."""
+    try:
+        return json.dumps(_built_graph().models(query), indent=2)
+    except Exception as exc:
+        return f"❌ Repository model discovery failed: {exc}"
+
+
+_language_service_pools: dict[str, object] = {}
+
+
+def tool_repo_navigate(
+    path: str,
+    language: str,
+    operation: str,
+    line: int = 0,
+    character: int = 0,
+) -> str:
+    """Navigate symbols through LSP with deterministic fallbacks."""
+    from nexus.language_intelligence import (
+        LanguageServicePool,
+        LSPError,
+        TreeSitterAdapter,
+    )
+
+    root = str(Path(os.getcwd()).resolve())
+    pool = _language_service_pools.get(root)
+    if pool is None:
+        pool = LanguageServicePool(root)
+        _language_service_pools[root] = pool
+    try:
+        client = pool.client(language)
+        if operation == "symbols":
+            result = client.document_symbols(path)
+        elif operation == "definition":
+            result = client.definition(path, int(line), int(character))
+        elif operation == "references":
+            result = client.references(path, int(line), int(character))
+        else:
+            return f"❌ Unsupported navigation operation: {operation}"
+        return json.dumps(
+            {"engine": "lsp", "operation": operation, "result": result},
+            indent=2,
+        )
+    except LSPError as lsp_error:
+        if operation != "symbols":
+            return json.dumps(
+                {
+                    "engine": "unavailable",
+                    "operation": operation,
+                    "error": str(lsp_error),
+                    "guidance": (
+                        f"Install a {language} language server for precise {operation}."
+                    ),
+                },
+                indent=2,
+            )
+        target = _resolve_path(path)
+        try:
+            source = target.read_text(encoding="utf-8")
+            adapter = TreeSitterAdapter()
+            if adapter.available:
+                return json.dumps(
+                    {
+                        "engine": "tree-sitter",
+                        "operation": "symbols",
+                        "result": adapter.symbols(source, language),
+                    },
+                    indent=2,
+                )
+        except (OSError, UnicodeDecodeError, LSPError):
+            pass
+        graph = _built_graph()
+        relative = target.resolve().relative_to(Path(root)).as_posix()
+        record = graph.files.get(relative)
+        return json.dumps(
+            {
+                "engine": "repograph",
+                "operation": "symbols",
+                "lsp_error": str(lsp_error),
+                "result": [asdict(item) for item in record.symbols] if record else [],
+            },
+            indent=2,
+        )
+
+
+def tool_api_check(
+    url: str,
+    method: str = "GET",
+    expected_status: int = 200,
+    expected_json: dict | None = None,
+    expected_text: str = "",
+    json_body=None,
+    allow_external: bool = False,
+) -> str:
+    """Verify an HTTP API contract."""
+    from nexus.behavioral import ApiProbeSpec, ApiVerifier
+
+    result = ApiVerifier().verify(
+        ApiProbeSpec(
+            method=method,
+            url=url,
+            expected_status=int(expected_status),
+            expected_json=expected_json,
+            expected_text=expected_text,
+            json_body=json_body,
+            allow_external=allow_external,
+        )
+    )
+    return json.dumps(result.to_dict(), indent=2)
+
+
+def tool_database_check(path: str = "", sql: str = "") -> str:
+    """Run read-only SQLite verification or inspect migration SQL."""
+    from nexus.behavioral import DatabaseVerifier
+
+    verifier = DatabaseVerifier()
+    if sql:
+        findings = verifier.migration_risks(sql)
+        return json.dumps(
+            {
+                "kind": "database_migration",
+                "status": "failed" if findings else "passed",
+                "summary": (
+                    f"{len(findings)} destructive migration operation(s) require approval"
+                    if findings
+                    else "No deterministic destructive migration pattern detected"
+                ),
+                "evidence": {"findings": findings, "executed": False},
+            },
+            indent=2,
+        )
+    if not path:
+        return "❌ database_check requires path or sql"
+    result = verifier.verify_sqlite(_resolve_path(path))
+    return json.dumps(result.to_dict(), indent=2)
+
+
+def tool_security_scan(paths: list[str] | None = None) -> str:
+    """Run deterministic security checks."""
+    from nexus.behavioral import SecurityScanner
+
+    result = SecurityScanner().scan(os.getcwd(), paths)
+    return json.dumps(result.to_dict(), indent=2)
+
+
+def tool_browser_check(
+    url: str,
+    steps: list[dict] | None = None,
+    screenshot_path: str = "",
+    allow_external: bool = False,
+) -> str:
+    """Run an optional Playwright workflow."""
+    from nexus.behavioral import BrowserProbeSpec, BrowserStep, BrowserVerifier
+
+    parsed_steps = tuple(
+        BrowserStep(
+            action=str(item.get("action", "")),
+            selector=str(item.get("selector", "")),
+            value=str(item.get("value", "")),
+        )
+        for item in (steps or [])
+    )
+    result = BrowserVerifier().verify(
+        BrowserProbeSpec(
+            url=url,
+            steps=parsed_steps,
+            screenshot_path=screenshot_path,
+            allow_external=allow_external,
+        )
+    )
+    return json.dumps(result.to_dict(), indent=2)
 
 
 # ─── GIT TOOL IMPLEMENTATIONS ───────────────────────────────────────────
@@ -1604,8 +2056,13 @@ TOOL_DISPATCH = {
     "repo_index": tool_repo_index,
     "repo_symbols": tool_repo_symbols,
     "repo_impact": tool_repo_impact,
+    "repo_context": tool_repo_context,
+    "repo_routes": tool_repo_routes,
+    "repo_models": tool_repo_models,
+    "repo_navigate": tool_repo_navigate,
     # Shell tools
     "run_command": tool_run_command,
+    "run_process": tool_run_process,
     "process_run": tool_process_run,
     "process_status": tool_process_status,
     "process_stop": tool_process_stop,
@@ -1618,6 +2075,11 @@ TOOL_DISPATCH = {
     # Web tools
     "web_fetch": tool_web_fetch,
     "web_search": tool_web_search,
+    # Behavioral verification tools
+    "api_check": tool_api_check,
+    "database_check": tool_database_check,
+    "security_scan": tool_security_scan,
+    "browser_check": tool_browser_check,
 }
 
 
@@ -1642,6 +2104,13 @@ def normalize_tool_arguments(name: str, args: dict) -> dict:
             for alt in ("cmd", "shell_command", "script", "exec"):
                 if alt in args:
                     args["command"] = args.pop(alt)
+                    break
+    elif name == "run_process":
+        if "argv" not in args:
+            for alt in ("args", "command", "cmd"):
+                if alt in args:
+                    value = args.pop(alt)
+                    args["argv"] = value if isinstance(value, list) else [str(value)]
                     break
     elif name == "search_code":
         if "pattern" not in args:

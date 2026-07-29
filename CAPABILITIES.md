@@ -46,15 +46,18 @@ This report separates model generation ability from Nexus enforcement. “Guarde
   risk, retry ceilings, checks, and tool budgets.
 - Model switching plus visible per-subtask Nova/Ceiling routing reasons, retries, escalations, and free-first counters.
 
-### 25 built-in tools
+### 34 built-in tools
 
 - Files: read, write, edit, line patch, batch edit, metadata, and diff.
-- Search/context: regex code search, glob discovery, directory listing,
-  compact project tree, persistent RepoGraph indexing, symbol/caller lookup,
-  reverse dependencies, and impacted-test analysis.
-- Shell: blocking commands plus Nexus-owned background start, status/full logs, and stop.
+- Search/context: regex search, glob discovery, project tree, RepoGraph
+  relevance, symbols, callers, reverse dependencies, impacted tests, API
+  routes, database models, ownership, Git changes, LSP, and Tree-sitter.
+- Shell: shell-free argv commands, reviewed compatibility commands, and
+  Nexus-owned background start, status/full logs, and stop.
 - Git: status, diff, commit, log, and branch operations.
 - Web: fetch and search.
+- Verification: API contracts, browser workflows, SQLite integrity, migration
+  risk, and bounded security scanning.
 
 ### Safety and trust
 
@@ -81,34 +84,51 @@ This report separates model generation ability from Nexus enforcement. “Guarde
 - Hard hosted-call and token limits are enforced. Currency limits are enforced
   only when the user supplies explicit provider prices, avoiding fabricated
   cost claims.
-- `--workspace` creates a dedicated Git branch/worktree before agent activity.
+- Modifying CLI and web sessions automatically create a dedicated Git
+  branch/worktree; non-Git projects use a persistent isolated copy.
+- Native Bubblewrap or macOS sandbox execution is selected only after a real
+  capability probe. Typed processes can fail closed when OS isolation is
+  required; fallback results explicitly report that network isolation is
+  policy-only.
+- Durable runs contain separate model/tool call logs, costs, patch/test
+  artifacts, checkpoints, and the canonical `final_report.json`.
+- `nexus runs`, `inspect`, `replay`, `resume`, and `rollback` provide
+  command-line lifecycle management and interrupted-task continuation.
 
 ### Extensibility and interfaces
 
 - Skills, isolated subagents, lifecycle hooks, trust-gated local plugins, and stdio MCP tool discovery/invocation.
+- Stable versioned provider, tool, and policy protocols discovered through
+  Python entry points.
 - Terminal CLI and Starlette/WebSocket browser UI.
-- Project instruction support for `NEXUS.md` and `CLAUDE.md` after explicit digest approval.
+- Project instruction support for `NEXUS.md`, `AGENTS.md`, and `CLAUDE.md`
+  after explicit digest approval, plus `.nexus/policies.yml`.
+- Headless operational presets for plan, review, workspace, autonomous,
+  local-only, maximum-quality, budget, and CI execution.
+- Versioned public benchmark manifests with disposable repository copies,
+  shell-free checks, scope measurement, model/cost metrics, and JSON results.
 
 ## Current Claude Code parity boundary
 
-Nexus now covers the core local coding-agent surface: tool loop,
-file/shell/git/search/RepoGraph tools, diff approvals, permission modes,
-durable run checkpoints, complete-run rollback, opt-in worktrees, sessions,
-project instructions, skills, subagents, hooks, MCP, plugins, background
-processes, headless output, hard usage limits, and evidence-backed
-verification.
+Nexus 3.0 covers the complete open runtime described in its product
+specification: guarded model orchestration, persistent repository
+intelligence, typed task contracts and tools, automatic workspaces, optional
+native sandboxing, bounded repair and review, behavioral verification,
+recovery, budgets, policies, extensions, CI, issue workflows, and public
+benchmark infrastructure.
 
-It does not yet implement a long-lived LSP client, automatic worktrees for
-every modifying run, OS/container isolation, automatic continuation of an
-interrupted task DAG, notebook-cell-aware editing, scheduled prompt
-orchestration, peer-to-peer agent teams, or Anthropic-specific
-cloud/mobile/IDE/Remote Control services. See `CLAUDE_CODE_PARITY.md` for the
-source-backed feature comparison and `ROADMAP.md` for the complete long-term
-Nexus product contract.
+This is a capability boundary, not a claim that every provider/model will
+solve every broad product prompt. Browser verification requires the optional
+Playwright runtime; precise language navigation requires an installed language
+server or Tree-sitter extra; compiler, service, database, and deployment checks
+require those local systems. Nexus reports unavailable checks and remaining
+risk rather than converting them into success. Anthropic-specific managed
+cloud, mobile, IDE, and Remote Control services are not Nexus features.
 
 ## Raw verification record
 
-- Version 2.1 deterministic Python suite: **149 passed** on 2026-07-29.
+- Version 3.0 deterministic Python suite and release-gate totals are recorded
+  by the tagged CI run and benchmark JSON rather than hard-coded before CI.
 - The release gate also runs Ruff, byte-compilation, sdist/wheel builds, an
   isolated wheel-target install, packaged Nova and web backend imports,
   `nexus --version`, and `nexus --doctor`.

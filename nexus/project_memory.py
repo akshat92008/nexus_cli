@@ -51,7 +51,7 @@ class ProjectRules:
         if not self.conventions and not self.raw_content:
             return ""
 
-        parts = ["\n[PROJECT RULES — from NEXUS.md]"]
+        parts = ["\n[TRUSTED PROJECT INSTRUCTIONS]"]
 
         if self.conventions:
             for rule in self.conventions:
@@ -73,7 +73,7 @@ class ProjectRules:
             for cmd in self.blocked_commands:
                 parts.append(f"    ✗ {cmd}")
 
-        parts.append("[END PROJECT RULES]")
+        parts.append("[END TRUSTED PROJECT INSTRUCTIONS]")
         return "\n".join(parts)
 
 
@@ -93,7 +93,14 @@ class ProjectMemory:
         safety_config = pm.get_safety_config()
     """
 
-    RULE_FILENAMES = ["NEXUS.md", "nexus.md", ".nexus.md", "AGENT.md", "CLAUDE.md"]
+    RULE_FILENAMES = [
+        "NEXUS.md",
+        "nexus.md",
+        ".nexus.md",
+        "AGENTS.md",
+        "AGENT.md",
+        "CLAUDE.md",
+    ]
 
     def __init__(self, working_dir: str):
         self.working_dir = working_dir
@@ -143,16 +150,34 @@ class ProjectMemory:
 
     def rules_file_exists(self) -> bool:
         """Check if a NEXUS.md file exists."""
-        return self._rules_path is not None or self._find_rules_file() is not None
+        return bool(self.get_rules_paths())
 
     def get_rules_path(self) -> str | None:
-        """Get the path to the NEXUS.md file if it exists."""
+        """Get the first project instruction path for legacy callers."""
         if self._rules_path:
             return self._rules_path
-        path = self._find_rules_file()
-        if path:
-            self._rules_path = str(path)
+        paths = self.get_rules_paths()
+        if paths:
+            self._rules_path = paths[0]
         return self._rules_path
+
+    def get_rules_paths(self) -> list[str]:
+        """Return every instruction file at the nearest repository level."""
+        search_dir = Path(self.working_dir).resolve()
+        for _ in range(5):
+            found = [
+                str((search_dir / filename).resolve())
+                for filename in self.RULE_FILENAMES
+                if (search_dir / filename).is_file()
+            ]
+            if found:
+                return list(dict.fromkeys(found))
+            parent = search_dir.parent
+            if parent == search_dir:
+                break
+            search_dir = parent
+        global_rules = Path.home() / ".nexusai" / "global_rules.md"
+        return [str(global_rules.resolve())] if global_rules.is_file() else []
 
     def create_default_rules(self) -> str:
         """Create a default NEXUS.md file in the project root."""
@@ -194,37 +219,26 @@ class ProjectMemory:
 
     def _find_rules_file(self) -> Path | None:
         """Search for NEXUS.md in the project and parent directories."""
-        search_dir = Path(self.working_dir).resolve()
-
-        # Check current and parent directories (up to 5 levels)
-        for _ in range(5):
-            for filename in self.RULE_FILENAMES:
-                candidate = search_dir / filename
-                if candidate.exists() and candidate.is_file():
-                    return candidate
-            parent = search_dir.parent
-            if parent == search_dir:
-                break
-            search_dir = parent
-
-        # Check global rules
-        global_rules = Path.home() / ".nexusai" / "global_rules.md"
-        if global_rules.exists():
-            return global_rules
-
-        return None
+        paths = self.get_rules_paths()
+        return Path(paths[0]) if paths else None
 
     def _find_and_read_rules(self) -> str:
         """Find and read the rules file."""
-        path = self._find_rules_file()
-        if not path:
+        paths = [Path(item) for item in self.get_rules_paths()]
+        if not paths:
             return ""
 
-        self._rules_path = str(path)
-        try:
-            return path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            return ""
+        self._rules_path = str(paths[0])
+        contents = []
+        for path in paths:
+            try:
+                contents.append(
+                    f"# Instructions from {path.name}\n"
+                    + path.read_text(encoding="utf-8", errors="replace")
+                )
+            except OSError:
+                continue
+        return "\n\n".join(contents)
 
     def _parse_rules(self, content: str) -> ProjectRules:
         """Parse NEXUS.md content into structured rules."""

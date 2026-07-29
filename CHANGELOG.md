@@ -6,6 +6,50 @@ All notable changes to NexusAI CLI are documented here.
 
 No changes yet.
 
+## [3.0.0] - 2026-07-29
+
+Single integrated Nexus software-engineering runtime.
+
+### Added
+
+- Dependency-aware execution engine with persisted task transitions, focused
+  failure classification and repair, verified checkpoints, and independent
+  review.
+- Automatic Git worktrees for modifying sessions and isolated persistent
+  copies for non-Git projects.
+- Typed shell-free process execution, native Bubblewrap/macOS sandbox probes,
+  filtered environments, limits, visible fallback semantics, and fail-closed
+  isolation.
+- RepoGraph v2 route, model, configuration, ownership, framework, Git-history,
+  and relevance indexing; persistent LSP clients and optional Tree-sitter
+  navigation.
+- Deterministic API, browser, SQLite, migration-risk, and bounded security
+  verification adapters.
+- Complete durable lifecycle commands: `runs`, `inspect`, `replay`, `resume`,
+  and `rollback`.
+- Canonical model/tool/cost logs plus patch, test, checkpoint, and
+  `final_report.json` artifacts.
+- Structured `.nexus/policies.yml` capabilities and versioned provider, tool,
+  and policy extension contracts.
+- `nexus run`, CI, local-only, budget, maximum-quality, issue-solving, JSONL,
+  and documented cost-control aliases.
+- Reproducible `nexus.benchmark.v1` manifests, disposable repository execution,
+  typed acceptance checks, scope/cost metrics, and versioned JSON results.
+- Nine repository, language-navigation, typed-process, and behavioral tools,
+  bringing the built-in tool surface to 34.
+
+### Changed
+
+- Nexus no longer accepts a verified mutation alone as proof that the user
+  objective succeeded; deterministic validation and review evidence are
+  required for a fully verified result.
+- Web sessions use isolated workspaces and modifying CLI modes isolate by
+  default.
+- Background processes use argv execution and filtered environments instead
+  of `shell=True`.
+- The run artifact contract now uses the specified `final_report.json` name,
+  while readers remain compatible with 2.x reports.
+
 ## [2.1.0] - 2026-07-29
 
 Verified-runtime foundation for the long-term Nexus engineering contract.
@@ -75,6 +119,7 @@ First launch release for the guarded Nexus CLI and Nova 3B v11 integration.
 - Web mode binds to loopback, validates browser origins, and does not expose
   common secret-bearing files.
 
-[Unreleased]: https://github.com/akshat92008/nexus_cli/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/akshat92008/nexus_cli/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/akshat92008/nexus_cli/compare/v2.1.0...v3.0.0
 [2.1.0]: https://github.com/akshat92008/nexus_cli/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/akshat92008/nexus_cli/releases/tag/v2.0.0

@@ -33,45 +33,41 @@ no model is the source of truth.
    `PARTIALLY VERIFIED`, `UNVERIFIED`, `BLOCKED`, `FAILED`, or
    `AWAITING APPROVAL`.
 
-## Capability labels
+## Version 3.0 final implementation boundary
 
-- **Implemented** means the launch package contains the behavior and the
-  deterministic suite exercises its critical path.
-- **Partial** means an early implementation exists but does not yet satisfy the
-  complete product contract.
-- **Planned** means the capability is part of the long-term design and must not
-  be advertised as available.
+`Implemented` means the package contains the behavior and deterministic tests
+exercise its critical path. `Host-dependent` means Nexus contains the adapter
+and correctly reports availability, but the external compiler, language
+server, browser, service, database, credentials, or sandbox must exist on the
+machine. No unavailable adapter is presented as verified.
 
-## Version 2.1 implementation boundary
-
-| Area | Status | Version 2.1 evidence boundary |
+| Area | Status | Version 3.0 evidence boundary |
 |---|---|---|
 | Installable CLI | Implemented | Self-contained wheel, `nexus` entry point, version and doctor smoke checks |
 | Hosted + local model routing | Implemented | Hosted planner paths plus local Ollama `nova_codex` executor |
-| Nova V11 task contract | Implemented | Bounded tasks, canonical parser, path and action checks |
+| Nova V11 task contract | Implemented | Bounded tasks, `nova.patch.v1`, legacy parser compatibility, path/action/schema checks |
 | Candidate isolation | Implemented | Nova output is replayed and validated in temporary candidate directories |
-| Workspace isolation | Partial | Path confinement plus opt-in `--workspace` branch/worktree isolation; making isolation automatic for every modifying run remains planned |
+| Workspace isolation | Implemented | Automatic Git worktrees and persistent non-Git copies, with explicit opt-out |
 | File approvals | Implemented | Exact diff preview, apply, reject, replacement, and one-use confirmations |
-| Command safety | Partial | Typed Nexus tools, classifications, approvals, timeouts, and output capture; OS/container sandboxing remains planned |
+| Command safety | Implemented / host-dependent | Shell-free argv tools, filtered environment, limits, native sandbox capability probes, visible restricted fallback, and fail-closed mode |
 | Package safety | Implemented | Registry checks; missing packages block; registry outages require explicit approval |
 | Syntax and compiler checks | Implemented | Python, JSON, Node, Go, C, C++, and Rust where local compilers exist |
-| Behavioral verification | Partial | Project test/build discovery and evidence exist; browser/API/database verification remains planned |
+| Behavioral verification | Implemented / host-dependent | API contracts, SQLite integrity, migration risk, security patterns, and optional Playwright workflows |
 | Evidence trail | Implemented | Persistent JSONL records, hashes, command exit codes, and re-verification |
-| Recovery | Partial | Canonical run state, verified checkpoints, complete-run rollback, conversation resume, and plan restoration exist; automatic continuation from an interrupted task remains planned |
-| Repository intelligence | Partial | Persistent incremental RepoGraph, Python AST symbols, multi-language imports/references, callers, reverse dependencies, and impacted tests exist; Tree-sitter and long-lived LSP mapping remain planned |
-| Extensions | Partial | Skills, hooks, plugins, subagents, and stdio MCP exist; stable public SDKs and registry remain planned |
-| Headless operation | Implemented | Print, JSON, stream-JSON, meaningful process status, and CI-compatible diagnostics |
-| Web interface | Implemented | Loopback-only Starlette/WebSocket UI with workspace and sensitive-file controls |
+| Recovery | Implemented | Canonical state, verified checkpoints, task-aware continuation, inspection, replay, and rollback commands |
+| Repository intelligence | Implemented / host-dependent | Persistent RepoGraph plus routes, models, config, ownership, Git relevance, LSP clients, Tree-sitter fallback, and task-local context |
+| Extensions | Implemented | Versioned provider/tool/policy protocols, skills, hooks, plugins, subagents, and stdio MCP |
+| Headless operation | Implemented | `nexus run`, JSON/JSONL, CI policy preset, meaningful process status, and diagnostics |
+| Web interface | Implemented | Loopback-only Starlette/WebSocket UI with automatic workspace and sensitive-file controls |
 | Cost controls | Implemented | Hard hosted-call, prompt-token, completion-token, and configured-currency ceilings plus persisted usage reports |
-| Run contract and final report | Implemented | Versioned request, plan, event, checkpoint, state, acceptance-result, cost, risk, and final-report artifacts |
-| Public benchmarks | Partial | Reproducible local evidence harness exists; versioned public benchmark program remains planned |
+| Run contract and final report | Implemented | Complete canonical artifact layout and transparent objective, checks, permissions, network, provider, cost, assumption, and risk fields |
+| Public benchmarks | Implemented | Versioned manifest, disposable copies, typed verification, scope/cost/retry metrics, and JSON output |
 
 ## Phase 1 — Reliable core
 
 Objective: make small and medium repository changes safely and consistently.
 
-Version 2.0 delivered the launch foundation, and version 2.1 adds the durable
-runtime, worktree mode, hard usage limits, and persistent repository graph:
+Version 3.0 integrates the complete reliable-core contract:
 
 - clean package installation;
 - a packaged Nova V11 adapter instead of a neighboring-checkout dependency;
@@ -82,15 +78,10 @@ runtime, worktree mode, hard usage limits, and persistent repository graph:
 - CI, build, and isolated-wheel smoke tests;
 - provider diagnostics and machine-readable exit behavior.
 
-Remaining Phase 1 exit criteria:
-
-- make the versioned `nova.patch.v1` JSON schema the local Nova default after
-  retraining or compatibility validation, then retire the legacy parser;
-- make isolated Git worktrees automatic for every modifying run rather than an
-  opt-in operating mode;
-- add an OS/container sandbox with enforceable network and environment policy;
-- resume an interrupted run from its most recent verified checkpoint;
-- add platform-specific release tests for Linux, macOS, and Windows.
+The legacy Nova V11 Markdown parser remains solely for compatibility with the
+existing trained model. New hosted execution uses `nova.patch.v1`. Native
+sandbox enforcement is host-dependent and never silently inferred from the
+presence of a binary.
 
 ## Phase 2 — Verified agent
 
@@ -111,14 +102,11 @@ Required capabilities:
 - enforce per-run token and currency ceilings;
 - report every satisfied, skipped, blocked, and unverified criterion.
 
-Version 2.1 foundations now persist acceptance criteria, permitted files,
-dependency-aware task metadata, risk, retry ceilings, tool budgets, hosted
-usage ceilings, checkpoints, and final criterion outcomes. The remaining Phase
-2 work is to make this contract drive every task transition and repair loop,
-then validate it on a meaningful held-out feature/bug-fix suite.
-
-Phase 2 is complete only when Nexus can reproducibly solve a meaningful suite
-of feature and bug-fix tasks without false success.
+Version 3.0 makes this contract drive dependency gates, task checkpoints,
+failure classification, focused repair ceilings, escalation, independent
+review, deterministic checks, and final criterion status. Reproducibility is
+measured through versioned benchmark manifests; provider performance remains
+an empirical result rather than a product guarantee.
 
 ## Phase 3 — Repository intelligence
 
@@ -136,6 +124,10 @@ Required capabilities:
 - Git-aware relevance ranking;
 - task-local context selection, deduplication, caching, and bounded logs;
 - incremental index updates after every accepted patch.
+
+Version 3.0 implements this through RepoGraph v2, native Python AST analysis,
+conservative multi-language parsing, Git/CODEOWNERS relevance, persistent LSP
+clients, and optional Tree-sitter language packs.
 
 ## Phase 4 — One-prompt engineering workflows
 
@@ -159,6 +151,11 @@ This phase does not mean one model generates an application in one response.
 Nexus manages a checkpointed software-development lifecycle across models and
 deterministic tools.
 
+Version 3.0 supplies that lifecycle, including API, database, browser, security,
+and service-process adapters. The actual breadth of a product build depends on
+the configured models and locally available runtimes, and skipped checks remain
+visible in the final report.
+
 ## Phase 5 — Platform ecosystem
 
 Objective: make Nexus an extensible engineering platform.
@@ -172,6 +169,11 @@ Required capabilities:
 - headless policy profiles;
 - extension signing, trust, compatibility, and discovery;
 - public benchmark datasets, harnesses, results, and regression dashboards.
+
+Version 3.0 ships the provider/tool/policy SDK contracts, existing skill/hook/
+plugin/subagent/MCP systems, CI and issue entry points, and a reproducible
+benchmark manifest/result format. Dedicated vendor-hosted IDE, mobile, and
+cloud-control products are outside this open CLI runtime.
 
 ## Long-term operating modes
 
@@ -245,6 +247,8 @@ Automatic testing and repair
 Verified working result
 ```
 
-This roadmap is a delivery contract, not a claim that every target capability
-already exists. Current measured behavior remains documented in
+This contract describes the integrated Nexus 3.0 runtime. It is not a claim
+that external models, compilers, browsers, services, or deployment platforms
+are present, nor that every broad prompt succeeds. Current measured behavior
+and all host-dependent boundaries remain documented in
 [CAPABILITIES.md](CAPABILITIES.md).

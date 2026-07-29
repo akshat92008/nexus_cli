@@ -8,9 +8,11 @@ user preferences, skills, subagents, hooks, MCP, and plugins.
 import json
 import os
 import re
+import shlex
 import sys
 import time
 from datetime import datetime
+from fnmatch import fnmatch
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -22,6 +24,7 @@ from nexus.budget import BudgetController, BudgetedClient, BudgetExceeded, Budge
 from nexus.code_validation import GeneratedCodeValidator
 from nexus.context_manager import ContextManager
 from nexus.evidence import EvidenceTrail, command_exit_code, verify_mutation
+from nexus.extensions import ExtensionRegistry, ToolContext
 from nexus.history import init_history
 from nexus.hooks.base import HookContext, HookEvent
 from nexus.hooks.builtin import create_builtin_hooks
@@ -37,9 +40,11 @@ from nexus.paths import nexus_home
 # Phase 1: Core Engine Imports
 from nexus.planner import IntentType, PlanningEngine, PlanType, TaskStatus
 from nexus.plugins.loader import PluginLoader
+from nexus.policy import PermissionDecision, PolicyLoader
 from nexus.project_memory import ProjectMemory
 from nexus.reflection import ReflectionEngine, ReflectionVerdict
 from nexus.repo_graph import RepoGraph
+from nexus.run_catalog import RunCatalog
 from nexus.run_state import CriterionResult, CriterionStatus, RunLedger, RunStatus
 from nexus.safety import SafetyCheck, SafetyLayer, SafetyLevel
 
@@ -89,7 +94,7 @@ You use tool calls to inspect, edit, search, execute, and manage code while resp
 - You never claim success from your own prose. Completion requires literal tool output and a Nexus evidence record.
 - File edits may be held as diff previews. If a tool returns PENDING_EDIT, tell the user which approval ID is waiting; do not claim the change was applied.
 
-## YOUR 25 TOOLS
+## YOUR ENGINEERING TOOLS
 
 ### File Operations
 - `read_file(path, start_line?, end_line?)` — Read file contents with line numbers
@@ -108,10 +113,19 @@ You use tool calls to inspect, edit, search, execute, and manage code while resp
 - `repo_index(force?)` — Build or refresh the persistent repository graph
 - `repo_symbols(query, include_callers?, limit?)` — Find declarations and callers
 - `repo_impact(paths[])` — Find reverse dependencies and impacted tests
+- `repo_context(query)` — Rank task-relevant files using symbols, routes, models and Git
+- `repo_routes(query?)` / `repo_models(query?)` — Inspect application topology
 
 ### Shell Execution
-- `run_command(command, cwd?, timeout?)` — Execute any shell command (blocking)
+- `run_process(argv[], cwd?, timeout?, network?)` — Preferred shell-free sandboxed process
+- `run_command(command, cwd?, timeout?)` — Reviewed compatibility shell command
 - `process_run(command, cwd?)` — Start a background process (non-blocking, returns PID)
+
+### Behavioural Verification
+- `api_check(...)` — Validate a local HTTP contract
+- `database_check(path)` — Validate SQLite integrity and foreign keys read-only
+- `browser_check(...)` — Run an optional Playwright workflow
+- `security_scan(paths?)` — Deterministic security pattern scan
 
 ### Git Operations
 - `git_status(cwd?)` — Full repo status (branch, staged, modified, untracked)
@@ -263,8 +277,13 @@ class Agent:
         self._active_objective = ""
         self._active_analysis: dict[str, Any] = {}
         self._active_plan = None
+        self._permissions_used: set[str] = set()
+        self._network_calls: list[str] = []
         self.package_guard = PackageGuard()
         self.trust = TrustStore(self.working_dir)
+        self.policy = PolicyLoader(self.working_dir).load()
+        self.extensions = ExtensionRegistry()
+        self.extensions.discover()
         self.routing_stats = {"nova_tasks": 0, "ceiling_tasks": 0, "nova_retries": 0, "escalations": 0}
 
         # ── Phase 1: Core Engines ────────────────────────────────────────
@@ -279,8 +298,14 @@ class Agent:
 
         # ── Phase 2: Skills & Subagents ──────────────────────────────────
         self.skills = SkillRegistry()
-        self._skill_loader = SkillLoader(self.skills)
+        self._skill_loader = SkillLoader(
+            self.skills,
+            self.working_dir,
+            trusted=self.trust.is_approved,
+        )
         self._skill_loader.load_all()
+        for extension_skill in self.extensions.loaded("skills"):
+            self.skills.register(extension_skill)
 
         # ── Phase 3: Hooks Engine ────────────────────────────────────────
         self.hooks = HookRunner(self.working_dir)
@@ -330,8 +355,8 @@ class Agent:
             local_plugin_configs = list((Path(self.working_dir) / "nexus_plugins").glob("*/plugin.json"))
             if any(not self.trust.is_approved(path) for path in local_plugin_configs):
                 self.plugin_loader.plugins.clear()
-            rules_path = self.project_mem.get_rules_path()
-            if rules_path and not self.trust.is_approved(rules_path):
+            rules_paths = self.project_mem.get_rules_paths()
+            if any(not self.trust.is_approved(path) for path in rules_paths):
                 self.project_mem._rules = None
                 self.safety.configure_from_rules({})
                 return
@@ -360,8 +385,13 @@ class Agent:
 
         # Project memory (NEXUS.md rules)
         try:
-            rules_path = self.project_mem.get_rules_path()
-            addon = self.project_mem.get_prompt_addon() if not rules_path or self.trust.is_approved(rules_path) else ""
+            rules_paths = self.project_mem.get_rules_paths()
+            addon = (
+                self.project_mem.get_prompt_addon()
+                if not rules_paths
+                or all(self.trust.is_approved(path) for path in rules_paths)
+                else ""
+            )
             if addon:
                 prompt += "\n" + addon
         except Exception:
@@ -492,11 +522,21 @@ class Agent:
     ) -> None:
         """Create the canonical run directory before model or tool activity."""
         self.budget.reset()
-        self._active_objective = user_input
+        objective_override = getattr(self, "_resume_objective_override", None)
+        self._active_objective = objective_override or user_input
+        self._resume_objective_override = None
         self._active_analysis = dict(analysis)
         self._active_plan = plan
         self._run_history_start = len(self.history.changes)
         self._turn_evidence_start = len(self.evidence.records())
+        self._permissions_used = {f"permission_mode:{self.permission_mode}"}
+        self._network_calls = []
+        self.routing_stats = {
+            "nova_tasks": 0,
+            "ceiling_tasks": 0,
+            "nova_retries": 0,
+            "escalations": 0,
+        }
         plan_record = plan or {
             "plan_type": "direct",
             "goal": user_input,
@@ -510,7 +550,7 @@ class Agent:
             ),
         }
         self.run_ledger.begin(
-            user_input,
+            self._active_objective,
             analysis=analysis,
             plan=plan_record,
             metadata={
@@ -546,19 +586,41 @@ class Agent:
         successful_command_text = {
             item.get("command", "") for item in passing_commands if item.get("command")
         }
+        latest_behavioral_status = {
+            item.get("tool", ""): item.get("status")
+            for item in evidence
+            if item.get("kind") == "behavioral_verification"
+        }
         failed_evidence = [
             item
             for item in evidence
             if item.get("status") == "failed"
+            and item.get("kind") not in {"routing", "independent_review"}
             and not (
                 item.get("kind") == "command"
                 and item.get("command", "") in successful_command_text
+            )
+            and not (
+                item.get("kind") == "behavioral_verification"
+                and latest_behavioral_status.get(item.get("tool", "")) == "verified"
             )
         ]
         verified_mutations = [
             item
             for item in evidence
             if item.get("kind") == "file_mutation" and item.get("status") == "verified"
+        ]
+        passing_behavioral = [
+            item
+            for item in evidence
+            if item.get("kind") == "behavioral_verification"
+            and item.get("status") == "verified"
+        ]
+        approved_reviews = [
+            item
+            for item in evidence
+            if item.get("kind") == "independent_review"
+            and item.get("status") == "verified"
         ]
         passing_checks = [
             item
@@ -591,7 +653,7 @@ class Agent:
             elif "test" in lowered or "regression" in lowered or "coverage" in lowered:
                 markers = ("test", "pytest", "jest", "vitest", "rspec", "phpunit")
             else:
-                return passing_commands
+                return []
             return [
                 item
                 for item in passing_commands
@@ -616,14 +678,21 @@ class Agent:
         for criterion in criteria_text:
             lowered = criterion.lower()
             if "unrelated files" in lowered:
-                outside = [
-                    item["filepath"]
-                    for item in changes
-                    if not _is_relative_to(
-                        Path(item["filepath"]).resolve(),
-                        Path(self.working_dir),
-                    )
-                ]
+                permitted = list(getattr(plan, "permitted_files", []) or [])
+                outside = []
+                for item in changes:
+                    changed_path = Path(item["filepath"]).resolve()
+                    if not _is_relative_to(changed_path, Path(self.working_dir)):
+                        outside.append(item["filepath"])
+                        continue
+                    relative = changed_path.relative_to(
+                        Path(self.working_dir).resolve()
+                    ).as_posix()
+                    if permitted and not any(
+                        fnmatch(relative, pattern) or relative == pattern
+                        for pattern in permitted
+                    ):
+                        outside.append(relative)
                 results.append(
                     CriterionResult(
                         criterion,
@@ -631,7 +700,11 @@ class Agent:
                         detail=(
                             "Out-of-scope changes: " + ", ".join(outside)
                             if outside
-                            else "All recorded changes remained inside the authorized workspace."
+                            else (
+                                "All recorded changes matched the plan's permitted files."
+                                if permitted
+                                else "All recorded changes remained inside the authorized workspace."
+                            )
                         ),
                     )
                 )
@@ -655,6 +728,56 @@ class Agent:
                             "Every recorded mutation passed disk verification."
                             if satisfied
                             else "No complete verified mutation set was recorded."
+                        ),
+                    )
+                )
+            elif "requested objective is implemented" in lowered:
+                objective_evidence = [
+                    *verified_mutations,
+                    *passing_checks,
+                    *passing_behavioral,
+                    *approved_reviews,
+                ]
+                objective_satisfied = bool(verified_mutations) and bool(
+                    passing_checks or passing_behavioral
+                ) and bool(approved_reviews or self._is_nova_model())
+                results.append(
+                    CriterionResult(
+                        criterion,
+                        (
+                            CriterionStatus.SATISFIED
+                            if objective_satisfied
+                            else CriterionStatus.UNVERIFIED
+                        ),
+                        evidence_ids=[item["id"] for item in objective_evidence],
+                        detail=(
+                            "Verified mutations, deterministic checks, and worker review "
+                            "support the requested objective."
+                            if objective_satisfied
+                            else "A mutation alone is insufficient; deterministic checks "
+                            "and review evidence are required."
+                        ),
+                    )
+                )
+            elif "security" in lowered or "vulnerab" in lowered:
+                security_evidence = [
+                    item
+                    for item in passing_behavioral
+                    if item.get("tool") == "security_scan"
+                ] + matching_checks(criterion)
+                results.append(
+                    CriterionResult(
+                        criterion,
+                        (
+                            CriterionStatus.SATISFIED
+                            if security_evidence
+                            else CriterionStatus.UNVERIFIED
+                        ),
+                        evidence_ids=[item["id"] for item in security_evidence],
+                        detail=(
+                            "A passing bounded security check was recorded."
+                            if security_evidence
+                            else "No passing security check was recorded."
                         ),
                     )
                 )
@@ -685,15 +808,6 @@ class Agent:
                         CriterionStatus.UNSATISFIED,
                         evidence_ids=[item["id"] for item in failed_evidence],
                         detail="One or more execution evidence records failed.",
-                    )
-                )
-            elif verified_mutations:
-                results.append(
-                    CriterionResult(
-                        criterion,
-                        CriterionStatus.SATISFIED,
-                        evidence_ids=[item["id"] for item in verified_mutations],
-                        detail="Verified workspace mutations support this criterion.",
                     )
                 )
             else:
@@ -753,11 +867,51 @@ class Agent:
             checks=checks,
             costs=self.budget.snapshot(),
             risks=risks,
+            work_completed=[
+                f"Updated {Path(item['filepath']).name}" for item in changes
+            ],
+            checks_skipped=[
+                item.criterion
+                for item in results
+                if item.status in {
+                    CriterionStatus.SKIPPED,
+                    CriterionStatus.BLOCKED,
+                    CriterionStatus.UNVERIFIED,
+                }
+            ],
+            dependencies_added=sorted(
+                {
+                    (
+                        f"{item.get('metadata', {}).get('registry', 'registry')}:"
+                        f"{item.get('metadata', {}).get('name', 'unknown')}"
+                    )
+                    for item in evidence
+                    if item.get("kind") == "package_registry"
+                    and item.get("status") in {"pass", "warn"}
+                }
+            ),
+            permissions_used=sorted(self._permissions_used),
+            network_calls=list(dict.fromkeys(self._network_calls)),
+            model_providers=list(
+                dict.fromkeys(
+                    [
+                        self.model_key,
+                        *(
+                            [self.model_cfg.get("intern_model", "nova_codex")]
+                            if self.routing_stats["nova_tasks"]
+                            else []
+                        ),
+                    ]
+                )
+            ),
+            assumptions=[],
             metadata={
                 "model": self.model_key,
                 "response_excerpt": _redact_runtime_text((content or "")[:2000]),
                 "evidence_path": str(self.evidence.path),
                 "workspace": self.working_dir,
+                "history_start": self._run_history_start,
+                "history_end": len(self.history.changes),
             },
         )
         return report
@@ -915,6 +1069,18 @@ class Agent:
         for plugin in self.plugin_loader.plugins.values():
             tools.extend(plugin.get_tools())
 
+        for extension_tool in self.extensions.loaded("tools"):
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": extension_tool.name,
+                        "description": extension_tool.description,
+                        "parameters": extension_tool.input_schema,
+                    },
+                }
+            )
+
         # MCP tools
         try:
             tools.extend(self.mcp.get_all_tool_definitions())
@@ -941,6 +1107,14 @@ class Agent:
             _user_confirmed=_user_confirmed,
             _edit_confirmed=_edit_confirmed,
         )
+        if _user_confirmed:
+            self._permissions_used.add(f"{name}: explicit approval")
+        if success and name in {"web_fetch", "web_search", "api_check", "browser_check"}:
+            target = str(args.get("url") or args.get("query") or "")
+            self._network_calls.append(f"{name}: {target}")
+        elif success and args.get("network"):
+            target = str(args.get("command") or args.get("argv") or name)
+            self._network_calls.append(f"{name}: {target}")
         if self.run_ledger.turn_dir:
             safe_args = {
                 key: _redact_runtime_text(value) if isinstance(value, str) else value
@@ -968,6 +1142,17 @@ class Agent:
                     "duration_ms": int((time.monotonic() - started) * 1000),
                 },
             )
+            evidence_records = self.evidence.records(limit=1)
+            self.run_ledger.append_tool_call(
+                tool=name,
+                status="verified" if success else "failed",
+                arguments=safe_args,
+                evidence_id=(
+                    evidence_records[-1].get("id", "") if evidence_records else ""
+                ),
+                duration_ms=int((time.monotonic() - started) * 1000),
+            )
+            self.run_ledger.record_costs(self.budget.snapshot())
             mutation_tools = {"write_file", "edit_file", "patch_file", "multi_edit"}
             if success and name in mutation_tools:
                 raw_paths = (
@@ -986,7 +1171,7 @@ class Agent:
                     history_count=len(self.history.changes),
                     metadata={"paths": [path for path in raw_paths if path]},
                 )
-            elif success and name == "run_command":
+            elif success and name in ("run_command", "run_process"):
                 self.run_ledger.checkpoint(
                     "command-completed",
                     plan=self._active_plan,
@@ -1019,14 +1204,191 @@ class Agent:
         nova_guardrail = args.pop("_nova_guardrail", None)
         file_path = args.get("path", "") or args.get("file_path", "")
         command = args.get("command", "")
+        if name == "run_process":
+            raw_argv = args.get("argv", [])
+            command = shlex.join(str(item) for item in raw_argv) if raw_argv else ""
+        if name in {"run_command", "run_process", "process_run"} and re.search(
+            r"\b(?:curl|wget|ssh|scp|sftp|ftp|rsync|gh)\b"
+            r"|\bgit\s+(?:clone|fetch|pull|push)\b"
+            r"|\b(?:pip|pip3|uv)\s+(?:pip\s+)?install\b"
+            r"|\b(?:npm|pnpm|yarn)\s+(?:add|install|publish)\b"
+            r"|\b(?:docker|podman)\s+(?:pull|push)\b"
+            r"|\bcargo\s+(?:add|install)\b|\bgo\s+get\b",
+            command.lower(),
+        ):
+            args["network"] = True
+            pending_args["network"] = True
         mutation_tools = ("write_file", "edit_file", "patch_file", "multi_edit")
+        read_tools = {
+            "read_file",
+            "file_info",
+            "diff_files",
+            "search_code",
+            "list_directory",
+            "find_files",
+            "get_project_structure",
+            "repo_index",
+            "repo_symbols",
+            "repo_impact",
+            "repo_context",
+            "repo_routes",
+            "repo_models",
+            "repo_navigate",
+            "database_check",
+            "security_scan",
+        }
+
+        scope_paths = []
+        if name == "multi_edit":
+            scope_paths.extend(
+                str(item.get("path", "")) for item in args.get("edits", [])
+            )
+        elif file_path:
+            scope_paths.append(str(file_path))
+        if name == "diff_files":
+            scope_paths.extend(
+                str(args.get(key, "")) for key in ("file_a", "file_b")
+            )
+        elif name in {"search_code", "find_files"}:
+            scope_paths.append(str(args.get("directory", "")))
+        elif name in {"run_command", "run_process", "process_run"}:
+            scope_paths.append(str(args.get("cwd", "")))
+        elif name == "repo_impact":
+            scope_paths.extend(str(item) for item in args.get("paths", []))
+        elif name == "security_scan":
+            scope_paths.extend(str(item) for item in args.get("paths", []) or [])
+        elif name == "browser_check":
+            scope_paths.append(str(args.get("screenshot_path", "")))
+        scope_paths = list(dict.fromkeys(item for item in scope_paths if item))
 
         if name in self.disallowed_tools:
             return f"❌ BLOCKED: {name} is denied by the active permission rules.", False
         if self.allowed_tools and name not in self.allowed_tools:
             return f"❌ BLOCKED: {name} is not in the active tool allowlist.", False
-        if self.permission_mode == "plan" and (name in mutation_tools or name in ("run_command", "process_run") or name.startswith("git_")):
+        if self.permission_mode == "plan" and (
+            name in mutation_tools
+            or name in ("run_command", "run_process", "process_run")
+            or name.startswith("git_")
+        ):
             return "❌ BLOCKED: Plan mode is read-only. Switch permission mode before executing changes.", False
+
+        policy_capability = ""
+        policy_targets: list[str] = []
+        if name in mutation_tools:
+            policy_capability = "write"
+            policy_targets = scope_paths
+        elif name in ("run_command", "run_process", "process_run"):
+            normalized_command = command.lower()
+            if re.search(r"\bgit\s+push\b", normalized_command):
+                policy_capability = "git_push"
+            elif re.search(
+                r"\b(?:pip|pip3|uv)\s+(?:pip\s+)?install\b"
+                r"|\b(?:npm|pnpm|yarn)\s+(?:add|install)\b"
+                r"|\bcargo\s+add\b|\bgo\s+get\b",
+                normalized_command,
+            ):
+                policy_capability = "package_install"
+            elif re.search(
+                r"\b(?:kubectl\s+(?:apply|delete)|helm\s+(?:install|upgrade)|"
+                r"terraform\s+apply|vercel\s+deploy)\b",
+                normalized_command,
+            ):
+                policy_capability = "deployment"
+            else:
+                policy_capability = "command"
+            policy_targets = [command]
+        elif name.startswith("git_"):
+            policy_capability = "command"
+            policy_targets = [name]
+        elif name in read_tools:
+            policy_capability = "read"
+            policy_targets = scope_paths or [name]
+        elif name in ("web_fetch", "web_search", "api_check", "browser_check"):
+            policy_capability = "network_access"
+            policy_targets = [str(args.get("url") or args.get("query") or "")]
+
+        if policy_capability:
+            approval_targets = []
+            for policy_target in policy_targets or [name]:
+                policy_decision = self.policy.decide(
+                    policy_capability,
+                    policy_target,
+                )
+                extension_asked = False
+                for provider in self.extensions.loaded("policies"):
+                    external = str(
+                        provider.decide(
+                            policy_capability,
+                            policy_target,
+                            ToolContext(
+                                working_dir=self.working_dir,
+                                session_id=self.conversation_id,
+                                permission_mode=self.permission_mode,
+                            ),
+                        )
+                    ).lower()
+                    if external == PermissionDecision.DENY.value:
+                        policy_decision = PermissionDecision.DENY
+                        break
+                    if external == PermissionDecision.ASK.value:
+                        policy_decision = PermissionDecision.ASK
+                        extension_asked = True
+                if policy_decision == PermissionDecision.DENY:
+                    return (
+                        f"❌ BLOCKED: repository policy denies {policy_capability} "
+                        f"for {policy_target or name}.",
+                        False,
+                    )
+                if policy_decision == PermissionDecision.ASK and (
+                    self.policy.source or extension_asked
+                ):
+                    approval_targets.append(policy_target or name)
+            policy_requires_approval = (
+                approval_targets and not _user_confirmed
+            )
+            if policy_requires_approval:
+                policy_target = ", ".join(approval_targets)
+                policy_check = SafetyCheck(
+                    level=SafetyLevel.DANGEROUS,
+                    operation=f"{policy_capability}: {policy_target or name}",
+                    reason=f"Repository policy requires approval for {policy_capability}",
+                    details=policy_target or name,
+                    requires_confirmation=True,
+                )
+                confirmation_id = self._queue_confirmation(
+                    name=name,
+                    args=pending_args,
+                    safety_check=policy_check,
+                    edit_confirmed=_edit_confirmed,
+                )
+                return (
+                    "⏸️ PENDING_CONFIRMATION "
+                    f"[{confirmation_id}]: {policy_check.reason}. "
+                    f"Enter /confirm {confirmation_id} or /cancel {confirmation_id}.",
+                    False,
+                )
+
+        requests_network = bool(args.get("network")) or bool(args.get("allow_external"))
+        if requests_network and not _user_confirmed:
+            network_check = SafetyCheck(
+                level=SafetyLevel.DANGEROUS,
+                operation=f"{name} network access",
+                reason="Network access is disabled by default",
+                details=command or str(args.get("url", "")),
+                requires_confirmation=True,
+            )
+            confirmation_id = self._queue_confirmation(
+                name=name,
+                args=pending_args,
+                safety_check=network_check,
+                edit_confirmed=_edit_confirmed,
+            )
+            return (
+                "⏸️ PENDING_CONFIRMATION "
+                f"[{confirmation_id}]: {network_check.reason}. "
+                f"Enter /confirm {confirmation_id} or /cancel {confirmation_id}.",
+                False,
+            )
 
         if name in mutation_tools:
             if nova_guardrail is not None and not nova_guardrail.get("passed"):
@@ -1053,11 +1415,6 @@ class Agent:
         # Resolve scope before previews, dependency inspection, hooks, or tool
         # dispatch. This prevents an unapproved path from being read merely to
         # construct a diff.
-        scope_paths = (
-            [edit.get("path", "") for edit in args.get("edits", [])]
-            if name == "multi_edit"
-            else [file_path]
-        )
         for scoped_path in (item for item in scope_paths if item):
             resolved_file = Path(scoped_path).expanduser()
             if not resolved_file.is_absolute():
@@ -1095,7 +1452,7 @@ class Agent:
         if name in mutation_tools:
             for package_path, proposed_content in self._dependency_candidates(name, args):
                 package_checks.extend(self.package_guard.check_file_change(package_path, proposed_content))
-        elif name in ("run_command", "process_run") and command:
+        elif name in ("run_command", "run_process", "process_run") and command:
             package_checks = self.package_guard.check_command(command)
         if package_checks:
             for check in package_checks:
@@ -1105,7 +1462,11 @@ class Agent:
                     status=check.status,
                     tool=name,
                     raw_output=check.reason,
-                    metadata={"registry_url": check.url},
+                    metadata={
+                        "registry": check.registry,
+                        "name": check.name,
+                        "registry_url": check.url,
+                    },
                 )
             blocked = [check for check in package_checks if check.blocked]
             if blocked:
@@ -1153,13 +1514,19 @@ class Agent:
                 )
 
         # ── File diff approval gate ──────────────────────────────────────
-        if name in mutation_tools and not _edit_confirmed and self.permission_mode != "acceptEdits":
-            ok, diff = preview_mutation(name, args, self.working_dir)
+        mutation_diff = ""
+        if name in mutation_tools:
+            ok, mutation_diff = preview_mutation(name, args, self.working_dir)
             if not ok:
-                return f"❌ Cannot create a safe diff preview: {diff}", False
-            edit_id = self._queue_edit(name, pending_args, diff)
+                return f"❌ Cannot create a safe diff preview: {mutation_diff}", False
+        if (
+            name in mutation_tools
+            and not _edit_confirmed
+            and self.permission_mode != "acceptEdits"
+        ):
+            edit_id = self._queue_edit(name, pending_args, mutation_diff)
             return (
-                f"⏸️ PENDING_EDIT [{edit_id}] — no file was changed.\n{diff}\n"
+                f"⏸️ PENDING_EDIT [{edit_id}] — no file was changed.\n{mutation_diff}\n"
                 f"Use /apply {edit_id}, /reject {edit_id}, or /edit-pending {edit_id} <replacement-file>.",
                 False,
             )
@@ -1174,7 +1541,7 @@ class Agent:
         elif name in ("edit_file", "patch_file", "multi_edit"):
             event_before = HookEvent.BEFORE_FILE_EDIT
             event_after = HookEvent.AFTER_FILE_EDIT
-        elif name in ("run_command", "process_run"):
+        elif name in ("run_command", "run_process", "process_run"):
             event_before = HookEvent.BEFORE_COMMAND
             event_after = HookEvent.AFTER_COMMAND
         elif name == "git_commit":
@@ -1198,7 +1565,7 @@ class Agent:
 
         # ── 3. Safety check ──────────────────────────────────────────────
         safety_check = None
-        if name in ("run_command", "process_run") and command:
+        if name in ("run_command", "run_process", "process_run") and command:
             safety_check = self.safety.check_command(command)
         elif name == "multi_edit":
             for edit in args.get("edits", []):
@@ -1268,6 +1635,34 @@ class Agent:
                 break
 
         if not plugin_handled:
+            for extension_tool in self.extensions.loaded("tools"):
+                if extension_tool.name != name:
+                    continue
+                try:
+                    extension_result = extension_tool.invoke(
+                        args,
+                        ToolContext(
+                            working_dir=self.working_dir,
+                            session_id=self.conversation_id,
+                            task_id=(
+                                str(self._active_plan.current_step)
+                                if self._active_plan is not None
+                                else ""
+                            ),
+                            permission_mode=self.permission_mode,
+                        ),
+                    )
+                    result = (
+                        extension_result
+                        if isinstance(extension_result, str)
+                        else json.dumps(extension_result, ensure_ascii=False)
+                    )
+                except Exception as exc:
+                    result = f"❌ Extension tool error: {exc}"
+                plugin_handled = True
+                break
+
+        if not plugin_handled:
             if self.mcp.is_mcp_tool(name):
                 result = self.mcp.call_tool(name, args)
             else:
@@ -1280,6 +1675,11 @@ class Agent:
             result = package_warning_text + "\n" + result
 
         success = not result.startswith(("❌", "⏰", "⏸️"))
+        if name in ("api_check", "database_check", "browser_check", "security_scan"):
+            try:
+                success = json.loads(result).get("status") == "passed"
+            except (AttributeError, TypeError, json.JSONDecodeError):
+                success = False
 
         # ── Verified-completion evidence ─────────────────────────────────
         if success and name in mutation_tools:
@@ -1316,9 +1716,19 @@ class Agent:
             )
             if not verified:
                 return f"❌ WRITE VERIFICATION FAILED: {detail}\nRaw tool output:\n{result}", False
+            if self.run_ledger.turn_dir and mutation_diff:
+                self.run_ledger.store_artifact(
+                    "patches",
+                    f"{name}-{len(self.history.changes):04d}.diff",
+                    mutation_diff,
+                )
             result += f"\n🔎 VERIFIED: {detail}\nEvidence: {self.evidence.path}"
-        elif name in ("run_command", "process_run"):
-            exit_code = command_exit_code(result) if name == "run_command" else None
+        elif name in ("run_command", "run_process", "process_run"):
+            exit_code = (
+                command_exit_code(result)
+                if name in ("run_command", "run_process")
+                else None
+            )
             status = "verified" if success and (exit_code == 0 or name == "process_run") else "failed"
             self.evidence.append(
                 kind="command",
@@ -1328,6 +1738,20 @@ class Agent:
                 command=command,
                 exit_code=exit_code,
                 raw_output=result,
+            )
+        elif name in ("api_check", "database_check", "browser_check", "security_scan"):
+            probe_status = ""
+            try:
+                probe_status = str(json.loads(result).get("status", ""))
+            except (TypeError, json.JSONDecodeError):
+                pass
+            self.evidence.append(
+                kind="behavioral_verification",
+                claim=f"executed {name}",
+                status="verified" if success and probe_status == "passed" else "failed",
+                tool=name,
+                raw_output=result,
+                metadata={"probe_status": probe_status},
             )
         elif name.startswith("git_"):
             self.evidence.append(
@@ -1545,7 +1969,7 @@ class Agent:
                 return f"[bold {ui.ORANGE}]⚡ Surgical Code Edit:[/] [bold {ui.CYAN}]{path_str}[/] [bold {ui.GOLD}]({lines} lines / {chars:,} bytes)[/]"
             return f"[bold {ui.ORANGE}]⚡ Preparing Surgical Code Edit...[/] [bold {ui.GOLD}]({chars:,} bytes)[/]"
 
-        elif name in ("run_command", "process_run"):
+        elif name in ("run_command", "run_process", "process_run"):
             if cmd_str:
                 clean_cmd = cmd_str.replace("\\n", " ").replace("\n", " ")
                 return f"[bold {ui.ORANGE}]⚡ Guarded Shell Execution:[/] [bold {ui.WHITE}]{clean_cmd[:65]}[/]"
@@ -1661,8 +2085,10 @@ class Agent:
             elif name in ("edit_file", "patch_file"):
                 path_val = args.get("path", "")
                 exec_msg = f"Applying edit to {path_val}..."
-            elif name in ("run_command", "process_run"):
+            elif name in ("run_command", "run_process", "process_run"):
                 cmd_val = args.get("command", "")
+                if name == "run_process":
+                    cmd_val = shlex.join(str(item) for item in args.get("argv", []))
                 exec_msg = f"Running command: {cmd_val[:60]}..."
 
             with ui.console.status(f"[bold {ui.ORANGE}]⚡ {exec_msg}[/]", spinner="bouncingBar"):
@@ -1784,11 +2210,25 @@ class Agent:
                     live.stop()
 
                 content, tool_calls = self._handle_stream(stream)
+                self.run_ledger.append_model_call(
+                    role="planner_executor",
+                    model=self.model_cfg["id"],
+                    status="verified",
+                    usage=self.budget.snapshot().get("usage", {}),
+                    detail=f"stream iteration {iteration}",
+                )
                 _rate_limit_retries = 0  # Reset on success
                 _key_switches = 0
 
             except Exception as e:
                 error_msg = str(e)
+                if self.run_ledger.turn_dir:
+                    self.run_ledger.append_model_call(
+                        role="planner_executor",
+                        model=self.model_cfg["id"],
+                        status="failed",
+                        detail=_redact_runtime_text(error_msg[:1000]),
+                    )
                 if isinstance(e, BudgetExceeded):
                     content = f"BLOCKED: {error_msg}"
                     self.run_ledger.append_event(
@@ -1946,12 +2386,16 @@ class Agent:
         """
         self._load_rules_and_preferences()
         self._update_system_prompt()
-        analysis = self.planner.analyze(user_input)
-        plan = (
+        analysis_override = getattr(self, "_resume_analysis_override", None)
+        plan_override = getattr(self, "_resume_plan_override", None)
+        analysis = analysis_override or self.planner.analyze(user_input)
+        plan = plan_override or (
             self.planner.create_plan(user_input, analysis)
             if analysis["plan_type"] == PlanType.PLANNED
             else None
         )
+        self._resume_analysis_override = None
+        self._resume_plan_override = None
         if plan:
             analysis["acceptance_criteria"] = plan.acceptance_criteria
             analysis["permitted_files"] = plan.permitted_files
@@ -2015,9 +2459,36 @@ class Agent:
                 if hasattr(response, "usage") and response.usage:
                     self.total_prompt_tokens += response.usage.prompt_tokens or 0
                     self.total_completion_tokens += response.usage.completion_tokens or 0
+                self.run_ledger.append_model_call(
+                    role="planner_executor",
+                    model=self.model_cfg["id"],
+                    status="verified",
+                    usage={
+                        "prompt_tokens": int(
+                            getattr(getattr(response, "usage", None), "prompt_tokens", 0)
+                            or 0
+                        ),
+                        "completion_tokens": int(
+                            getattr(
+                                getattr(response, "usage", None),
+                                "completion_tokens",
+                                0,
+                            )
+                            or 0
+                        ),
+                    },
+                    detail=f"headless iteration {iteration}",
+                )
 
             except Exception as e:
                 error_msg = str(e)
+                if self.run_ledger.turn_dir:
+                    self.run_ledger.append_model_call(
+                        role="planner_executor",
+                        model=self.model_cfg["id"],
+                        status="failed",
+                        detail=_redact_runtime_text(error_msg[:1000]),
+                    )
                 if isinstance(e, BudgetExceeded):
                     content = f"BLOCKED: {error_msg}"
                     self.run_ledger.append_event(
@@ -2102,6 +2573,74 @@ class Agent:
         self._finish_managed_run(final_content, events)
         return final_content, events
 
+    def resume_interrupted(self, run_id: str) -> tuple[str, list[dict]]:
+        """Continue an interrupted run from its persisted plan/checkpoint."""
+        from nexus.planner import ExecutionPlan
+
+        catalog = RunCatalog()
+        turn_dir = catalog.resolve(run_id)
+        inspected = catalog.inspect(run_id)
+        state = inspected.get("state", {})
+        if state.get("status") in {
+            RunStatus.VERIFIED.value,
+            RunStatus.ROLLED_BACK.value,
+        }:
+            raise ValueError(f"Run is already terminal: {state.get('status')}")
+        request_record = inspected.get("request", {})
+        expected_workspace = Path(
+            request_record.get("working_dir") or self.working_dir
+        ).expanduser().resolve()
+        if expected_workspace != Path(self.working_dir).resolve():
+            raise ValueError(
+                "Resume workspace mismatch: "
+                f"expected {expected_workspace}, got {self.working_dir}"
+            )
+        plan_data = inspected.get("plan", {})
+        if not plan_data.get("id"):
+            raise ValueError("Interrupted run has no resumable execution plan")
+        plan = ExecutionPlan.from_dict(plan_data)
+        self.planner.current_plan = plan
+        session_id = turn_dir.parent.name
+        self.conversation_id = session_id
+        self.history = init_history(session_id)
+        self.evidence = EvidenceTrail(session_id)
+        self.run_ledger = RunLedger(session_id, self.working_dir)
+        saved = self.memory.load_conversation(session_id)
+        if saved:
+            self.messages = list(saved.get("messages", []))
+
+        original = str(request_record.get("request", "")).strip()
+        checkpoint = inspected.get("checkpoint", {})
+        pending = [
+            step.id
+            for step in plan.steps
+            if step.status in {TaskStatus.PENDING, TaskStatus.IN_PROGRESS, TaskStatus.FAILED}
+        ]
+        completed = [
+            step.id for step in plan.steps if step.status == TaskStatus.COMPLETED
+        ]
+        resume_prompt = (
+            f"{original}\n\n"
+            "[NEXUS CRASH RECOVERY]\n"
+            f"Resume from checkpoint {checkpoint.get('checkpoint', 'none')} "
+            f"({checkpoint.get('label', 'no label')}).\n"
+            f"Already completed task ids: {completed or 'none'}.\n"
+            f"Continue only pending/failed task ids: {pending or 'none'}.\n"
+            "Re-read current disk state, do not repeat verified mutations, and rerun "
+            "the required deterministic checks before claiming completion."
+        )
+        self._resume_plan_override = plan
+        self._resume_objective_override = original
+        self._resume_analysis_override = {
+            "intent": plan.intent,
+            "difficulty": plan.difficulty,
+            "plan_type": plan.plan_type,
+            "skills_needed": plan.skills_needed,
+            "resume_parent": f"{session_id}/{turn_dir.name}",
+            "resume_plan": plan.to_dict(),
+        }
+        return self.run_non_interactive(resume_prompt)
+
     def _run_two_node_turn(self, user_input: str, analysis: dict, emit_ui: bool = True) -> tuple[str, list[dict]]:
         """Run a hosted-model turn through Ceiling planning and Nova Intern execution."""
         from nexus.two_node_backend import TwoNodeBackend
@@ -2115,6 +2654,7 @@ class Agent:
             ceiling_model_name=self.model_cfg["name"],
             working_dir=self.working_dir,
             intern_model=self.model_cfg.get("intern_model", "nova_codex"),
+            run_ledger=self.run_ledger,
         )
 
         try:
@@ -2134,49 +2674,171 @@ class Agent:
                 self.messages.pop()
             return self._run_nova_turn(user_input, emit_ui=emit_ui)
 
-        breakdown = result.format_breakdown()
+        def record_result(candidate, phase: str) -> None:
+            if candidate.execution_plan is not None:
+                self._active_plan = candidate.execution_plan
+                self.planner.current_plan = candidate.execution_plan
+            self.run_ledger.append_model_call(
+                role=f"ceiling_{phase}",
+                model=self.model_cfg["id"],
+                status=(
+                    "verified"
+                    if candidate.review_approved
+                    else "failed"
+                ),
+                usage=self.budget.snapshot().get("usage", {}),
+                detail=candidate.review_summary,
+            )
+            self.evidence.append(
+                kind="independent_review",
+                claim=f"independent reviewer evaluated {phase} candidate",
+                status="verified" if candidate.review_approved else "failed",
+                raw_output=candidate.review_summary,
+                metadata={"findings": candidate.review_findings},
+            )
+            for execution in candidate.executions:
+                if execution.node.startswith("Nova") and not execution.escalated:
+                    self.routing_stats["nova_tasks"] += 1
+                else:
+                    self.routing_stats["ceiling_tasks"] += 1
+                self.routing_stats["nova_retries"] += max(0, execution.attempts - 1)
+                if execution.escalated:
+                    self.routing_stats["escalations"] += 1
+                self.evidence.append(
+                    kind="routing",
+                    claim=f"subtask {execution.task.id} routed to {execution.node}",
+                    status="verified" if execution.proposals else "failed",
+                    raw_output=(
+                        execution.guardrail_log
+                        + "\n\n[RAW MODEL OUTPUT]\n"
+                        + execution.raw_output
+                    ).strip(),
+                    metadata={
+                        "reason": execution.route_reason,
+                        "attempts": execution.attempts,
+                        "verdict": execution.verdict,
+                        "escalated": execution.escalated,
+                        "failure_kind": execution.failure_kind,
+                    },
+                )
+
+        def apply_result(candidate, phase: str) -> list[str]:
+            changed: list[str] = []
+            for proposal in candidate.proposals:
+                args = dict(proposal.args)
+                display_args = {
+                    key: value for key, value in args.items() if key != "_nova_guardrail"
+                }
+                if emit_ui:
+                    ui.print_tool_call(proposal.name, display_args)
+                tool_result, success = self._execute_tool_with_safety(proposal.name, args)
+                if emit_ui:
+                    ui.print_tool_result(tool_result, success)
+                events.append(
+                    {
+                        "type": "tool_call",
+                        "name": proposal.name,
+                        "args": display_args,
+                        "result": tool_result,
+                        "success": success,
+                        "node": phase,
+                        "guardrail": proposal.guardrail_summary,
+                    }
+                )
+                if success:
+                    path = str(display_args.get("path", ""))
+                    if path:
+                        changed.append(path)
+            return changed
+
+        breakdowns = [result.format_breakdown()]
+        record_result(result, "initial")
+
+        if not result.review_approved and result.review_findings:
+            repair_analysis = {
+                key: value
+                for key, value in analysis.items()
+                if key != "resume_plan"
+            }
+            focused_request = (
+                f"{user_input}\n\nIndependent review rejected the candidate. "
+                "Produce the smallest complete repair addressing only these findings:\n"
+                + "\n".join(f"- {item}" for item in result.review_findings)
+            )
+            repair_result = backend.run(
+                focused_request,
+                planner_analysis=repair_analysis,
+            )
+            record_result(repair_result, "review_repair")
+            breakdowns.append(repair_result.format_breakdown())
+            result = repair_result
+
+        changed_paths = apply_result(result, "two-node")
+        applied = bool(changed_paths) and all(
+            event.get("success", False)
+            for event in events
+            if event.get("type") == "tool_call"
+        )
+        recovered_without_edits = bool(
+            result.review_approved
+            and not result.proposals
+            and result.execution_plan is not None
+            and result.execution_plan.steps
+            and all(
+                step.status == TaskStatus.COMPLETED
+                for step in result.execution_plan.steps
+            )
+            and any(
+                execution.route_reason == "recovered verified checkpoint"
+                for execution in result.executions
+            )
+        )
+        if applied:
+            security_result, security_ok = self._execute_tool_with_safety(
+                "security_scan",
+                {"paths": changed_paths},
+            )
+            events.append(
+                {
+                    "type": "tool_call",
+                    "name": "security_scan",
+                    "args": {"paths": changed_paths},
+                    "result": security_result,
+                    "success": security_ok,
+                    "node": "nexus-verifier",
+                }
+            )
+        if applied or recovered_without_edits:
+            verification_report = self._record_verification_report(self.verifier.run_all())
+            if emit_ui:
+                ui.console.print(verification_report.format_report())
+            if not verification_report.all_passed:
+                repair_analysis = {
+                    key: value
+                    for key, value in analysis.items()
+                    if key != "resume_plan"
+                }
+                focused_request = (
+                    f"{user_input}\n\nThe candidate was applied in an isolated workspace, "
+                    "but deterministic verification failed. Repair only the failing checks "
+                    "and preserve already passing behavior.\n\n"
+                    f"{verification_report.format_report()}"
+                )
+                repair_result = backend.run(
+                    focused_request,
+                    planner_analysis=repair_analysis,
+                )
+                record_result(repair_result, "verification_repair")
+                breakdowns.append(repair_result.format_breakdown())
+                if repair_result.review_approved:
+                    apply_result(repair_result, "two-node-repair")
+                    rerun = self._record_verification_report(self.verifier.run_all())
+                    if emit_ui:
+                        ui.console.print(rerun.format_report())
+
+        breakdown = "\n\n".join(breakdowns)
         if emit_ui:
             ui.console.print(breakdown)
-
-        for proposal in result.proposals:
-            args = dict(proposal.args)
-            display_args = {k: v for k, v in args.items() if k != "_nova_guardrail"}
-            if emit_ui:
-                ui.print_tool_call(proposal.name, display_args)
-            tool_result, success = self._execute_tool_with_safety(proposal.name, args)
-            if emit_ui:
-                ui.print_tool_result(tool_result, success)
-            events.append({
-                "type": "tool_call",
-                "name": proposal.name,
-                "args": display_args,
-                "result": tool_result,
-                "success": success,
-                "node": "two-node",
-                "guardrail": proposal.guardrail_summary,
-            })
-
-        for execution in result.executions:
-            if execution.node.startswith("Nova") and not execution.escalated:
-                self.routing_stats["nova_tasks"] += 1
-            else:
-                self.routing_stats["ceiling_tasks"] += 1
-            self.routing_stats["nova_retries"] += max(0, execution.attempts - 1)
-            if execution.escalated:
-                self.routing_stats["escalations"] += 1
-            self.evidence.append(
-                kind="routing",
-                claim=f"subtask {execution.task.id} routed to {execution.node}",
-                status="verified" if execution.proposals else "failed",
-                raw_output=(execution.guardrail_log + "\n\n[RAW MODEL OUTPUT]\n" + execution.raw_output).strip(),
-                metadata={
-                    "reason": execution.route_reason,
-                    "attempts": execution.attempts,
-                    "verdict": execution.verdict,
-                    "escalated": execution.escalated,
-                },
-            )
-
         breakdown = self._guard_completion_claims(breakdown)
         self.messages.append({"role": "assistant", "content": breakdown})
         self._auto_save()
@@ -2297,7 +2959,7 @@ class Agent:
 
     def _record_verification_report(self, report):
         """Mirror deterministic project checks into the evidence trail."""
-        for check in report.checks:
+        for index, check in enumerate(report.checks, 1):
             status = "verified" if check.passed else "failed"
             exit_code = 0 if check.passed else 1
             self.evidence.append(
@@ -2313,6 +2975,17 @@ class Agent:
                     "check_status": check.status.value,
                 },
             )
+            if self.run_ledger.turn_dir:
+                self.run_ledger.store_artifact(
+                    "tests",
+                    f"{index:02d}-{check.check_type.value}.txt",
+                    (
+                        f"command: {check.command}\n"
+                        f"status: {check.status.value}\n"
+                        f"duration_ms: {check.duration_ms}\n\n"
+                        f"{check.output}\n"
+                    ),
+                )
         return report
 
     def verify_evidence(self, count: int = 10) -> str:

@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from nexus.doctor import run_doctor
 from nexus.history import get_history
 from nexus.memory import ConversationMemory
 from nexus.models import DEFAULT_MODEL, resolve_model
+from nexus.run_catalog import RunCatalog
 from nexus.tools import tool_get_project_structure
 
 
@@ -105,11 +107,51 @@ Environment:
         "--resume", "-r",
         help="Resume a previous conversation by ID",
     )
+    parser.add_argument(
+        "--resume-run",
+        help="Continue an interrupted durable run from its latest checkpoint",
+    )
     parser.add_argument("--continue", dest="continue_last", action="store_true", help="Resume the most recent conversation for this directory")
     parser.add_argument("--print", "-p", dest="print_mode", action="store_true", help="Run non-interactively and exit")
-    parser.add_argument("--output-format", choices=("text", "json", "stream-json"), default="text")
+    parser.add_argument(
+        "--output-format",
+        "--output",
+        dest="output_format",
+        choices=("text", "json", "jsonl", "stream-json"),
+        default="text",
+    )
     parser.add_argument("--max-turns", type=int, default=50)
     parser.add_argument("--permission-mode", choices=("default", "acceptEdits", "plan"), default="default")
+    parser.add_argument(
+        "--mode",
+        choices=(
+            "plan",
+            "review",
+            "workspace",
+            "autonomous",
+            "local-only",
+            "quality",
+            "budget",
+            "ci",
+        ),
+        default="review",
+        help="Operational policy preset (default: review)",
+    )
+    parser.add_argument(
+        "--local-only",
+        action="store_true",
+        help="Alias for --mode local-only",
+    )
+    parser.add_argument(
+        "--prefer-cheap",
+        action="store_true",
+        help="Alias for --mode budget",
+    )
+    parser.add_argument(
+        "--quality",
+        choices=("balanced", "maximum"),
+        help="Use maximum-quality planning/review when set to maximum",
+    )
     parser.add_argument("--allowed-tools", nargs="*", default=[])
     parser.add_argument("--disallowed-tools", nargs="*", default=[])
     parser.add_argument("--add-dir", action="append", default=[], help="Authorize an additional existing directory")
@@ -117,6 +159,11 @@ Environment:
         "--workspace",
         action="store_true",
         help="Run in a dedicated Git branch/worktree instead of the source checkout",
+    )
+    parser.add_argument(
+        "--no-workspace",
+        action="store_true",
+        help="Explicitly disable the default isolated worktree/copy",
     )
     parser.add_argument(
         "--max-hosted-calls",
@@ -135,6 +182,8 @@ Environment:
     )
     parser.add_argument(
         "--max-cost-usd",
+        "--max-cost",
+        dest="max_cost_usd",
         type=float,
         help="Hard hosted-cost ceiling; requires explicit token prices",
     )
@@ -149,6 +198,204 @@ Environment:
         help="Provider output price used for cost accounting",
     )
     return parser.parse_args()
+
+
+def _normalize_subcommand_argv() -> None:
+    """Support the documented command-oriented UX without breaking legacy flags."""
+    if len(sys.argv) < 2:
+        return
+    command = sys.argv[1]
+    if command == "run":
+        rest = sys.argv[2:]
+        prompt = ""
+        if "--prompt" in rest:
+            index = rest.index("--prompt")
+            if index + 1 >= len(rest):
+                raise SystemExit("nexus run --prompt requires a value")
+            prompt = rest[index + 1]
+            del rest[index : index + 2]
+        elif rest and not rest[0].startswith("-"):
+            prompt = rest.pop(0)
+        if not prompt:
+            raise SystemExit("Usage: nexus run --prompt <goal> [options]")
+        if "--print" not in rest and "-p" not in rest:
+            rest.append("--print")
+        sys.argv = [sys.argv[0], *rest, prompt]
+    elif command == "resume":
+        run_id = sys.argv[2] if len(sys.argv) > 2 else ""
+        catalog = RunCatalog()
+        try:
+            reference = catalog.resolve(run_id)
+        except FileNotFoundError as exc:
+            raise SystemExit(str(exc)) from exc
+        normalized_id = f"{reference.parent.name}/{reference.name}"
+        sys.argv = [sys.argv[0], "--resume-run", normalized_id, *sys.argv[3:]]
+
+
+def _handle_run_management() -> bool:
+    """Handle durable run inspection commands before model initialization."""
+    if len(sys.argv) < 2 or sys.argv[1] not in {
+        "runs",
+        "inspect",
+        "replay",
+        "rollback",
+    }:
+        return False
+    command = sys.argv[1]
+    catalog = RunCatalog()
+    if command == "runs":
+        working_dir = os.getcwd()
+        records = catalog.list(working_dir=working_dir, limit=100)
+        if "--json" in sys.argv[2:]:
+            print(json.dumps([item.__dict__ for item in records], indent=2))
+        elif not records:
+            print("No durable Nexus runs exist for this directory.")
+        else:
+            for item in records:
+                print(
+                    f"{item.session_id}/{item.turn_id}  {item.status:<20} "
+                    f"{item.request[:80]}"
+                )
+        return True
+
+    run_id = sys.argv[2] if len(sys.argv) > 2 else ""
+    try:
+        if command == "inspect":
+            print(json.dumps(catalog.inspect(run_id), indent=2))
+        elif command == "replay":
+            for event in catalog.replay(run_id):
+                print(json.dumps(event, ensure_ascii=False))
+        else:
+            from nexus.history import FileHistory
+            from nexus.run_state import RunLedger
+
+            turn_dir = catalog.resolve(run_id)
+            session_id = turn_dir.parent.name
+            latest_turns = sorted(
+                path for path in turn_dir.parent.glob("turn-*") if path.is_dir()
+            )
+            if not latest_turns or latest_turns[-1] != turn_dir:
+                raise RuntimeError(
+                    "Only the latest turn in a session can be rolled back safely."
+                )
+            inspected = catalog.inspect(run_id)
+            metadata = inspected.get("final_report", {}).get("metadata", {})
+            history = FileHistory(session_id)
+            start = int(metadata.get("history_start", 0))
+            end = int(metadata.get("history_end", len(history.changes)))
+            if end != len(history.changes):
+                raise RuntimeError(
+                    "This is not the most recent applied run in the session; "
+                    "rolling it back would overwrite later work."
+                )
+            count = max(0, end - start)
+            if count == 0:
+                raise RuntimeError("The selected run has no applied file changes.")
+            success, detail = history.undo_changes(count)
+            if not success:
+                raise RuntimeError(detail)
+            request = inspected.get("request", {})
+            ledger = RunLedger(
+                session_id,
+                request.get("working_dir") or os.getcwd(),
+            )
+            ledger.resume_summary()
+            ledger.mark_rolled_back(detail)
+            print(detail)
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    return True
+
+
+def _handle_benchmark() -> bool:
+    """Run or validate a versioned public benchmark manifest."""
+    if len(sys.argv) < 2 or sys.argv[1] != "benchmark":
+        return False
+    benchmark_parser = argparse.ArgumentParser(
+        prog="nexus benchmark",
+        description="Run reproducible Nexus tasks in disposable repository copies.",
+    )
+    benchmark_parser.add_argument(
+        "--manifest",
+        required=True,
+        help="Path to a nexus.benchmark.v1 JSON manifest",
+    )
+    benchmark_parser.add_argument(
+        "--output",
+        help="Optional path for the versioned JSON result",
+    )
+    benchmark_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate the manifest and repositories without invoking a model",
+    )
+    benchmark_args = benchmark_parser.parse_args(sys.argv[2:])
+    from nexus.benchmark import BenchmarkRunner, BenchmarkSuite
+
+    try:
+        suite = BenchmarkSuite.load(benchmark_args.manifest)
+        report = BenchmarkRunner(suite).run(dry_run=benchmark_args.dry_run)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    payload = report.to_dict()
+    rendered = json.dumps(payload, indent=2)
+    if benchmark_args.output:
+        output_path = Path(benchmark_args.output).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(rendered + "\n", encoding="utf-8")
+    print(rendered)
+    if not benchmark_args.dry_run and payload["summary"]["failed"]:
+        raise SystemExit(2)
+    return True
+
+
+def _solve_issue_prompt() -> bool:
+    """Resolve ``nexus solve-issue <number>`` through the authenticated gh CLI."""
+    if len(sys.argv) < 2 or sys.argv[1] != "solve-issue":
+        return False
+    if len(sys.argv) < 3 or not sys.argv[2].isdigit():
+        raise SystemExit("Usage: nexus solve-issue <issue-number> [options]")
+    issue_number = sys.argv[2]
+    try:
+        result = subprocess.run(
+            [
+                "gh",
+                "issue",
+                "view",
+                issue_number,
+                "--json",
+                "number,title,body,comments,url",
+            ],
+            cwd=os.getcwd(),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except OSError as exc:
+        raise SystemExit("GitHub CLI is required for solve-issue") from exc
+    if result.returncode != 0:
+        raise SystemExit((result.stderr or result.stdout).strip())
+    issue = json.loads(result.stdout)
+    comments = "\n".join(
+        f"- {item.get('author', {}).get('login', 'unknown')}: {item.get('body', '')}"
+        for item in issue.get("comments", [])
+    )
+    prompt = (
+        f"Solve GitHub issue #{issue['number']}: {issue['title']}\n\n"
+        f"{issue.get('body', '')}\n\nDiscussion:\n{comments or '(none)'}\n\n"
+        "Reproduce the issue, implement the smallest correct fix, add regression tests, "
+        "run deterministic verification, and return a reviewable diff. Do not push or "
+        "open a pull request without a separate explicit approval."
+    )
+    rest = sys.argv[3:]
+    if "--mode" not in rest:
+        rest.extend(["--mode", "autonomous"])
+    if "--print" not in rest and "-p" not in rest:
+        rest.append("--print")
+    sys.argv = [sys.argv[0], *rest, prompt]
+    return True
 
 
 def handle_slash_command(cmd: str, agent: Agent) -> bool:
@@ -424,9 +671,9 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
         ui.console.print(f"  Test command:  {rules.test_command or 'None'}")
         ui.console.print(f"  Lint command:  {rules.lint_command or 'None'}")
         ui.console.print(f"  Format command:{rules.format_command or 'None'}")
-        if rules.rules:
+        if rules.conventions:
             ui.console.print("\nRules:")
-            for rule in rules.rules:
+            for rule in rules.conventions:
                 ui.console.print(f"  • {rule}")
 
     else:
@@ -549,7 +796,54 @@ def non_interactive_exit_code(content: str, events: list[dict]) -> int:
 
 
 def main():
+    if _handle_run_management():
+        return
+    if _handle_benchmark():
+        return
+    _solve_issue_prompt()
+    _normalize_subcommand_argv()
     args = parse_args()
+
+    resume_snapshot = None
+    if args.resume_run:
+        try:
+            resume_snapshot = RunCatalog().inspect(args.resume_run)
+        except FileNotFoundError as exc:
+            ui.print_error(str(exc))
+            sys.exit(1)
+        request_record = resume_snapshot.get("request", {})
+        args.working_dir = request_record.get("working_dir") or args.working_dir
+        metadata = request_record.get("metadata", {})
+        if metadata.get("model"):
+            args.model = metadata["model"]
+        if metadata.get("permission_mode") in {"default", "acceptEdits", "plan"}:
+            args.permission_mode = metadata["permission_mode"]
+
+    if args.local_only:
+        args.mode = "local-only"
+    elif args.prefer_cheap:
+        args.mode = "budget"
+    elif args.quality == "maximum":
+        args.mode = "quality"
+
+    mode_permissions = {
+        "plan": "plan",
+        "review": "default",
+        "workspace": "acceptEdits",
+        "autonomous": "acceptEdits",
+        "local-only": "acceptEdits",
+        "quality": "acceptEdits",
+        "budget": "acceptEdits",
+        "ci": "acceptEdits",
+    }
+    if args.permission_mode == "default":
+        args.permission_mode = mode_permissions[args.mode]
+    if args.mode == "local-only":
+        args.model = "nova_codex"
+    if args.mode == "ci":
+        args.print_mode = True
+        if args.output_format == "text":
+            args.output_format = "json"
 
     invalid_dirs = [item for item in args.add_dir if not Path(item).expanduser().is_dir()]
     if invalid_dirs:
@@ -612,6 +906,7 @@ def main():
 
     # Create agent
     try:
+        automatic_workspace = args.mode != "plan" and not args.resume_run
         agent = Agent(
             api_key=api_key,
             model_key=args.model,
@@ -621,7 +916,9 @@ def main():
             disallowed_tools=args.disallowed_tools,
             additional_dirs=args.add_dir,
             max_turns=args.max_turns,
-            workspace_isolation=args.workspace,
+            workspace_isolation=(
+                (args.workspace or automatic_workspace) and not args.no_workspace
+            ),
             max_hosted_calls=args.max_hosted_calls,
             max_prompt_tokens=args.max_prompt_tokens,
             max_completion_tokens=args.max_completion_tokens,
@@ -646,6 +943,32 @@ def main():
             ui.print_error(f"Could not find conversation: {args.resume}")
             sys.exit(1)
 
+    if args.resume_run:
+        try:
+            content, events = agent.resume_interrupted(args.resume_run)
+        except ValueError as exc:
+            ui.print_error(str(exc))
+            sys.exit(2)
+        exit_code = non_interactive_exit_code(content, events)
+        final_report = agent.run_ledger.resume_summary().get("final_report", {})
+        if final_report.get("status") in {"FAILED", "BLOCKED", "AWAITING_APPROVAL"}:
+            exit_code = 2
+        if args.output_format in {"json", "jsonl", "stream-json"}:
+            print(
+                json.dumps(
+                    {
+                        "success": exit_code == 0,
+                        "result": content,
+                        "events": events,
+                        "session_id": agent.conversation_id,
+                        "run": final_report,
+                    }
+                )
+            )
+        else:
+            print(content)
+        sys.exit(exit_code)
+
     # Custom system prompt
     if args.system:
         agent.set_system_prompt(args.system)
@@ -657,7 +980,7 @@ def main():
             result, success = agent._execute_tool_with_safety(
                 "run_command", {"command": command, "cwd": agent.working_dir}
             )
-            if args.output_format in ("json", "stream-json"):
+            if args.output_format in ("json", "jsonl", "stream-json"):
                 print(json.dumps({"type": "tool_call", "name": "run_command", "result": result, "success": success}))
             else:
                 print(result)
@@ -680,7 +1003,7 @@ def main():
                         }
                     )
                 )
-            elif args.output_format == "stream-json":
+            elif args.output_format in {"jsonl", "stream-json"}:
                 for event in events:
                     print(json.dumps(event))
                 print(

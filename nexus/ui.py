@@ -41,7 +41,7 @@ def print_banner():
     console.print(banner)
     console.print(
         f"  [bold {CYAN}]✦ NEXUS AI ✦[/] [dim]—[/] [bold {WHITE}]The Autonomous Coding Agent Operating System[/]\n"
-        f"  [dim]🤖 Ceiling NVIDIA Planner + Nova Intern • 🔧 20 Developer Tools • 💾 Session Memory • ⚡ Guarded Execution[/]",
+        f"  [dim]🤖 Frontier Planner + Nova V11 Worker • 🔧 34 Typed Tools • 💾 Durable Runs • ⚡ Verified Execution[/]",
         justify="center",
     )
     console.print()
@@ -84,7 +84,7 @@ def print_help():
         ("/help", "Show this command helper menu"),
         ("/models", "List available Ceiling models and the local Nova Intern option"),
         ("/model <name>", "Switch the active Ceiling model (e.g. /model kimi; /model nova_codex for local-only Nova)"),
-        ("/tools", "List all 25 built-in developer tools"),
+        ("/tools", "List all 34 built-in developer tools"),
         ("/clear", "Clear session conversation history"),
         ("/reset", "Reset the conversation session and clear terminal"),
         ("/project", "Print structural tree of the working directory"),
@@ -137,12 +137,14 @@ def print_help():
 
 def print_tools_table():
     """Print all available agent tools in a clean layout."""
+    from nexus.tools import TOOL_DEFINITIONS
+
     table = Table(
         show_header=True,
         header_style=f"bold {CYAN}",
         border_style=DIM,
         box=box.SIMPLE_HEAD,
-        title=f"[bold {GOLD}]✦ Integrated Agent Tools (20)[/]",
+        title=f"[bold {GOLD}]✦ Integrated Agent Tools ({len(TOOL_DEFINITIONS)})[/]",
     )
     table.add_column("Tool Name", style=f"bold {WHITE}", min_width=20)
     table.add_column("Layer/Category", style=PURPLE)
@@ -169,6 +171,20 @@ def print_tools_table():
         ("git_branch", "Version Control", "List, create, or delete Git branches"),
         ("web_fetch", "Web Client", "Fetch external URL content and convert to markdown"),
         ("web_search", "Web Client", "Search the web anonymously via DuckDuckGo"),
+        ("repo_index", "RepoGraph", "Incrementally index repository structure and symbols"),
+        ("repo_symbols", "RepoGraph", "Find declarations, callers, and impacted tests"),
+        ("repo_impact", "RepoGraph", "Map dependency and test impact for changed files"),
+        ("repo_context", "RepoGraph", "Rank task-relevant files using repository evidence"),
+        ("repo_routes", "RepoGraph", "Discover API and UI routes"),
+        ("repo_models", "RepoGraph", "Discover database and ORM models"),
+        ("repo_navigate", "Language Intel", "Use LSP, Tree-sitter, or RepoGraph navigation"),
+        ("run_process", "Sandbox", "Run a typed argv command without a shell"),
+        ("process_status", "Sandbox", "Poll a Nexus-managed background process"),
+        ("process_stop", "Sandbox", "Stop a Nexus-managed background process"),
+        ("api_check", "Verification", "Validate a local HTTP API contract"),
+        ("database_check", "Verification", "Validate SQLite integrity and foreign keys"),
+        ("security_scan", "Verification", "Run bounded deterministic security checks"),
+        ("browser_check", "Verification", "Run an optional Playwright workflow"),
     ]
 
     category_colors = {
@@ -177,6 +193,9 @@ def print_tools_table():
         "Sandbox": ORANGE,
         "Version Control": MAGENTA,
         "Web Client": PURPLE,
+        "RepoGraph": CYAN,
+        "Language Intel": CYAN,
+        "Verification": GOLD,
     }
 
     for name, cat, desc in tools:

@@ -1,6 +1,6 @@
-"""
-NVIDIA API client & Multi-Provider Resilient Client for NexusAI v2.0
-Supports multi-key NVIDIA rotation and Groq API ultimate fallback.
+"""Multi-provider hosted inference client for the NexusAI runtime.
+
+Supports multi-key NVIDIA rotation and a compatible Groq fallback.
 """
 
 import os
