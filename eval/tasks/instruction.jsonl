@@ -1,1 +1,0 @@
-{"id":"json-only","category":"instruction_following","prompt":"Return exactly one JSON object with fields status and value. No markdown.","language":"text","constraints":[{"kind":"valid_json"},{"kind":"exact_json_fields","value":["status","value"]},{"kind":"no_markdown"}]}

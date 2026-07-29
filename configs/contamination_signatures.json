@@ -1,7 +1,0 @@
-{
-  "version": 1,
-  "signatures": [
-    {"benchmark": "example", "id": "example-palindrome", "text": "def is_palindrome("},
-    {"benchmark": "example", "id": "example-two-sum", "text": "def two_sum("}
-  ]
-}
