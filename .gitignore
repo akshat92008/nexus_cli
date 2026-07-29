@@ -79,3 +79,10 @@ coding_agent/.git
 # Databases & Runtime state
 *.db
 .nexusai/
+runs/
+guardrail_events.jsonl
+expense-tracker/
+coding_agent
+nexus
+
+

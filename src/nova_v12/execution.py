@@ -6,6 +6,7 @@ import difflib
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -44,9 +45,12 @@ def run_test_command(
 ) -> CommandEvidence:
     """Run planner-owned test argv without a shell and capture bounded output."""
     started = time.perf_counter()
+    cmd = list(argv)
+    if cmd and cmd[0] == "python" and shutil.which(cmd[0]) is None:
+        cmd[0] = shutil.which("python3") or sys.executable
     try:
         result = subprocess.run(
-            list(argv),
+            cmd,
             cwd=workspace,
             env=safe_environment(),
             capture_output=True,
