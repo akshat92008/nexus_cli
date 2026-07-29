@@ -1032,7 +1032,14 @@ def main():
             sys.exit(exit_code)
         else:
             agent.run(args.prompt)
-        sys.exit(0)
+            final_report = agent.export_final_report()
+            status = final_report.get("status", "UNVERIFIED")
+            exit_code = 2
+            if status in {"AWAITING_APPROVAL", "BLOCKED"}:
+                exit_code = 3
+            elif status == "VERIFIED":
+                exit_code = 0
+            sys.exit(exit_code)
 
     # Interactive mode
     run_interactive(agent)

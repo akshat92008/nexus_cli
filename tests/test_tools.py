@@ -4,7 +4,8 @@ import tempfile
 from pathlib import Path
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from nexus.tools import TOOL_DEFINITIONS, TOOL_DISPATCH, execute_tool
 
@@ -49,7 +50,7 @@ def test_process_stop_rejects_unmanaged_pid():
 
 def test_read_file():
     """read_file should return file contents with line numbers."""
-    result = execute_tool("read_file", {"path": "coding_agent/run.py"})
+    result = execute_tool("read_file", {"path": str(PROJECT_ROOT / "run.py")})
     assert "📄" in result
     assert "run.py" in result
     assert "main()" in result
@@ -126,7 +127,7 @@ def test_edit_file_not_found():
 
 def test_file_info():
     """file_info should return metadata."""
-    result = execute_tool("file_info", {"path": "coding_agent/run.py"})
+    result = execute_tool("file_info", {"path": str(PROJECT_ROOT / "run.py")})
     assert "📋" in result
     assert "run.py" in result
     assert "Type:" in result
@@ -148,21 +149,21 @@ def test_get_project_structure():
 
 def test_list_directory():
     """list_directory should list files."""
-    result = execute_tool("list_directory", {"path": "coding_agent", "recursive": False})
+    result = execute_tool("list_directory", {"path": str(PROJECT_ROOT), "recursive": False})
     assert "📁" in result
     assert "run.py" in result
 
 
 def test_find_files():
     """find_files should find files by glob."""
-    result = execute_tool("find_files", {"pattern": "*.py", "directory": "coding_agent"})
+    result = execute_tool("find_files", {"pattern": "*.py", "directory": str(PROJECT_ROOT)})
     assert "🔍" in result
     assert "run.py" in result
 
 
 def test_search_code():
     """search_code should find pattern matches."""
-    result = execute_tool("search_code", {"pattern": "def execute_tool", "directory": "coding_agent/nexus"})
+    result = execute_tool("search_code", {"pattern": "def execute_tool", "directory": str(PROJECT_ROOT / "nexus")})
     assert "🔍" in result
     assert "execute_tool" in result
 

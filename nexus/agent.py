@@ -2914,7 +2914,7 @@ class Agent:
                 "success": success,
                 "nova_guardrail": proposal.guardrail_summary,
             })
-            if success and proposal.name in {"replace_file_content", "multi_replace_file_content", "write_to_file", "run_command"}:
+            if success and proposal.name in {"write_file", "edit_file", "patch_file", "multi_edit", "replace_file_content", "multi_replace_file_content", "write_to_file", "run_command"}:
                 mutated = True
 
         if mutated:
