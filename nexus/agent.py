@@ -2897,6 +2897,7 @@ class Agent:
             "guardrail_output": nova_result.guardrail_output,
         })
 
+        mutated = False
         for proposal in nova_result.proposals:
             args = dict(proposal.args)
             display_args = {k: v for k, v in args.items() if k != "_nova_guardrail"}
@@ -2913,6 +2914,13 @@ class Agent:
                 "success": success,
                 "nova_guardrail": proposal.guardrail_summary,
             })
+            if success and proposal.name in {"replace_file_content", "multi_replace_file_content", "write_to_file", "run_command"}:
+                mutated = True
+
+        if mutated:
+            report = self.run_verification()
+            if emit_ui:
+                ui.console.print(report)
 
         final_content = self._guard_completion_claims(nova_result.assistant_text)
         if emit_ui:
