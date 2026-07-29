@@ -1,6 +1,4 @@
-"""
-Smoke tests for NexusAI tools — verifies all 22 tools execute without crashing.
-"""
+"""Smoke tests for NexusAI tools — verifies all built-in tools are wired."""
 import sys
 import tempfile
 from pathlib import Path
@@ -19,7 +17,7 @@ def test_all_tools_have_definitions():
     missing_dispatch = definition_names - dispatch_names
     assert not missing_defs, f"Tools without definitions: {missing_defs}"
     assert not missing_dispatch, f"Definitions without dispatch: {missing_dispatch}"
-    assert len(TOOL_DEFINITIONS) == 22, f"Expected 22 tools, got {len(TOOL_DEFINITIONS)}"
+    assert len(TOOL_DEFINITIONS) == 25, f"Expected 25 tools, got {len(TOOL_DEFINITIONS)}"
 
 
 def test_process_status_rejects_unmanaged_pid():

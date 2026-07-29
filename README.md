@@ -16,6 +16,19 @@ The launch version focuses on a smaller promise that can be verified:
 - failed non-interactive runs return a non-zero process exit code;
 - `nexus --doctor` identifies missing local or hosted backends.
 
+Version 2.1 adds the durable runtime required for longer engineering work:
+
+- every request persists a versioned run directory with its request, plan,
+  task contract, tool events, checkpoints, acceptance results, costs, and
+  final report;
+- `--workspace` creates a dedicated Git branch/worktree before Nexus starts;
+- persistent repository indexing supports symbol, caller, dependency, and
+  impacted-test lookup without sending the entire repository to a model;
+- hosted calls, prompt tokens, completion tokens, and configured currency can
+  be capped with hard limits;
+- hosted direct execution uses the `nova.patch.v1` JSON schema while the local
+  Nova V11 adapter remains compatible with its trained Markdown protocol.
+
 See [CAPABILITIES.md](CAPABILITIES.md) for the measured capability boundary,
 [ROADMAP.md](ROADMAP.md) for the complete long-term product contract, and
 [SECURITY.md](SECURITY.md) for the vulnerability-reporting policy.
@@ -100,6 +113,13 @@ nexus --model glm-5.2
 # Read-only planning
 nexus --permission-mode plan "plan the authentication migration"
 
+# Isolated Git branch/worktree for modifying work
+nexus --workspace --permission-mode acceptEdits "implement the feature and test it"
+
+# Hard hosted-usage limits
+nexus --max-hosted-calls 8 --max-prompt-tokens 100000 \
+  --max-completion-tokens 30000 "fix the failing integration tests"
+
 # Browser interface
 nexus --web --port 3000
 ```
@@ -111,6 +131,16 @@ nexus --version
 nexus --doctor
 nexus --list-models
 nexus --help
+```
+
+An optional currency ceiling requires explicit prices so Nexus never invents
+provider pricing:
+
+```bash
+nexus --max-cost-usd 1.00 \
+  --input-price-per-million 0.50 \
+  --output-price-per-million 1.50 \
+  "implement and verify the endpoint"
 ```
 
 ### Approval model
@@ -167,16 +197,27 @@ python3 -m venv .venv
 The separate `scripts/run_release_e2e.py` harness makes real model calls and is
 therefore an opt-in integration benchmark, not part of offline CI.
 
+## Durable runs and recovery
+
+Every turn is saved under the Nexus state directory with a machine-readable
+`request.json`, `plan.json`, `events.jsonl`, checkpoint directory,
+`state.json`, and `final-report.json`. Use `/run-status` to inspect the active
+run and `/rollback-run` to reverse every applied file operation from that run.
+`--continue` and `--resume` restore the associated conversation, plan, and
+latest durable checkpoint metadata.
+
 ## Built-in tools
 
-Nexus exposes 22 tools across file reading and editing, project search, shell
-and managed background processes, Git, and web retrieval. Tool execution is
-wrapped by the scope, approval, trust, dependency, and evidence layers in
-`nexus/agent.py`.
+Nexus exposes 25 tools across file reading and editing, repository graph
+indexing, project search, shell and managed background processes, Git, and web
+retrieval. `repo_index`, `repo_symbols`, and `repo_impact` provide persistent
+symbol/caller lookup and targeted test-impact analysis. Tool execution is
+wrapped by the scope, approval, trust, dependency, budget, run-state, and
+evidence layers in `nexus/agent.py`.
 
 Key interactive commands include `/models`, `/project`, `/pending`,
 `/permissions`, `/trust`, `/changes`, `/undo`, `/verify`, `/history`,
-`/compact`, and `/help`.
+`/compact`, `/run-status`, `/rollback-run`, and `/help`.
 
 ## Development
 

@@ -1,9 +1,10 @@
 """
-Coding tools — the agent's hands. 22 tools for file I/O, shell, git, web, and more.
+Coding tools — the agent's hands for files, repository intelligence, shell, Git, and web.
 
 Tools:
   File:    read_file, write_file, edit_file, patch_file, multi_edit, file_info, diff_files
-  Search:  search_code, list_directory, find_files, get_project_structure
+  Search:  search_code, list_directory, find_files, get_project_structure,
+           repo_index, repo_symbols, repo_impact
   Shell:   run_command, process_run
   Git:     git_status, git_diff, git_commit, git_log, git_branch
   Web:     web_fetch, web_search
@@ -12,12 +13,14 @@ Tools:
 import fnmatch
 import hashlib
 import html
+import json
 import mimetypes
 import os
 import re
 import subprocess
 import urllib.error
 import urllib.request
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
@@ -276,6 +279,71 @@ TOOL_DEFINITIONS = [
                     },
                 },
                 "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repo_index",
+            "description": (
+                "Build or incrementally refresh Nexus' persistent repository graph. "
+                "Returns file, symbol, import, language, test, and parse-error counts."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "force": {
+                        "type": "boolean",
+                        "description": "Reparse every supported file instead of reusing cache.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repo_symbols",
+            "description": "Find symbol declarations and parsed callers in the repository graph.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Function, class, method, or symbol name.",
+                    },
+                    "include_callers": {
+                        "type": "boolean",
+                        "description": "Also return files with parsed calls to the symbol.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum declaration and caller results (default 50).",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "repo_impact",
+            "description": (
+                "Return direct imports, reverse importers, and impacted tests for changed files."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Repository-relative changed file paths.",
+                    },
+                },
+                "required": ["paths"],
             },
         },
     },
@@ -1174,6 +1242,78 @@ def tool_get_project_structure(path: str | None = None, max_depth: int = 4) -> s
         return f"❌ Error getting structure: {e}"
 
 
+def tool_repo_index(force: bool = False) -> str:
+    """Build the persistent repository graph for the active working directory."""
+    try:
+        from nexus.repo_graph import RepoGraph
+
+        graph = RepoGraph(os.getcwd())
+        stats = graph.build(force=bool(force))
+        return "🧭 Repository graph refreshed\n" + json.dumps(
+            {
+                "stats": {
+                    "scanned": stats.scanned,
+                    "indexed": stats.indexed,
+                    "reused": stats.reused,
+                    "removed": stats.removed,
+                    "parse_errors": stats.parse_errors,
+                },
+                "graph": graph.summary(),
+            },
+            indent=2,
+        )
+    except Exception as exc:
+        return f"❌ Repository graph indexing failed: {exc}"
+
+
+def tool_repo_symbols(
+    query: str,
+    include_callers: bool = True,
+    limit: int = 50,
+) -> str:
+    """Find declarations and callers in the active repository graph."""
+    try:
+        from nexus.repo_graph import RepoGraph
+
+        graph = RepoGraph(os.getcwd())
+        graph.build()
+        declarations = [asdict(item) for item in graph.find_symbols(query, limit=limit)]
+        callers = graph.find_callers(query, limit=limit) if include_callers else []
+        return "🧭 Repository symbol lookup\n" + json.dumps(
+            {
+                "query": query,
+                "declarations": declarations,
+                "callers": callers,
+            },
+            indent=2,
+        )
+    except Exception as exc:
+        return f"❌ Repository symbol lookup failed: {exc}"
+
+
+def tool_repo_impact(paths: list[str]) -> str:
+    """Find imports, reverse importers, and tests affected by changed files."""
+    try:
+        from nexus.repo_graph import RepoGraph
+
+        graph = RepoGraph(os.getcwd())
+        graph.build()
+        dependencies = {
+            str(path): graph.dependencies(path)
+            for path in paths
+        }
+        return "🧭 Repository impact analysis\n" + json.dumps(
+            {
+                "paths": paths,
+                "dependencies": dependencies,
+                "impacted_tests": graph.impacted_tests(paths),
+            },
+            indent=2,
+        )
+    except Exception as exc:
+        return f"❌ Repository impact analysis failed: {exc}"
+
+
 # ─── GIT TOOL IMPLEMENTATIONS ───────────────────────────────────────────
 
 def tool_git_status(cwd: str | None = None) -> str:
@@ -1461,6 +1601,9 @@ TOOL_DISPATCH = {
     "list_directory": tool_list_directory,
     "find_files": tool_find_files,
     "get_project_structure": tool_get_project_structure,
+    "repo_index": tool_repo_index,
+    "repo_symbols": tool_repo_symbols,
+    "repo_impact": tool_repo_impact,
     # Shell tools
     "run_command": tool_run_command,
     "process_run": tool_process_run,

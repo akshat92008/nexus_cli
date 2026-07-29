@@ -113,6 +113,41 @@ Environment:
     parser.add_argument("--allowed-tools", nargs="*", default=[])
     parser.add_argument("--disallowed-tools", nargs="*", default=[])
     parser.add_argument("--add-dir", action="append", default=[], help="Authorize an additional existing directory")
+    parser.add_argument(
+        "--workspace",
+        action="store_true",
+        help="Run in a dedicated Git branch/worktree instead of the source checkout",
+    )
+    parser.add_argument(
+        "--max-hosted-calls",
+        type=int,
+        help="Hard ceiling for hosted model calls in each request run",
+    )
+    parser.add_argument(
+        "--max-prompt-tokens",
+        type=int,
+        help="Hard ceiling for provider-reported prompt tokens",
+    )
+    parser.add_argument(
+        "--max-completion-tokens",
+        type=int,
+        help="Hard ceiling for provider-reported completion tokens",
+    )
+    parser.add_argument(
+        "--max-cost-usd",
+        type=float,
+        help="Hard hosted-cost ceiling; requires explicit token prices",
+    )
+    parser.add_argument(
+        "--input-price-per-million",
+        type=float,
+        help="Provider input price used for cost accounting",
+    )
+    parser.add_argument(
+        "--output-price-per-million",
+        type=float,
+        help="Provider output price used for cost accounting",
+    )
     return parser.parse_args()
 
 
@@ -181,6 +216,13 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
             agent.total_prompt_tokens + agent.total_completion_tokens,
         )
         ui.console.print(agent.get_cost_dashboard())
+
+    elif command == "/run-status":
+        ui.console.print(agent.get_run_status())
+
+    elif command == "/rollback-run":
+        success, message = agent.rollback_current_run()
+        ui.print_tool_result(message, success)
 
     elif command == "/system":
         if not arg:
@@ -501,6 +543,8 @@ def non_interactive_exit_code(content: str, events: list[dict]) -> int:
         "nexus ai provider failover error",
         "❌",
     )
+    if lowered.startswith(("error:", "blocked:", "failed:")):
+        return 2
     return 2 if any(marker in lowered for marker in failure_markers) else 0
 
 
@@ -577,6 +621,13 @@ def main():
             disallowed_tools=args.disallowed_tools,
             additional_dirs=args.add_dir,
             max_turns=args.max_turns,
+            workspace_isolation=args.workspace,
+            max_hosted_calls=args.max_hosted_calls,
+            max_prompt_tokens=args.max_prompt_tokens,
+            max_completion_tokens=args.max_completion_tokens,
+            max_cost_usd=args.max_cost_usd,
+            input_price_per_million=args.input_price_per_million,
+            output_price_per_million=args.output_price_per_million,
         )
     except ValueError as e:
         ui.print_error(str(e))
@@ -614,6 +665,9 @@ def main():
         if args.print_mode or args.output_format != "text":
             content, events = agent.run_non_interactive(args.prompt)
             exit_code = non_interactive_exit_code(content, events)
+            final_report = agent.run_ledger.resume_summary().get("final_report", {})
+            if final_report.get("status") in {"FAILED", "BLOCKED", "AWAITING_APPROVAL"}:
+                exit_code = 2
             if args.output_format == "json":
                 print(
                     json.dumps(
@@ -622,6 +676,7 @@ def main():
                             "result": content,
                             "events": events,
                             "session_id": agent.conversation_id,
+                            "run": final_report,
                         }
                     )
                 )
@@ -635,6 +690,7 @@ def main():
                             "success": exit_code == 0,
                             "result": content,
                             "session_id": agent.conversation_id,
+                            "run": final_report,
                         }
                     )
                 )

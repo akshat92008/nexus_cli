@@ -9,14 +9,14 @@ Research date: 2026-07-27. Source of truth: Anthropic's official [Claude Code do
 | Claude Code capability | NEXUS implementation |
 |---|---|
 | Multi-turn tool loop and streaming | Persistent OpenAI-compatible tool-call loop, streaming terminal UI, bounded turns |
-| Read, write, edit, glob/grep, shell, git, web | 22 built-in tools in `nexus/tools.py` |
+| Read, write, edit, glob/grep, repository graph, shell, git, web | 25 built-in tools in `nexus/tools.py` |
 | Diff approval and permission modes | Dry-run unified diff; `/apply`, `/reject`, `/edit-pending`; `default`, `acceptEdits`, and read-only `plan` modes |
-| Checkpoint/rewind | Persistent pre-edit snapshots; `/undo N`, `/rewind N`, `/diff`, `/changes` |
-| Session continue/resume | Auto-saved full message/tool history; `--continue`, `--resume`, `/history`, `/resume` |
+| Checkpoint/rewind | Persistent pre-edit snapshots; canonical run checkpoints; `/undo N`, `/rewind N`, `/rollback-run`, `/diff`, `/changes` |
+| Session continue/resume | Auto-saved message/tool history, plan restoration, durable run metadata, `--continue`, `--resume`, `/history`, `/resume` |
 | Context compaction | `/compact` and automatic compaction on provider context overflow |
 | Project instructions/memory | `NEXUS.md`, `CLAUDE.md`, and project decision memory |
 | Content trust | Exact SHA-256 approval, diff on every change, immediate deactivation until re-approved |
-| Plan/task tracking | Intent/difficulty analysis, persistent plans, plan status, read-only plan mode |
+| Plan/task tracking | Persistent acceptance criteria, permitted paths, dependency-aware tasks, risk, retries, checks, budgets, plan status, read-only plan mode |
 | Skills | Built-in and filesystem-loaded skills with automatic activation |
 | Subagents | Isolated specialized subagent contexts and templates |
 | Hooks | Before/after file, command, commit, test, error, session, and model lifecycle events |
@@ -24,11 +24,13 @@ Research date: 2026-07-27. Source of truth: Anthropic's official [Claude Code do
 | Plugins | Project/global plugins providing skills, hooks, and tools; local manifests are trust-gated |
 | Background work | Start, poll, read complete logs, and stop Nexus-owned processes |
 | Safety/permissions | Allow/deny tool rules; blocked, dangerous, warning, and safe tiers; exact one-shot dangerous confirmations |
-| Large-codebase support | Recursive regex/glob search, compact tree, project/framework detection, active-file relevance, import graph |
+| Large-codebase support | Recursive regex/glob search, compact tree, project/framework detection, persistent incremental symbols/imports/callers/reverse dependencies/impacted tests |
 | Non-interactive automation | `-p/--print`, text/JSON/stream-JSON output, `--max-turns`, tool rules, additional authorized directories |
 | Model selection | CLI/model command switching plus explicit Ceiling/Nova per-subtask routing reasons |
-| Cost visibility | Local/Ceiling task counts, retries, escalations, hosted calls avoided; currency is omitted unless real prices are configured |
+| Cost visibility and limits | Local/Ceiling counts plus hard hosted-call/token limits; configured-currency limits require explicit prices |
 | Verification | Real exit codes and unedited output; no `|| true`; syntax/compile, truncation, entrypoint, literal, path, and disk replay gates |
+| Worktree isolation | `--workspace` creates a dedicated Git branch/worktree before the session starts |
+| Run reporting | Versioned request, plan, events, checkpoints, costs, criterion outcomes, risks, and final report |
 
 ## NEXUS differentiators
 
@@ -41,8 +43,9 @@ Research date: 2026-07-27. Source of truth: Anthropic's official [Claude Code do
 
 | Capability | Status |
 |---|---|
-| Full LSP symbol navigation | Context/import indexing and compiler diagnostics exist; no long-lived Language Server Protocol client yet |
-| Git worktree session isolation | Git tools exist; automatic per-session worktree lifecycle is not yet implemented |
+| Full LSP symbol navigation | Persistent RepoGraph and compiler diagnostics exist; no long-lived Language Server Protocol client yet |
+| Automatic worktree lifecycle | Opt-in branch/worktree isolation exists; Nexus does not yet force it for every modifying run or automatically clean it up |
+| Interrupted task continuation | Plans and checkpoints restore, but execution does not automatically restart at the last verified task |
 | Notebook cell editing | Files can be edited, but `.ipynb` cell-aware editing is not implemented |
 | Scheduled/monitor-triggered prompts | Background processes exist; cron/routine orchestration is not implemented |
 | Agent teams with peer messaging | Isolated subagents exist; independent peer-to-peer agent teams are not implemented |

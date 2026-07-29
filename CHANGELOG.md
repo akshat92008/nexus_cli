@@ -6,6 +6,35 @@ All notable changes to NexusAI CLI are documented here.
 
 No changes yet.
 
+## [2.1.0] - 2026-07-29
+
+Verified-runtime foundation for the long-term Nexus engineering contract.
+
+### Added
+
+- Versioned `nova.patch.v1` JSON protocol support with legacy Nova V11
+  compatibility.
+- Canonical per-turn run directories containing request, plan, tool events,
+  checkpoints, state, costs, acceptance criteria, and final report.
+- `/run-status` and `/rollback-run` for durable inspection and complete-run
+  rollback.
+- Opt-in `--workspace` Git branch/worktree isolation.
+- Persistent incremental RepoGraph with Python AST symbols, conservative
+  multi-language imports/references, caller lookup, reverse dependencies, and
+  impacted-test ranking.
+- `repo_index`, `repo_symbols`, and `repo_impact` tools.
+- Hard hosted-call, prompt-token, completion-token, and configured-currency
+  ceilings.
+
+### Changed
+
+- Plans now persist explicit acceptance criteria, permitted files,
+  dependency-aware tasks, risk, retry limits, checks, and tool budgets.
+- The hosted Ceiling receives the plan contract and emits the versioned JSON
+  patch schema for direct execution.
+- Structured CLI results include the final machine-readable run report.
+- Repository graph entries refresh incrementally after verified mutations.
+
 ## [2.0.0] - 2026-07-29
 
 First launch release for the guarded Nexus CLI and Nova 3B v11 integration.
@@ -46,5 +75,6 @@ First launch release for the guarded Nexus CLI and Nova 3B v11 integration.
 - Web mode binds to loopback, validates browser origins, and does not expose
   common secret-bearing files.
 
-[Unreleased]: https://github.com/akshat92008/nexus_cli/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/akshat92008/nexus_cli/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/akshat92008/nexus_cli/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/akshat92008/nexus_cli/releases/tag/v2.0.0

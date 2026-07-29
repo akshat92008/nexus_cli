@@ -18,6 +18,7 @@ from typing import Any
 from nexus import ui
 from nexus.api import NvidiaClient
 from nexus.approvals import preview_mutation
+from nexus.budget import BudgetController, BudgetedClient, BudgetExceeded, BudgetLimits
 from nexus.code_validation import GeneratedCodeValidator
 from nexus.context_manager import ContextManager
 from nexus.evidence import EvidenceTrail, command_exit_code, verify_mutation
@@ -38,6 +39,8 @@ from nexus.planner import IntentType, PlanningEngine, PlanType, TaskStatus
 from nexus.plugins.loader import PluginLoader
 from nexus.project_memory import ProjectMemory
 from nexus.reflection import ReflectionEngine, ReflectionVerdict
+from nexus.repo_graph import RepoGraph
+from nexus.run_state import CriterionResult, CriterionStatus, RunLedger, RunStatus
 from nexus.safety import SafetyCheck, SafetyLayer, SafetyLevel
 
 # Phase 2: Skills & Subagents
@@ -48,6 +51,7 @@ from nexus.tools import TOOL_DEFINITIONS, execute_tool, tool_get_project_structu
 from nexus.trust import TrustStore
 from nexus.user_memory import UserMemory
 from nexus.verification import CheckType, VerificationEngine
+from nexus.workspace import GitWorktreeSession, WorktreeError
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -56,6 +60,21 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def _redact_runtime_text(value: str) -> str:
+    """Remove common credential forms before persisting run summaries."""
+    redacted = re.sub(
+        r"(?i)\b(api[_-]?key|token|password|passwd|secret)\s*=\s*[^\s]+",
+        r"\1=[REDACTED]",
+        value,
+    )
+    return re.sub(
+        r"\b(?:sk|gsk|nvapi|ghp)_[A-Za-z0-9_-]{8,}\b"
+        r"|\b(?:sk|gsk|nvapi)-[A-Za-z0-9_-]{8,}\b",
+        "[REDACTED_CREDENTIAL]",
+        redacted,
+    )
 
 
 # ── System Prompt ────────────────────────────────────────────────────────────
@@ -70,7 +89,7 @@ You use tool calls to inspect, edit, search, execute, and manage code while resp
 - You never claim success from your own prose. Completion requires literal tool output and a Nexus evidence record.
 - File edits may be held as diff previews. If a tool returns PENDING_EDIT, tell the user which approval ID is waiting; do not claim the change was applied.
 
-## YOUR 20 TOOLS
+## YOUR 25 TOOLS
 
 ### File Operations
 - `read_file(path, start_line?, end_line?)` — Read file contents with line numbers
@@ -86,6 +105,9 @@ You use tool calls to inspect, edit, search, execute, and manage code while resp
 - `list_directory(path?, recursive?, max_depth?)` — List directory contents
 - `find_files(pattern, directory?)` — Glob-based file finder
 - `get_project_structure(path?, max_depth?)` — Tree view of project
+- `repo_index(force?)` — Build or refresh the persistent repository graph
+- `repo_symbols(query, include_callers?, limit?)` — Find declarations and callers
+- `repo_impact(paths[])` — Find reverse dependencies and impacted tests
 
 ### Shell Execution
 - `run_command(command, cwd?, timeout?)` — Execute any shell command (blocking)
@@ -167,8 +189,29 @@ class Agent:
         disallowed_tools: list[str] | None = None,
         additional_dirs: list[str] | None = None,
         max_turns: int = 50,
+        workspace_isolation: bool = False,
+        max_hosted_calls: int | None = None,
+        max_prompt_tokens: int | None = None,
+        max_completion_tokens: int | None = None,
+        max_cost_usd: float | None = None,
+        input_price_per_million: float | None = None,
+        output_price_per_million: float | None = None,
     ):
-        self.working_dir = str(Path(working_dir or os.getcwd()).resolve())
+        self.source_working_dir = str(Path(working_dir or os.getcwd()).resolve())
+        self.conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        self.worktree: GitWorktreeSession | None = None
+        if workspace_isolation:
+            try:
+                self.worktree = GitWorktreeSession(
+                    self.source_working_dir,
+                    self.conversation_id,
+                )
+                worktree_info = self.worktree.create()
+                self.working_dir = worktree_info.path
+            except WorktreeError as exc:
+                raise ValueError(f"Could not create isolated Git worktree: {exc}") from exc
+        else:
+            self.working_dir = self.source_working_dir
         os.chdir(self.working_dir)
 
         # Model and backend selection
@@ -176,7 +219,21 @@ class Agent:
         self.model_key = resolved_key
         self.model_cfg = MODELS[resolved_key]
         self._api_key = api_key
-        self.client = None if self._is_nova_model() else NvidiaClient(api_key=api_key)
+        self.budget = BudgetController(
+            BudgetLimits(
+                max_hosted_calls=max_hosted_calls,
+                max_prompt_tokens=max_prompt_tokens,
+                max_completion_tokens=max_completion_tokens,
+                max_cost_usd=max_cost_usd,
+                input_price_per_million=input_price_per_million,
+                output_price_per_million=output_price_per_million,
+            )
+        )
+        self.client = (
+            None
+            if self._is_nova_model()
+            else BudgetedClient(NvidiaClient(api_key=api_key), self.budget)
+        )
 
         # State
         self.messages: list[dict] = []
@@ -184,7 +241,6 @@ class Agent:
         self.system_prompt = SYSTEM_PROMPT
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
-        self.conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self.permission_mode = permission_mode
         self.allowed_tools = set(allowed_tools or [])
         self.disallowed_tools = set(disallowed_tools or [])
@@ -202,6 +258,11 @@ class Agent:
         self._pending_edits: dict[str, dict[str, Any]] = {}
         self._next_edit_id = 1
         self.evidence = EvidenceTrail(self.conversation_id)
+        self.run_ledger = RunLedger(self.conversation_id, self.working_dir)
+        self._run_history_start = 0
+        self._active_objective = ""
+        self._active_analysis: dict[str, Any] = {}
+        self._active_plan = None
         self.package_guard = PackageGuard()
         self.trust = TrustStore(self.working_dir)
         self.routing_stats = {"nova_tasks": 0, "ceiling_tasks": 0, "nova_retries": 0, "escalations": 0}
@@ -210,6 +271,7 @@ class Agent:
         self.planner = PlanningEngine()
         self.reflector = ReflectionEngine()
         self.context_mgr = ContextManager(self.working_dir)
+        self.repo_graph = RepoGraph(self.working_dir)
         self.safety = SafetyLayer()
         self.project_mem = ProjectMemory(self.working_dir)
         self.user_mem = UserMemory()
@@ -342,7 +404,10 @@ class Agent:
         cfg = MODELS[resolved_key]
         if cfg.get("backend") != "nova" and self.client is None:
             try:
-                self.client = NvidiaClient(api_key=self._api_key)
+                self.client = BudgetedClient(
+                    NvidiaClient(api_key=self._api_key),
+                    self.budget,
+                )
             except ValueError:
                 return False
         self.model_key = resolved_key
@@ -392,6 +457,23 @@ class Agent:
         self.conversation_id = data.get("id", conv_id)
         self.history = init_history(self.conversation_id)
         self.evidence = EvidenceTrail(self.conversation_id)
+        self.run_ledger = RunLedger(self.conversation_id, self.working_dir)
+        resume = self.run_ledger.resume_summary()
+        self._run_history_start = int(
+            resume.get("request", {}).get("metadata", {}).get("history_start", 0)
+        )
+        self._active_objective = resume.get("request", {}).get("request", "")
+        self._active_analysis = resume.get("request", {}).get("analysis", {})
+        plan_data = resume.get("plan", {})
+        if plan_data and plan_data.get("id"):
+            try:
+                from nexus.planner import ExecutionPlan
+
+                self.planner.current_plan = ExecutionPlan.from_dict(plan_data)
+                self._active_plan = self.planner.current_plan
+            except (KeyError, TypeError, ValueError):
+                self.planner.current_plan = None
+                self._active_plan = None
         model_id = data.get("model_id", "")
         for key, cfg in MODELS.items():
             if cfg["id"] == model_id:
@@ -399,6 +481,337 @@ class Agent:
                 self.model_cfg = cfg
                 break
         return True
+
+    # ── Durable run lifecycle ───────────────────────────────────────────
+
+    def _begin_managed_run(
+        self,
+        user_input: str,
+        analysis: dict[str, Any],
+        plan=None,
+    ) -> None:
+        """Create the canonical run directory before model or tool activity."""
+        self.budget.reset()
+        self._active_objective = user_input
+        self._active_analysis = dict(analysis)
+        self._active_plan = plan
+        self._run_history_start = len(self.history.changes)
+        self._turn_evidence_start = len(self.evidence.records())
+        plan_record = plan or {
+            "plan_type": "direct",
+            "goal": user_input,
+            "acceptance_criteria": self.planner._generate_acceptance_criteria(
+                user_input,
+                analysis["intent"],
+                self.planner._generate_verification(
+                    analysis["intent"],
+                    analysis.get("skills_needed", []),
+                ),
+            ),
+        }
+        self.run_ledger.begin(
+            user_input,
+            analysis=analysis,
+            plan=plan_record,
+            metadata={
+                "model": self.model_key,
+                "permission_mode": self.permission_mode,
+                "workspace_isolated": self.worktree is not None,
+                "source_working_dir": self.source_working_dir,
+                "history_start": self._run_history_start,
+            },
+        )
+        self.run_ledger.append_event(
+            "run_started",
+            status="verified",
+            detail="Request and execution contract persisted before model execution.",
+        )
+
+    def _finish_managed_run(
+        self,
+        content: str,
+        events: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Evaluate evidence and write a machine-readable final report."""
+        if not self.run_ledger.turn_dir:
+            return {}
+        evidence = self.evidence.records()[getattr(self, "_turn_evidence_start", 0) :]
+        changes = self.history.changes[self._run_history_start :]
+        command_records = [item for item in evidence if item.get("kind") == "command"]
+        passing_commands = [
+            item
+            for item in command_records
+            if item.get("status") == "verified" and item.get("exit_code") == 0
+        ]
+        successful_command_text = {
+            item.get("command", "") for item in passing_commands if item.get("command")
+        }
+        failed_evidence = [
+            item
+            for item in evidence
+            if item.get("status") == "failed"
+            and not (
+                item.get("kind") == "command"
+                and item.get("command", "") in successful_command_text
+            )
+        ]
+        verified_mutations = [
+            item
+            for item in evidence
+            if item.get("kind") == "file_mutation" and item.get("status") == "verified"
+        ]
+        passing_checks = [
+            item
+            for item in passing_commands
+            if any(
+                term in item.get("command", "").lower()
+                for term in (
+                    "test",
+                    "pytest",
+                    "jest",
+                    "vitest",
+                    "build",
+                    "check",
+                    "lint",
+                    "ruff",
+                    "mypy",
+                    "tsc",
+                )
+            )
+        ]
+
+        def matching_checks(criterion: str) -> list[dict[str, Any]]:
+            lowered = criterion.lower()
+            if "lint" in lowered or "type" in lowered:
+                markers = ("lint", "ruff", "mypy", "pyright", "tsc", "clippy", "vet")
+            elif "security" in lowered or "vulnerab" in lowered:
+                markers = ("audit", "bandit", "semgrep", "security", "safety")
+            elif "build" in lowered or "compile" in lowered:
+                markers = ("build", "compile", "cargo check", "go test", "tsc")
+            elif "test" in lowered or "regression" in lowered or "coverage" in lowered:
+                markers = ("test", "pytest", "jest", "vitest", "rspec", "phpunit")
+            else:
+                return passing_commands
+            return [
+                item
+                for item in passing_commands
+                if any(marker in item.get("command", "").lower() for marker in markers)
+            ]
+
+        plan = self._active_plan
+        if plan is not None:
+            criteria_text = list(plan.acceptance_criteria)
+            self.run_ledger.record_plan(plan)
+        else:
+            criteria_text = self.planner._generate_acceptance_criteria(
+                self._active_objective,
+                self._active_analysis.get("intent", IntentType.UNKNOWN),
+                self.planner._generate_verification(
+                    self._active_analysis.get("intent", IntentType.UNKNOWN),
+                    self._active_analysis.get("skills_needed", []),
+                ),
+            )
+
+        results: list[CriterionResult] = []
+        for criterion in criteria_text:
+            lowered = criterion.lower()
+            if "unrelated files" in lowered:
+                outside = [
+                    item["filepath"]
+                    for item in changes
+                    if not _is_relative_to(
+                        Path(item["filepath"]).resolve(),
+                        Path(self.working_dir),
+                    )
+                ]
+                results.append(
+                    CriterionResult(
+                        criterion,
+                        CriterionStatus.UNSATISFIED if outside else CriterionStatus.SATISFIED,
+                        detail=(
+                            "Out-of-scope changes: " + ", ".join(outside)
+                            if outside
+                            else "All recorded changes remained inside the authorized workspace."
+                        ),
+                    )
+                )
+            elif "fingerprinted" in lowered:
+                mutation_records = [
+                    item for item in evidence if item.get("kind") == "file_mutation"
+                ]
+                satisfied = bool(mutation_records) and all(
+                    item.get("status") == "verified" for item in mutation_records
+                )
+                results.append(
+                    CriterionResult(
+                        criterion,
+                        (
+                            CriterionStatus.SATISFIED
+                            if satisfied
+                            else CriterionStatus.UNVERIFIED
+                        ),
+                        evidence_ids=[item["id"] for item in mutation_records],
+                        detail=(
+                            "Every recorded mutation passed disk verification."
+                            if satisfied
+                            else "No complete verified mutation set was recorded."
+                        ),
+                    )
+                )
+            elif "verification completed" in lowered or any(
+                term in lowered for term in ("test", "build", "lint", "smoke check")
+            ):
+                matched_checks = matching_checks(criterion)
+                results.append(
+                    CriterionResult(
+                        criterion,
+                        (
+                            CriterionStatus.SATISFIED
+                            if matched_checks
+                            else CriterionStatus.UNVERIFIED
+                        ),
+                        evidence_ids=[item["id"] for item in matched_checks],
+                        detail=(
+                            "A matching passing project check exists."
+                            if matched_checks
+                            else "No matching passing project check was recorded."
+                        ),
+                    )
+                )
+            elif failed_evidence:
+                results.append(
+                    CriterionResult(
+                        criterion,
+                        CriterionStatus.UNSATISFIED,
+                        evidence_ids=[item["id"] for item in failed_evidence],
+                        detail="One or more execution evidence records failed.",
+                    )
+                )
+            elif verified_mutations:
+                results.append(
+                    CriterionResult(
+                        criterion,
+                        CriterionStatus.SATISFIED,
+                        evidence_ids=[item["id"] for item in verified_mutations],
+                        detail="Verified workspace mutations support this criterion.",
+                    )
+                )
+            else:
+                results.append(
+                    CriterionResult(
+                        criterion,
+                        CriterionStatus.UNVERIFIED,
+                        detail="The run did not record sufficient deterministic evidence.",
+                    )
+                )
+
+        event_failures = [
+            item for item in (events or []) if item.get("type") == "tool_call" and not item.get("success")
+        ]
+        if (content or "").strip().upper().startswith("BLOCKED:"):
+            run_status = RunStatus.BLOCKED
+        elif self._pending_edits or self._pending_confirmations:
+            run_status = RunStatus.AWAITING_APPROVAL
+        elif failed_evidence or event_failures:
+            run_status = (
+                RunStatus.PARTIALLY_VERIFIED
+                if verified_mutations or passing_checks
+                else RunStatus.FAILED
+            )
+        elif results and all(item.status == CriterionStatus.SATISFIED for item in results):
+            run_status = RunStatus.VERIFIED
+        elif verified_mutations or passing_checks:
+            run_status = RunStatus.PARTIALLY_VERIFIED
+        else:
+            run_status = RunStatus.UNVERIFIED
+
+        checks = [
+            {
+                "evidence_id": item.get("id"),
+                "command": item.get("command", ""),
+                "status": item.get("status"),
+                "exit_code": item.get("exit_code"),
+            }
+            for item in evidence
+            if item.get("kind") == "command"
+        ]
+        risks = []
+        if run_status != RunStatus.VERIFIED:
+            risks.append("Not every acceptance criterion has passing deterministic evidence.")
+        if self._pending_edits:
+            risks.append(f"{len(self._pending_edits)} file edit(s) still require approval.")
+        if self._pending_confirmations:
+            risks.append(
+                f"{len(self._pending_confirmations)} protected operation(s) still require approval."
+            )
+
+        report = self.run_ledger.finalize(
+            run_status,
+            objective=self._active_objective,
+            criteria=results,
+            files_changed=[item["filepath"] for item in changes],
+            checks=checks,
+            costs=self.budget.snapshot(),
+            risks=risks,
+            metadata={
+                "model": self.model_key,
+                "response_excerpt": _redact_runtime_text((content or "")[:2000]),
+                "evidence_path": str(self.evidence.path),
+                "workspace": self.working_dir,
+            },
+        )
+        return report
+
+    def get_run_status(self) -> str:
+        """Return the latest durable run and workspace status."""
+        summary = self.run_ledger.resume_summary()
+        if not summary:
+            return "No durable run exists for this session."
+        state = summary.get("state", {})
+        report = summary.get("final_report", {})
+        lines = [
+            f"Run: {state.get('turn_id', 'unknown')}",
+            f"Status: {report.get('status') or state.get('status', 'unknown')}",
+            f"Objective: {report.get('objective') or summary.get('request', {}).get('request', '')}",
+            f"Run directory: {self.run_ledger._latest_turn_dir()}",
+        ]
+        if self.worktree:
+            worktree_status = self.worktree.status()
+            lines.extend(
+                [
+                    f"Worktree: {worktree_status.get('path', self.working_dir)}",
+                    f"Branch: {worktree_status.get('branch', '')}",
+                    worktree_status.get("git_status", ""),
+                ]
+            )
+        checkpoint = summary.get("checkpoint", {})
+        if checkpoint:
+            lines.append(
+                f"Latest checkpoint: {checkpoint.get('checkpoint')} {checkpoint.get('label', '')}"
+            )
+        return "\n".join(item for item in lines if item)
+
+    def rollback_current_run(self) -> tuple[bool, str]:
+        """Atomically roll back every file operation recorded by this run."""
+        change_count = len(self.history.changes) - self._run_history_start
+        if change_count <= 0:
+            return False, "The current run has no applied file changes to roll back."
+        success, detail = self.history.undo_changes(change_count)
+        if success:
+            self.run_ledger.mark_rolled_back(detail)
+            try:
+                self.repo_graph.build()
+            except Exception:
+                pass
+        return success, detail
+
+    def _refresh_final_report_after_approval(self) -> None:
+        """Recompute the final status after an approval queue changes."""
+        if not self.run_ledger.turn_dir or not self._active_objective:
+            return
+        prior = self.run_ledger.resume_summary().get("final_report", {})
+        content = prior.get("metadata", {}).get("response_excerpt", "")
+        self._finish_managed_run(content, [])
 
     # ── Message Building ─────────────────────────────────────────────────
 
@@ -410,7 +823,17 @@ class Agent:
 
         # Use the new ContextManager for initialization
         try:
-            return self.context_mgr.initialize()
+            context = self.context_mgr.initialize()
+            stats = self.repo_graph.build()
+            graph = self.repo_graph.summary()
+            graph_context = (
+                "[REPOSITORY GRAPH]\n"
+                f"files={graph['files']} symbols={graph['symbols']} "
+                f"imports={graph['imports']} tests={graph['tests']} "
+                f"parse_errors={graph['parse_errors']} "
+                f"incremental_reused={stats.reused}"
+            )
+            return context + graph_context + "\n\n---\n\n"
         except Exception:
             pass
 
@@ -503,6 +926,81 @@ class Agent:
     # ── Tool Execution (with safety, hooks, reflection) ──────────────────
 
     def _execute_tool_with_safety(
+        self,
+        name: str,
+        args: dict,
+        *,
+        _user_confirmed: bool = False,
+        _edit_confirmed: bool = False,
+    ) -> tuple[str, bool]:
+        """Execute a guarded tool and mirror its outcome into the run ledger."""
+        started = time.monotonic()
+        result, success = self._execute_tool_with_safety_impl(
+            name,
+            args,
+            _user_confirmed=_user_confirmed,
+            _edit_confirmed=_edit_confirmed,
+        )
+        if self.run_ledger.turn_dir:
+            safe_args = {
+                key: _redact_runtime_text(value) if isinstance(value, str) else value
+                for key, value in args.items()
+                if key
+                not in {
+                    "content",
+                    "old_text",
+                    "new_text",
+                    "new_content",
+                    "_nova_guardrail",
+                }
+            }
+            self.run_ledger.append_event(
+                "tool_call",
+                status="verified" if success else "failed",
+                detail=(
+                    f"{name} completed successfully."
+                    if success
+                    else _redact_runtime_text((result or "")[:1000])
+                ),
+                metadata={
+                    "tool": name,
+                    "arguments": safe_args,
+                    "duration_ms": int((time.monotonic() - started) * 1000),
+                },
+            )
+            mutation_tools = {"write_file", "edit_file", "patch_file", "multi_edit"}
+            if success and name in mutation_tools:
+                raw_paths = (
+                    [item.get("path", "") for item in args.get("edits", [])]
+                    if name == "multi_edit"
+                    else [args.get("path", "")]
+                )
+                try:
+                    self.repo_graph.update_paths(path for path in raw_paths if path)
+                except Exception:
+                    pass
+                self.run_ledger.checkpoint(
+                    f"verified-{name}",
+                    plan=self._active_plan,
+                    evidence_count=len(self.evidence.records()),
+                    history_count=len(self.history.changes),
+                    metadata={"paths": [path for path in raw_paths if path]},
+                )
+            elif success and name == "run_command":
+                self.run_ledger.checkpoint(
+                    "command-completed",
+                    plan=self._active_plan,
+                    evidence_count=len(self.evidence.records()),
+                    history_count=len(self.history.changes),
+                    metadata={
+                        "command": _redact_runtime_text(
+                            str(args.get("command", ""))[:500]
+                        )
+                    },
+                )
+        return result, success
+
+    def _execute_tool_with_safety_impl(
         self,
         name: str,
         args: dict,
@@ -913,9 +1411,11 @@ class Agent:
         pending = self._pending_edits.pop(edit_id, None)
         if not pending:
             return f"Unknown or expired edit id: {edit_id or '(none)'}", False
-        return self._execute_tool_with_safety(
+        result = self._execute_tool_with_safety(
             pending["name"], dict(pending["args"]), _edit_confirmed=True
         )
+        self._refresh_final_report_after_approval()
+        return result
 
     def reject_pending_edit(self, edit_id: str = "") -> tuple[str, bool]:
         edit_id = edit_id.strip()
@@ -924,7 +1424,9 @@ class Agent:
         pending = self._pending_edits.pop(edit_id, None)
         if not pending:
             return f"Unknown or expired edit id: {edit_id or '(none)'}", False
-        return f"Rejected {edit_id}; no file was changed.", True
+        result = f"Rejected {edit_id}; no file was changed.", True
+        self._refresh_final_report_after_approval()
+        return result
 
     def replace_pending_edit(self, edit_id: str, replacement_file: str) -> tuple[str, bool]:
         pending = self._pending_edits.get(edit_id.strip())
@@ -985,12 +1487,14 @@ class Agent:
         if not pending:
             return f"Unknown or expired confirmation id: {confirmation_id}", False
 
-        return self._execute_tool_with_safety(
+        result = self._execute_tool_with_safety(
             pending["name"],
             dict(pending["args"]),
             _user_confirmed=True,
             _edit_confirmed=bool(pending.get("edit_confirmed")),
         )
+        self._refresh_final_report_after_approval()
+        return result
 
     def cancel_pending_operation(self, confirmation_id: str = "") -> tuple[str, bool]:
         """Cancel one pending dangerous operation without executing it."""
@@ -1007,7 +1511,9 @@ class Agent:
         pending = self._pending_confirmations.pop(confirmation_id, None)
         if not pending:
             return f"Unknown or expired confirmation id: {confirmation_id}", False
-        return f"Cancelled {confirmation_id}; the operation was not executed.", True
+        result = f"Cancelled {confirmation_id}; the operation was not executed.", True
+        self._refresh_final_report_after_approval()
+        return result
 
     def _format_live_tool_status(self, tool_calls_accum: dict[int, dict]) -> str:
         """Format real-time status message with line counts & byte counters while tool JSON streams."""
@@ -1042,8 +1548,8 @@ class Agent:
         elif name in ("run_command", "process_run"):
             if cmd_str:
                 clean_cmd = cmd_str.replace("\\n", " ").replace("\n", " ")
-                return f"[bold {ui.ORANGE}]⚡ Sandbox Shell Execution:[/] [bold {ui.WHITE}]{clean_cmd[:65]}[/]"
-            return f"[bold {ui.ORANGE}]⚡ Preparing Sandbox Shell Execution...[/]"
+                return f"[bold {ui.ORANGE}]⚡ Guarded Shell Execution:[/] [bold {ui.WHITE}]{clean_cmd[:65]}[/]"
+            return f"[bold {ui.ORANGE}]⚡ Preparing Guarded Shell Execution...[/]"
 
         elif name:
             return f"[bold {ui.ORANGE}]⚡ Executing Tool Matrix:[/] [bold {ui.CYAN}]{name}[/] [bold {ui.GOLD}]({chars:,} bytes)[/]"
@@ -1067,6 +1573,9 @@ class Agent:
 
         try:
             for chunk in stream:
+                if hasattr(chunk, "usage") and chunk.usage:
+                    prompt_tokens = chunk.usage.prompt_tokens or 0
+                    completion_tokens = chunk.usage.completion_tokens or 0
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -1108,9 +1617,6 @@ class Agent:
                         live.update(status_msg)
                         last_ui_update = now
 
-                if hasattr(chunk, "usage") and chunk.usage:
-                    prompt_tokens = chunk.usage.prompt_tokens or 0
-                    completion_tokens = chunk.usage.completion_tokens or 0
         finally:
             live.stop()
 
@@ -1118,6 +1624,8 @@ class Agent:
             self.total_prompt_tokens += prompt_tokens
         if completion_tokens:
             self.total_completion_tokens += completion_tokens
+        if prompt_tokens or completion_tokens:
+            self.budget.record_usage(prompt_tokens, completion_tokens)
 
         tool_calls = []
         for idx in sorted(tool_calls_accum.keys()):
@@ -1191,20 +1699,38 @@ class Agent:
         4. Create plan (if complex) → 5. Execute with safety + hooks + reflection →
         6. Verify plan completion
         """
-        self._turn_evidence_start = len(self.evidence.records())
-        if self._is_nova_model():
-            content, _events = self._run_nova_turn(user_input, emit_ui=True)
-            return content
-
         # Reload project rules on each turn
         self._load_rules_and_preferences()
         self._update_system_prompt()
 
-        # Auto-gather context on first interaction
-        context = self._gather_context()
-
         # ── 1. Analyze intent and activate skills ────────────────────────
         analysis = self.planner.analyze(user_input)
+        plan = (
+            self.planner.create_plan(user_input, analysis)
+            if analysis["plan_type"] == PlanType.PLANNED
+            else None
+        )
+        if plan:
+            analysis["acceptance_criteria"] = plan.acceptance_criteria
+            analysis["permitted_files"] = plan.permitted_files
+            analysis["task_dag"] = [
+                {
+                    "id": step.id,
+                    "title": step.title,
+                    "depends_on": step.depends_on,
+                    "risk": step.risk,
+                    "retry_limit": step.retry_limit,
+                }
+                for step in plan.steps
+            ]
+        self._begin_managed_run(user_input, analysis, plan)
+
+        if self._is_nova_model():
+            content, _events = self._run_nova_turn(user_input, emit_ui=True)
+            return content
+
+        # Auto-gather context on first interaction
+        context = self._gather_context()
 
         activated = self.skills.auto_activate(
             user_input,
@@ -1220,9 +1746,7 @@ class Agent:
             return content
 
         # ── 2. Create plan if task is complex ────────────────────────────
-        plan = None
-        if analysis["plan_type"] == PlanType.PLANNED:
-            plan = self.planner.create_plan(user_input, analysis)
+        if plan:
             ui.console.print()
             ui.console.print(plan.format_summary())
             ui.console.print()
@@ -1265,6 +1789,16 @@ class Agent:
 
             except Exception as e:
                 error_msg = str(e)
+                if isinstance(e, BudgetExceeded):
+                    content = f"BLOCKED: {error_msg}"
+                    self.run_ledger.append_event(
+                        "budget",
+                        status="blocked",
+                        detail=error_msg,
+                    )
+                    ui.print_error(content)
+                    self._finish_managed_run(content, [])
+                    return content
                 is_rate_limit = (
                     "429" in error_msg
                     or "rate" in error_msg.lower()
@@ -1327,7 +1861,14 @@ class Agent:
 
                 if self.messages and self.messages[-1]["role"] == "user":
                     self.messages.pop()
-                return ""
+                content = f"Error: {error_msg}"
+                self.run_ledger.append_event(
+                    "provider",
+                    status="failed",
+                    detail=error_msg,
+                )
+                self._finish_managed_run(content, [])
+                return content
 
             # If there are tool calls, execute them and loop
             if tool_calls:
@@ -1378,7 +1919,7 @@ class Agent:
             if plan and plan.is_complete:
                 ui.print_info("📋 Plan complete. Running verification...")
                 try:
-                    report = self.verifier.run_all()
+                    report = self._record_verification_report(self.verifier.run_all())
                     ui.console.print(report.format_report())
                     if report.all_passed:
                         self.hooks.fire(HookEvent.ON_PLAN_COMPLETE, HookContext(event=HookEvent.ON_PLAN_COMPLETE))
@@ -1388,10 +1929,12 @@ class Agent:
                     pass
 
             self._auto_save()
+            self._finish_managed_run(content or "", [])
             return content or ""
 
         ui.print_warning("Reached maximum tool-call iterations (safety limit).")
         self._auto_save()
+        self._finish_managed_run("", [])
         return ""
 
     # ── Non-Interactive Run (Web API) ────────────────────────────────────
@@ -1401,9 +1944,28 @@ class Agent:
         Run one turn and return (final_text, all_tool_events).
         Used by the web API for structured responses.
         """
-        self._turn_evidence_start = len(self.evidence.records())
         self._load_rules_and_preferences()
         self._update_system_prompt()
+        analysis = self.planner.analyze(user_input)
+        plan = (
+            self.planner.create_plan(user_input, analysis)
+            if analysis["plan_type"] == PlanType.PLANNED
+            else None
+        )
+        if plan:
+            analysis["acceptance_criteria"] = plan.acceptance_criteria
+            analysis["permitted_files"] = plan.permitted_files
+            analysis["task_dag"] = [
+                {
+                    "id": step.id,
+                    "title": step.title,
+                    "depends_on": step.depends_on,
+                    "risk": step.risk,
+                    "retry_limit": step.retry_limit,
+                }
+                for step in plan.steps
+            ]
+        self._begin_managed_run(user_input, analysis, plan)
         if self._is_nova_model():
             return self._run_nova_turn(user_input, emit_ui=False)
 
@@ -1418,7 +1980,6 @@ class Agent:
 
         # Auto-activate skills
         try:
-            analysis = self.planner.analyze(user_input)
             self.skills.auto_activate(
                 user_input,
                 intent=analysis["intent"].value if hasattr(analysis["intent"], "value") else str(analysis["intent"]),
@@ -1457,6 +2018,15 @@ class Agent:
 
             except Exception as e:
                 error_msg = str(e)
+                if isinstance(e, BudgetExceeded):
+                    content = f"BLOCKED: {error_msg}"
+                    self.run_ledger.append_event(
+                        "budget",
+                        status="blocked",
+                        detail=error_msg,
+                    )
+                    self._finish_managed_run(content, events)
+                    return content, events
                 if ("401" in error_msg or "429" in error_msg or "Unauthorized" in error_msg or "rate" in error_msg.lower()):
                     if self.client and hasattr(self.client, "switch_to_fallback") and _non_int_key_switches < _max_non_int_switches:
                         _non_int_key_switches += 1
@@ -1465,7 +2035,9 @@ class Agent:
                             continue
                 if self.messages and self.messages[-1]["role"] == "user":
                     self.messages.pop()
-                return f"Error: {error_msg}", events
+                content = f"Error: {error_msg}"
+                self._finish_managed_run(content, events)
+                return content, events
 
             # Process tool calls
             if tool_calls_raw:
@@ -1527,6 +2099,7 @@ class Agent:
             self._auto_save()
             break
 
+        self._finish_managed_run(final_content, events)
         return final_content, events
 
     def _run_two_node_turn(self, user_input: str, analysis: dict, emit_ui: bool = True) -> tuple[str, list[dict]]:
@@ -1607,6 +2180,7 @@ class Agent:
         breakdown = self._guard_completion_claims(breakdown)
         self.messages.append({"role": "assistant", "content": breakdown})
         self._auto_save()
+        self._finish_managed_run(breakdown, events)
         return breakdown, events
 
     def _run_nova_turn(self, user_input: str, emit_ui: bool = True) -> tuple[str, list[dict]]:
@@ -1638,6 +2212,7 @@ class Agent:
                 ui.print_error(content)
             self.messages.append({"role": "assistant", "content": content})
             self._auto_save()
+            self._finish_managed_run(content, events)
             return content, events
         except Exception as e:
             content = f"Nova backend error: {e}"
@@ -1645,6 +2220,7 @@ class Agent:
                 ui.print_error(content)
             self.messages.append({"role": "assistant", "content": content})
             self._auto_save()
+            self._finish_managed_run(content, events)
             return content, events
 
         if emit_ui and nova_result.raw_output:
@@ -1685,6 +2261,7 @@ class Agent:
             ui.print_response_complete()
         self.messages.append({"role": "assistant", "content": final_content})
         self._auto_save()
+        self._finish_managed_run(final_content, events)
         return final_content, events
 
     # ── Subagent Integration ─────────────────────────────────────────────
@@ -1715,8 +2292,28 @@ class Agent:
         if checks:
             valid = {item.value for item in CheckType}
             check_types = [CheckType(c) for c in checks if c in valid]
-        report = self.verifier.run_all(check_types)
+        report = self._record_verification_report(self.verifier.run_all(check_types))
         return report.format_report()
+
+    def _record_verification_report(self, report):
+        """Mirror deterministic project checks into the evidence trail."""
+        for check in report.checks:
+            status = "verified" if check.passed else "failed"
+            exit_code = 0 if check.passed else 1
+            self.evidence.append(
+                kind="command",
+                claim=f"project verification: {check.check_type.value}",
+                status=status,
+                tool="verification_engine",
+                command=check.command,
+                exit_code=exit_code,
+                raw_output=check.output,
+                metadata={
+                    "duration_ms": check.duration_ms,
+                    "check_status": check.status.value,
+                },
+            )
+        return report
 
     def verify_evidence(self, count: int = 10) -> str:
         matched, report = self.evidence.verify_recent(count)
@@ -1751,7 +2348,14 @@ class Agent:
     def get_cost_dashboard(self) -> str:
         local = self.routing_stats["nova_tasks"]
         paid = self.routing_stats["ceiling_tasks"]
-        # NVIDIA catalog pricing can vary; report saved calls, not fabricated currency.
+        budget = self.budget.snapshot()
+        usage = budget["usage"]
+        limits = budget["limits"]
+        currency = (
+            f"${usage['estimated_cost_usd']:.6f}"
+            if limits["input_price_per_million"] is not None
+            else "unavailable (no configured provider price table)"
+        )
         return (
             "Routing dashboard\n"
             f"  Local Nova subtasks: {local}\n"
@@ -1759,7 +2363,11 @@ class Agent:
             f"  Nova retries: {self.routing_stats['nova_retries']}\n"
             f"  Escalations: {self.routing_stats['escalations']}\n"
             f"  Hosted calls avoided: {local}\n"
-            "  Estimated currency saved: unavailable (no configured provider price table)"
+            f"  Hosted calls used: {usage['hosted_calls']}\n"
+            f"  Prompt tokens: {usage['prompt_tokens']}\n"
+            f"  Completion tokens: {usage['completion_tokens']}\n"
+            f"  Estimated hosted cost: {currency}\n"
+            f"  Hard limits: {json.dumps(limits, sort_keys=True)}"
         )
 
     def get_trust_summary(self) -> str:

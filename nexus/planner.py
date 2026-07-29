@@ -74,6 +74,13 @@ class PlanStep:
     description: str
     tools_needed: list[str] = field(default_factory=list)
     depends_on: list[int] = field(default_factory=list)
+    permitted_files: list[str] = field(default_factory=list)
+    acceptance_criteria: list[str] = field(default_factory=list)
+    checks: list[str] = field(default_factory=list)
+    risk: str = "medium"
+    retry_limit: int = 2
+    attempts: int = 0
+    max_tool_calls: int = 10
     status: TaskStatus = TaskStatus.PENDING
     result: str = ""
     error: str = ""
@@ -103,6 +110,20 @@ class ExecutionPlan:
     current_step: int = 0
     skills_needed: list[str] = field(default_factory=list)
     verification_steps: list[str] = field(default_factory=list)
+    acceptance_criteria: list[str] = field(default_factory=list)
+    permitted_files: list[str] = field(default_factory=list)
+    retry_policy: dict[str, int] = field(
+        default_factory=lambda: {"per_task": 2, "total_repairs": 5}
+    )
+    budgets: dict[str, int | float | None] = field(
+        default_factory=lambda: {
+            "max_tool_calls": 50,
+            "max_hosted_calls": None,
+            "max_prompt_tokens": None,
+            "max_completion_tokens": None,
+            "max_cost_usd": None,
+        }
+    )
 
     @property
     def progress(self) -> float:
@@ -115,14 +136,13 @@ class ExecutionPlan:
     @property
     def next_step(self) -> PlanStep | None:
         """Get the next pending step whose dependencies are met."""
+        statuses = {step.id: step.status for step in self.steps}
         for step in self.steps:
             if step.status != TaskStatus.PENDING:
                 continue
-            # Check dependencies
             deps_met = all(
-                self.steps[dep_id].status == TaskStatus.COMPLETED
+                statuses.get(dep_id) in (TaskStatus.COMPLETED, TaskStatus.SKIPPED)
                 for dep_id in step.depends_on
-                if dep_id < len(self.steps)
             )
             if deps_met:
                 return step
@@ -149,6 +169,10 @@ class ExecutionPlan:
             "current_step": self.current_step,
             "skills_needed": self.skills_needed,
             "verification_steps": self.verification_steps,
+            "acceptance_criteria": self.acceptance_criteria,
+            "permitted_files": self.permitted_files,
+            "retry_policy": self.retry_policy,
+            "budgets": self.budgets,
         }
 
     @classmethod
@@ -166,6 +190,19 @@ class ExecutionPlan:
             current_step=data.get("current_step", 0),
             skills_needed=data.get("skills_needed", []),
             verification_steps=data.get("verification_steps", []),
+            acceptance_criteria=data.get("acceptance_criteria", []),
+            permitted_files=data.get("permitted_files", []),
+            retry_policy=data.get("retry_policy", {"per_task": 2, "total_repairs": 5}),
+            budgets=data.get(
+                "budgets",
+                {
+                    "max_tool_calls": 50,
+                    "max_hosted_calls": None,
+                    "max_prompt_tokens": None,
+                    "max_completion_tokens": None,
+                    "max_cost_usd": None,
+                },
+            ),
         )
 
     def format_summary(self) -> str:
@@ -194,6 +231,12 @@ class ExecutionPlan:
             lines.append("   🔍 Verification:")
             for v in self.verification_steps:
                 lines.append(f"      • {v}")
+
+        if self.acceptance_criteria:
+            lines.append("")
+            lines.append("   Acceptance criteria:")
+            for criterion in self.acceptance_criteria:
+                lines.append(f"      • {criterion}")
 
         return "\n".join(lines)
 
@@ -416,7 +459,9 @@ class PlanningEngine:
         during execution. The plan provides structure and ordering.
         """
         self._plan_counter += 1
-        plan_id = f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{self._plan_counter}"
+        plan_id = (
+            f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{self._plan_counter}"
+        )
 
         intent = analysis["intent"]
         difficulty = analysis["difficulty"]
@@ -425,6 +470,21 @@ class PlanningEngine:
         # Generate steps based on intent
         steps = self._generate_steps(goal, intent, difficulty)
         verification = self._generate_verification(intent, skills)
+        acceptance = self._generate_acceptance_criteria(goal, intent, verification)
+        permitted_files = self._extract_permitted_files(goal)
+
+        for step in steps:
+            step.permitted_files = list(permitted_files)
+            step.acceptance_criteria = list(acceptance)
+            step.checks = list(verification) if "test" in step.title.lower() or "verify" in step.title.lower() else []
+            step.risk = self._step_risk(step, intent)
+            step.retry_limit = 1 if step.risk == "high" else 2
+            step.max_tool_calls = {
+                Difficulty.SIMPLE: 5,
+                Difficulty.MODERATE: 10,
+                Difficulty.COMPLEX: 20,
+                Difficulty.MASSIVE: 30,
+            }.get(difficulty, 5)
 
         plan = ExecutionPlan(
             id=plan_id,
@@ -435,6 +495,21 @@ class PlanningEngine:
             steps=steps,
             skills_needed=skills,
             verification_steps=verification,
+            acceptance_criteria=acceptance,
+            permitted_files=permitted_files,
+            retry_policy={"per_task": 2, "total_repairs": 5},
+            budgets={
+                "max_tool_calls": {
+                    Difficulty.SIMPLE: 15,
+                    Difficulty.MODERATE: 35,
+                    Difficulty.COMPLEX: 75,
+                    Difficulty.MASSIVE: 150,
+                }.get(difficulty, 15),
+                "max_hosted_calls": None,
+                "max_prompt_tokens": None,
+                "max_completion_tokens": None,
+                "max_cost_usd": None,
+            },
         )
 
         self.current_plan = plan
@@ -569,19 +644,97 @@ class PlanningEngine:
 
         return checks
 
+    def _generate_acceptance_criteria(
+        self,
+        goal: str,
+        intent: IntentType,
+        verification: list[str],
+    ) -> list[str]:
+        """Translate a request into explicit, evidence-oriented criteria."""
+        criteria = [
+            f"Requested objective is implemented: {goal.strip()}",
+            "No unrelated files are modified outside the approved task scope",
+            "Every applied file mutation is re-read and fingerprinted",
+        ]
+        if intent == IntentType.FIX:
+            criteria.extend(
+                [
+                    "The reported failure is reproduced or otherwise tied to concrete evidence",
+                    "A regression check covers the corrected behavior",
+                ]
+            )
+        elif intent == IntentType.BUILD:
+            criteria.append("The new behavior has an executable test, build, or smoke check")
+        elif intent == IntentType.REFACTOR:
+            criteria.append("Existing externally observable behavior remains unchanged")
+        elif intent == IntentType.SECURITY:
+            criteria.append("Each security finding is mapped to a concrete mitigation and re-check")
+        elif intent == IntentType.DEPLOY:
+            criteria.append("Deployment actions require explicit approval and a post-deploy smoke check")
+
+        criteria.extend(f"Verification completed: {item}" for item in verification)
+        return list(dict.fromkeys(criteria))
+
+    @staticmethod
+    def _extract_permitted_files(goal: str) -> list[str]:
+        """Extract explicit repository paths without treating framework names as files."""
+        candidates = re.findall(
+            r"(?:^|\s|`|'|\")([A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*\.[A-Za-z0-9]{1,8})"
+            r"(?=$|\s|`|'|\"|[),:;])",
+            goal,
+        )
+        technology_names = {
+            "next.js",
+            "node.js",
+            "react.js",
+            "vue.js",
+            "angular.js",
+            "three.js",
+        }
+        return list(
+            dict.fromkeys(
+                item.lstrip("./")
+                for item in candidates
+                if item.lower() not in technology_names
+            )
+        )
+
+    @staticmethod
+    def _step_risk(step: PlanStep, intent: IntentType) -> str:
+        text = f"{step.title} {step.description}".lower()
+        high_risk_terms = (
+            "deploy",
+            "migration",
+            "authentication",
+            "security",
+            "dependency",
+            "commit",
+            "database",
+        )
+        if intent in (IntentType.DEPLOY, IntentType.SECURITY, IntentType.MIGRATE):
+            return "high"
+        if any(term in text for term in high_risk_terms):
+            return "high"
+        if not step.tools_needed:
+            return "low"
+        return "medium"
+
     def advance_step(self, step_id: int, status: TaskStatus, result: str = "") -> bool:
         """Mark a plan step as complete/failed and advance."""
         if not self.current_plan:
             return False
 
-        if step_id < len(self.current_plan.steps):
-            step = self.current_plan.steps[step_id]
+        step = next((item for item in self.current_plan.steps if item.id == step_id), None)
+        if step is not None:
             step.status = status
             step.result = result
             if status == TaskStatus.IN_PROGRESS:
+                step.attempts += 1
                 step.started_at = datetime.now().isoformat()
             elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
                 step.completed_at = datetime.now().isoformat()
+                if status == TaskStatus.FAILED:
+                    step.error = result
 
             self._save_plan(self.current_plan)
             return True

@@ -1,7 +1,9 @@
 """Focused tests for Nexus' Nova adapter."""
 
+import json
+
 from nexus.nova_backend import PROMPT_PATH, NovaPipelineBackend
-from nexus.nova_runtime import extract_prompt_paths
+from nexus.nova_runtime import NovaOutputParser, extract_prompt_paths
 from nexus.two_node_backend import TwoNodeBackend
 
 
@@ -26,6 +28,30 @@ def test_prompt_path_keeps_explicit_repository_files():
 
 def test_verified_model_is_the_backend_default():
     assert NovaPipelineBackend().model == "nova_codex"
+
+
+def test_nova_parser_accepts_versioned_json_patch_protocol():
+    raw = json.dumps(
+        {
+            "schema": "nova.patch.v1",
+            "thinking": "Implement the requested entrypoint.",
+            "files": [
+                {
+                    "path": "src/main.py",
+                    "action": "CREATE",
+                    "language": "python",
+                    "content": "def main():\n    print('ok')\n",
+                }
+            ],
+            "test_command": "python src/main.py",
+        }
+    )
+    parsed = NovaOutputParser().parse(raw)
+    assert parsed.is_valid
+    assert parsed.files[0].path == "src/main.py"
+    assert parsed.files[0].action == "CREATE"
+    assert parsed.test_command == "python src/main.py"
+    assert NovaOutputParser.count_file_declarations(raw) == 1
 
 
 def test_file_action_modify_without_patch_blocks_falls_back_to_write_file():

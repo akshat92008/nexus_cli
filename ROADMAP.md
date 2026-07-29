@@ -42,34 +42,36 @@ no model is the source of truth.
 - **Planned** means the capability is part of the long-term design and must not
   be advertised as available.
 
-## Version 2.0 launch boundary
+## Version 2.1 implementation boundary
 
-| Area | Status | Version 2.0 evidence boundary |
+| Area | Status | Version 2.1 evidence boundary |
 |---|---|---|
 | Installable CLI | Implemented | Self-contained wheel, `nexus` entry point, version and doctor smoke checks |
 | Hosted + local model routing | Implemented | Hosted planner paths plus local Ollama `nova_codex` executor |
 | Nova V11 task contract | Implemented | Bounded tasks, canonical parser, path and action checks |
 | Candidate isolation | Implemented | Nova output is replayed and validated in temporary candidate directories |
-| Workspace isolation | Partial | Path confinement and explicit additional roots; automatic Git worktrees remain planned |
+| Workspace isolation | Partial | Path confinement plus opt-in `--workspace` branch/worktree isolation; making isolation automatic for every modifying run remains planned |
 | File approvals | Implemented | Exact diff preview, apply, reject, replacement, and one-use confirmations |
 | Command safety | Partial | Typed Nexus tools, classifications, approvals, timeouts, and output capture; OS/container sandboxing remains planned |
 | Package safety | Implemented | Registry checks; missing packages block; registry outages require explicit approval |
 | Syntax and compiler checks | Implemented | Python, JSON, Node, Go, C, C++, and Rust where local compilers exist |
 | Behavioral verification | Partial | Project test/build discovery and evidence exist; browser/API/database verification remains planned |
 | Evidence trail | Implemented | Persistent JSONL records, hashes, command exit codes, and re-verification |
-| Recovery | Partial | Conversation history, pre-edit snapshots, undo, and rewind exist; task-DAG crash recovery remains planned |
-| Repository intelligence | Partial | Structure, search, architecture summaries, project instructions, and active context exist; persistent RepoGraph/LSP mapping remains planned |
+| Recovery | Partial | Canonical run state, verified checkpoints, complete-run rollback, conversation resume, and plan restoration exist; automatic continuation from an interrupted task remains planned |
+| Repository intelligence | Partial | Persistent incremental RepoGraph, Python AST symbols, multi-language imports/references, callers, reverse dependencies, and impacted tests exist; Tree-sitter and long-lived LSP mapping remain planned |
 | Extensions | Partial | Skills, hooks, plugins, subagents, and stdio MCP exist; stable public SDKs and registry remain planned |
 | Headless operation | Implemented | Print, JSON, stream-JSON, meaningful process status, and CI-compatible diagnostics |
 | Web interface | Implemented | Loopback-only Starlette/WebSocket UI with workspace and sensitive-file controls |
-| Cost controls | Partial | Token and routing accounting exist; per-run hard currency ceilings remain planned |
+| Cost controls | Implemented | Hard hosted-call, prompt-token, completion-token, and configured-currency ceilings plus persisted usage reports |
+| Run contract and final report | Implemented | Versioned request, plan, event, checkpoint, state, acceptance-result, cost, risk, and final-report artifacts |
 | Public benchmarks | Partial | Reproducible local evidence harness exists; versioned public benchmark program remains planned |
 
 ## Phase 1 — Reliable core
 
 Objective: make small and medium repository changes safely and consistently.
 
-Version 2.0 delivers the launch foundation:
+Version 2.0 delivered the launch foundation, and version 2.1 adds the durable
+runtime, worktree mode, hard usage limits, and persistent repository graph:
 
 - clean package installation;
 - a packaged Nova V11 adapter instead of a neighboring-checkout dependency;
@@ -82,13 +84,12 @@ Version 2.0 delivers the launch foundation:
 
 Remaining Phase 1 exit criteria:
 
-- replace the legacy Markdown Nova protocol with a versioned JSON schema;
-- create an isolated Git worktree for every modifying run;
+- make the versioned `nova.patch.v1` JSON schema the local Nova default after
+  retraining or compatibility validation, then retire the legacy parser;
+- make isolated Git worktrees automatic for every modifying run rather than an
+  opt-in operating mode;
 - add an OS/container sandbox with enforceable network and environment policy;
-- persist a canonical run directory with request, plan, tasks, calls, patches,
-  tests, costs, checkpoints, and final report;
 - resume an interrupted run from its most recent verified checkpoint;
-- provide an atomic rollback for the complete run, not only individual edits;
 - add platform-specific release tests for Linux, macOS, and Windows.
 
 ## Phase 2 — Verified agent
@@ -109,6 +110,12 @@ Required capabilities:
   security;
 - enforce per-run token and currency ceilings;
 - report every satisfied, skipped, blocked, and unverified criterion.
+
+Version 2.1 foundations now persist acceptance criteria, permitted files,
+dependency-aware task metadata, risk, retry ceilings, tool budgets, hosted
+usage ceilings, checkpoints, and final criterion outcomes. The remaining Phase
+2 work is to make this contract drive every task transition and repair loop,
+then validate it on a meaningful held-out feature/bug-fix suite.
 
 Phase 2 is complete only when Nexus can reproducibly solve a meaningful suite
 of feature and bug-fix tasks without false success.

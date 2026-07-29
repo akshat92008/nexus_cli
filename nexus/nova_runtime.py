@@ -117,7 +117,9 @@ class TaskResult:
 
 
 class NovaOutputParser:
-    """Parse Nova V11's THINKING/FILES/TEST_COMMAND protocol."""
+    """Parse the versioned JSON protocol with legacy V11 compatibility."""
+
+    JSON_SCHEMA = "nova.patch.v1"
 
     THINKING_PATTERN = re.compile(
         r"<<THINKING>>(.*?)(?=<<FILES>>|<<TEST_COMMAND>>|<<CLARIFICATION>>|"
@@ -159,6 +161,10 @@ class NovaOutputParser:
             result.parse_errors.append("Empty response")
             return result
 
+        json_result = self._parse_json_protocol(text)
+        if json_result is not None:
+            return json_result
+
         thinking_match = self.THINKING_PATTERN.search(text)
         if thinking_match:
             result.thinking = thinking_match.group(1).strip()
@@ -191,6 +197,96 @@ class NovaOutputParser:
         test_match = self.TEST_PATTERN.search(text)
         if test_match:
             result.test_command = self._clean_test_command(test_match.group(1))
+        return result
+
+    def _parse_json_protocol(self, text: str) -> ParsedResponse | None:
+        """Parse ``nova.patch.v1`` when the model emits a JSON object."""
+        stripped = text.strip()
+        if stripped.startswith("```json") and stripped.endswith("```"):
+            stripped = stripped[len("```json") : -3].strip()
+        if not stripped.startswith("{"):
+            return None
+        try:
+            payload = json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
+        if not isinstance(payload, dict) or payload.get("schema") != self.JSON_SCHEMA:
+            return None
+
+        result = ParsedResponse(raw_text=text)
+        thinking = payload.get("thinking", "")
+        if isinstance(thinking, str):
+            result.thinking = thinking.strip()
+        if not result.thinking:
+            result.parse_errors.append("JSON protocol requires non-empty thinking")
+
+        response_text = payload.get("response", "")
+        clarification_text = payload.get("clarification", "")
+        if response_text:
+            if not isinstance(response_text, str):
+                result.parse_errors.append("response must be a string")
+            else:
+                result.response_text = response_text.strip()
+        if clarification_text:
+            if not isinstance(clarification_text, str):
+                result.parse_errors.append("clarification must be a string")
+            else:
+                result.clarification_text = clarification_text.strip()
+
+        files = payload.get("files", [])
+        if not isinstance(files, list):
+            result.parse_errors.append("files must be an array")
+            files = []
+        for index, item in enumerate(files):
+            if not isinstance(item, dict):
+                result.parse_errors.append(f"files[{index}] must be an object")
+                continue
+            path = item.get("path")
+            action = item.get("action")
+            content = item.get("content", "")
+            language = item.get("language", "")
+            if not isinstance(path, str) or not path.strip():
+                result.parse_errors.append(f"files[{index}].path must be a non-empty string")
+                continue
+            if not isinstance(action, str) or action.upper() not in {
+                "CREATE",
+                "MODIFY",
+                "DELETE",
+            }:
+                result.parse_errors.append(
+                    f"files[{index}].action must be CREATE, MODIFY, or DELETE"
+                )
+                continue
+            if not isinstance(content, str):
+                result.parse_errors.append(f"files[{index}].content must be a string")
+                continue
+            if action.upper() != "DELETE" and not content:
+                result.parse_errors.append(f"files[{index}].content must not be empty")
+                continue
+            result.files.append(
+                FileAction(
+                    path=path.strip().lstrip("/\\"),
+                    action=action.upper(),
+                    content=content,
+                    language=language if isinstance(language, str) and language else "text",
+                )
+            )
+
+        test_command = payload.get("test_command", "")
+        if test_command:
+            if isinstance(test_command, str):
+                result.test_command = self._clean_test_command(test_command)
+            else:
+                result.parse_errors.append("test_command must be a string")
+
+        if not (result.files or result.response_text or result.clarification_text):
+            result.parse_errors.append(
+                "JSON protocol requires files, response, or clarification"
+            )
+        if result.response_text and result.files:
+            result.parse_errors.append("JSON protocol cannot combine response with files")
+        if result.clarification_text and result.files:
+            result.parse_errors.append("JSON protocol cannot combine clarification with files")
         return result
 
     def _parse_file_blocks(
@@ -290,6 +386,17 @@ class NovaOutputParser:
 
     @staticmethod
     def count_file_declarations(text: str) -> int:
+        stripped = text.strip()
+        if stripped.startswith("```json") and stripped.endswith("```"):
+            stripped = stripped[len("```json") : -3].strip()
+        if stripped.startswith("{"):
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                payload = {}
+            if isinstance(payload, dict) and payload.get("schema") == "nova.patch.v1":
+                files = payload.get("files")
+                return len(files) if isinstance(files, list) else 0
         return len(
             re.findall(
                 r"^(?:#|//|<!--|/\*)\s*filepath\s*:",

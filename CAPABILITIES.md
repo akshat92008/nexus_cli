@@ -10,7 +10,7 @@ This report separates model generation ability from Nexus enforcement. “Guarde
 
 - Executes narrow, explicit, single-file create and modify tasks locally.
 - Produced independently verified Python entrypoints, Python surgical fixes, C++ programs, and valid JSON manifests in recorded runs.
-- Uses the canonical `<<THINKING>>` / `<<FILES>>` protocol with exact file/action metadata when it complies.
+- Uses the trained `<<THINKING>>` / `<<FILES>>` protocol with exact file/action metadata when it complies; Nexus also accepts the versioned `nova.patch.v1` JSON protocol.
 - Can repair some protocol, syntax, entrypoint, boundary-condition, and recursive-code failures after receiving concrete verifier output.
 - Runs fully locally through Ollama, with no hosted inference charge.
 
@@ -42,12 +42,16 @@ This report separates model generation ability from Nexus enforcement. “Guarde
 - Text, JSON, and stream-JSON outputs with complete local-model/guardrail traces.
 - Session autosave, `--continue`, `--resume`, history, compaction, and configurable maximum turns.
 - Plans and read-only plan mode; project structure, architecture, active context, and project/user memory.
+- Plans persist acceptance criteria, permitted paths, dependency-aware tasks,
+  risk, retry ceilings, checks, and tool budgets.
 - Model switching plus visible per-subtask Nova/Ceiling routing reasons, retries, escalations, and free-first counters.
 
-### 22 built-in tools
+### 25 built-in tools
 
 - Files: read, write, edit, line patch, batch edit, metadata, and diff.
-- Search/context: regex code search, glob discovery, directory listing, and compact project tree.
+- Search/context: regex code search, glob discovery, directory listing,
+  compact project tree, persistent RepoGraph indexing, symbol/caller lookup,
+  reverse dependencies, and impacted-test analysis.
 - Shell: blocking commands plus Nexus-owned background start, status/full logs, and stop.
 - Git: status, diff, commit, log, and branch operations.
 - Web: fetch and search.
@@ -68,8 +72,16 @@ This report separates model generation ability from Nexus enforcement. “Guarde
 - Commands retain real exit codes and complete raw output; verification paths contain no `|| true` success masking.
 - `/verify` re-reads artifact hashes and reruns eligible verification commands, detecting post-completion drift.
 - Persistent pre-edit snapshots support `/undo N` and `/rewind N`.
+- Every request persists a canonical run contract with request, plan, events,
+  verified checkpoints, costs, criterion outcomes, risks, and final report.
+- `/rollback-run` reverses every file operation made by the current run;
+  `/run-status` reports the durable state and latest checkpoint.
 - Compiler/semantic failures roll back real-workspace writes; two-node candidate failures remain isolated.
 - Completion prose that claims tests passed without recorded passing evidence is prefixed with `UNVERIFIED TEST CLAIM`.
+- Hard hosted-call and token limits are enforced. Currency limits are enforced
+  only when the user supplies explicit provider prices, avoiding fabricated
+  cost claims.
+- `--workspace` creates a dedicated Git branch/worktree before agent activity.
 
 ### Extensibility and interfaces
 
@@ -79,13 +91,24 @@ This report separates model generation ability from Nexus enforcement. “Guarde
 
 ## Current Claude Code parity boundary
 
-Nexus now covers the core local coding-agent surface: tool loop, file/shell/git/search tools, diff approvals, permission modes, checkpoints, sessions, project instructions, skills, subagents, hooks, MCP, plugins, background processes, headless output, and evidence-backed verification.
+Nexus now covers the core local coding-agent surface: tool loop,
+file/shell/git/search/RepoGraph tools, diff approvals, permission modes,
+durable run checkpoints, complete-run rollback, opt-in worktrees, sessions,
+project instructions, skills, subagents, hooks, MCP, plugins, background
+processes, headless output, hard usage limits, and evidence-backed
+verification.
 
-It does not yet implement a long-lived LSP client, automatic per-session Git worktrees, notebook-cell-aware editing, scheduled prompt orchestration, peer-to-peer agent teams, or Anthropic-specific cloud/mobile/IDE/Remote Control services. See `CLAUDE_CODE_PARITY.md` for the source-backed feature comparison and `ROADMAP.md` for the complete long-term Nexus product contract.
+It does not yet implement a long-lived LSP client, automatic worktrees for
+every modifying run, OS/container isolation, automatic continuation of an
+interrupted task DAG, notebook-cell-aware editing, scheduled prompt
+orchestration, peer-to-peer agent teams, or Anthropic-specific
+cloud/mobile/IDE/Remote Control services. See `CLAUDE_CODE_PARITY.md` for the
+source-backed feature comparison and `ROADMAP.md` for the complete long-term
+Nexus product contract.
 
 ## Raw verification record
 
-- Launch-candidate deterministic Python suite: **137 passed** on 2026-07-29.
+- Version 2.1 deterministic Python suite: **149 passed** on 2026-07-29.
 - The release gate also runs Ruff, byte-compilation, sdist/wheel builds, an
   isolated wheel-target install, packaged Nova and web backend imports,
   `nexus --version`, and `nexus --doctor`.

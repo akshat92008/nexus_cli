@@ -96,19 +96,23 @@ def _run_ceiling_call(call, timeout_seconds: float):
 CEILING_DIRECT_SYSTEM = """You are the Ceiling node in a two-node coding agent.
 You are executing one atomic subtask directly because Nova failed guardrails.
 
-Return ONLY the existing Nova file protocol:
-<<THINKING>>
-Brief explanation of the solution.
+Return ONLY one JSON object conforming to nova.patch.v1:
+{
+  "schema": "nova.patch.v1",
+  "thinking": "Brief explanation of the solution.",
+  "files": [
+    {
+      "path": "THE_EXACT_PATH_FROM_THE_SUBTASK",
+      "action": "CREATE or MODIFY",
+      "language": "the real source language",
+      "content": "the complete file content"
+    }
+  ],
+  "test_command": ""
+}
 
-<<FILES>>
-Open exactly one Markdown code fence using the target file's real language tag.
-Its first two lines must be:
-# filepath: THE_EXACT_PATH_FROM_THE_SUBTASK
-# action: CREATE | MODIFY
-Then emit the complete file content and close that one fence.
-
-Never literally output `language`, `path/to/file.ext`, a nested code fence, or a second separator.
-For CREATE or MODIFY, output the full file content inside the single code block. Do not include shell commands or prose outside the protocol."""
+Do not wrap the JSON in Markdown. Never invent a path, add shell commands, or include prose
+outside the JSON object. For CREATE or MODIFY, content must be the complete file."""
 
 
 @dataclass
@@ -758,15 +762,31 @@ class TwoNodeBackend:
         difficulty = analysis.get("difficulty")
         plan_type = analysis.get("plan_type")
         skills = analysis.get("skills_needed", [])
+        criteria = analysis.get("acceptance_criteria", [])
+        permitted_files = analysis.get("permitted_files", [])
+        task_dag = analysis.get("task_dag", [])
         def val(item):
             return item.value if hasattr(item, "value") else str(item)
-        return (
+        context = (
             "Nexus planner analysis:\n"
             f"- intent: {val(intent)}\n"
             f"- difficulty: {val(difficulty)}\n"
             f"- plan_type: {val(plan_type)}\n"
             f"- skills_needed: {', '.join(skills) if skills else 'none'}"
         )
+        if permitted_files:
+            context += "\n- permitted_files: " + ", ".join(permitted_files)
+        if criteria:
+            context += "\n- acceptance_criteria:\n" + "\n".join(
+                f"  - {item}" for item in criteria
+            )
+        if task_dag:
+            context += "\n- task_dag:\n" + "\n".join(
+                f"  - {item.get('id')}: {item.get('title')} "
+                f"deps={item.get('depends_on', [])} risk={item.get('risk')}"
+                for item in task_dag
+            )
+        return context
 
     @staticmethod
     def _route_task(task: AtomicTask) -> tuple[str, str]:

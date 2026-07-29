@@ -239,6 +239,8 @@ class NvidiaClient:
             "max_tokens": max_tokens,
             "stream": stream,
         }
+        if stream:
+            kwargs["stream_options"] = {"include_usage": True}
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
