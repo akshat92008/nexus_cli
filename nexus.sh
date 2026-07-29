@@ -13,16 +13,12 @@ if [ ! -d "$VENV_DIR" ]; then
     echo "⚡ Setting up NexusAI for the first time..."
     python3 -m venv "$VENV_DIR"
     source "$VENV_DIR/bin/activate"
-    pip install -q -r "$SCRIPT_DIR/requirements.txt"
+    pip install -q "$SCRIPT_DIR"
     echo "✅ Setup complete!"
     echo ""
 else
     source "$VENV_DIR/bin/activate"
 fi
 
-# Load env vars
-if [ -f "$SCRIPT_DIR/.env" ]; then
-    export $(grep -v '^#' "$SCRIPT_DIR/.env" | xargs)
-fi
-
-python3 "$SCRIPT_DIR/run.py" "$@"
+export PYTHONPATH="$SCRIPT_DIR${PYTHONPATH:+:$PYTHONPATH}"
+python3 -m nexus.cli "$@"

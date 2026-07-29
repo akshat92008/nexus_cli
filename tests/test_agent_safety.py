@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from nexus.agent import Agent
 import nexus.history as nexus_history
+from nexus.agent import Agent
 
 
 def _agent_for_tmp_path(tmp_path, monkeypatch) -> Agent:
@@ -152,3 +152,31 @@ def test_multi_edit_cannot_hide_an_outside_workspace_path(tmp_path, monkeypatch)
     assert not success
     assert "PENDING_CONFIRMATION" in result
     assert outside.read_text() == "before\n"
+
+
+def test_outside_workspace_is_confirmed_before_diff_preview(tmp_path, monkeypatch):
+    """Out-of-scope files are not read while Nexus is constructing a preview."""
+    outside = tmp_path.parent / f"private-{tmp_path.name}.txt"
+    outside.write_text("private\n")
+    old_cwd = os.getcwd()
+    try:
+        agent = _agent_for_tmp_path(tmp_path, monkeypatch)
+
+        def fail_preview(*_args, **_kwargs):
+            raise AssertionError("preview must not read an unapproved path")
+
+        monkeypatch.setattr("nexus.agent.preview_mutation", fail_preview)
+        result, success = agent._execute_tool_with_safety(
+            "write_file",
+            {
+                "path": str(outside),
+                "content": "changed\n",
+                "_nova_guardrail": {"passed": True, "summary": "test"},
+            },
+        )
+    finally:
+        os.chdir(old_cwd)
+
+    assert not success
+    assert "PENDING_CONFIRMATION" in result
+    assert outside.read_text() == "private\n"

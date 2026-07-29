@@ -5,11 +5,9 @@ Spawns isolated agent instances, executes them (sequentially or parallel),
 and aggregates their results into a unified report.
 """
 
-import asyncio
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Optional
 
 from nexus.subagents.base import BaseSubagent, SubagentResult, SubagentStatus
 

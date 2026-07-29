@@ -216,7 +216,7 @@ def list_templates() -> list[dict]:
     """List all available subagent templates."""
     seen = set()
     templates = []
-    for key, cls in SUBAGENT_TEMPLATES.items():
+    for _key, cls in SUBAGENT_TEMPLATES.items():
         if cls.name not in seen:
             seen.add(cls.name)
             templates.append({

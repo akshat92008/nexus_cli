@@ -1,7 +1,6 @@
 """
 Smoke tests for NexusAI tools — verifies all 22 tools execute without crashing.
 """
-import os
 import sys
 import tempfile
 from pathlib import Path
@@ -274,11 +273,11 @@ def test_all_tools_execute():
 
 
 def test_resolve_path():
-    """_resolve_path should correctly map desktop paths and expand home."""
+    """Relative desktop paths stay scoped to the active workspace."""
     from nexus.tools import _resolve_path
     dt_path = _resolve_path("desktop/calculator/index.html")
-    expected_desktop = Path.home() / "Desktop" / "calculator" / "index.html"
-    assert dt_path == expected_desktop.resolve()
+    expected = Path.cwd() / "desktop" / "calculator" / "index.html"
+    assert dt_path == expected.resolve()
 
 
 def test_normalize_tool_arguments():

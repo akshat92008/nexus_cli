@@ -1,6 +1,6 @@
 from prompt_toolkit import PromptSession
-from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 
 kb = KeyBindings()

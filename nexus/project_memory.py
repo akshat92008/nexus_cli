@@ -23,10 +23,8 @@ Example NEXUS.md:
 """
 
 import re
-import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 
 
 @dataclass
@@ -234,7 +232,6 @@ class ProjectMemory:
 
         lines = content.split("\n")
         current_section = ""
-        in_list = False
 
         for line in lines:
             stripped = line.strip()
@@ -242,7 +239,6 @@ class ProjectMemory:
             # Section headers
             if stripped.startswith("##"):
                 current_section = stripped.lstrip("#").strip().lower()
-                in_list = False
                 continue
 
             if stripped.startswith("#") and not stripped.startswith("# "):

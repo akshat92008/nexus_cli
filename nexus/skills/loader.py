@@ -7,10 +7,7 @@ Discovers skills from:
 3. Plugin skills — loaded via the plugin system
 """
 
-import importlib
-import os
 from pathlib import Path
-from typing import Optional
 
 from nexus.skills.base import BaseSkill
 
@@ -104,7 +101,7 @@ class SkillRegistry:
 
         # Activate top skills
         activated = []
-        for name, score in top_skills:
+        for name, _score in top_skills:
             if name not in self._active_skills:
                 self.activate(name)
                 activated.append(self._skills[name])

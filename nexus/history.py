@@ -5,15 +5,13 @@ Every write_file, edit_file, patch_file, and multi_edit is recorded here
 so the user can review what changed and revert if needed.
 """
 
-import os
-import json
 import difflib
+import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from nexus.paths import nexus_home
-from typing import Optional
 
+from nexus.paths import nexus_home
 
 HISTORY_DIR = nexus_home() / "history"
 

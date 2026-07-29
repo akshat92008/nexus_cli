@@ -5,9 +5,8 @@ Manages hook registration, ordering by priority, and execution.
 """
 
 import subprocess
-from typing import Optional
 
-from nexus.hooks.base import BaseHook, HookEvent, HookType, HookContext, HookResult
+from nexus.hooks.base import BaseHook, HookContext, HookEvent, HookResult, HookType
 
 
 class HookRunner:

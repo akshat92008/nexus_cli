@@ -3,7 +3,6 @@ MCP Tool Registry — handles integration of dynamically discovered MCP tools
 with the agent's central tool dispatch system.
 """
 
-from typing import Callable, Any
 from nexus.mcp.client import MCPClient
 
 

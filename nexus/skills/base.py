@@ -6,7 +6,6 @@ system prompt addons, tool permissions, and quality checklists.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 
 @dataclass

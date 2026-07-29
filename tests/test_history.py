@@ -2,8 +2,8 @@
 Tests for the history module — file change tracking, undo, and diff.
 """
 import sys
-import time
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))

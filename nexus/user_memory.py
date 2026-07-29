@@ -6,13 +6,10 @@ Stored in ~/.nexusai/user_prefs.json.
 """
 
 import json
-import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
-from pathlib import Path
-from nexus.paths import nexus_home
-from typing import Optional
 
+from nexus.paths import nexus_home
 
 PREFS_FILE = nexus_home() / "user_prefs.json"
 

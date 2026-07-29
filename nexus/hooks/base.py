@@ -4,7 +4,6 @@ Hook Base — types, events, and base class for lifecycle hooks.
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional, Callable
 
 
 class HookEvent(str, Enum):

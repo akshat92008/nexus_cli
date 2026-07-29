@@ -16,12 +16,13 @@ import os
 import sys
 from pathlib import Path
 
+from nexus import __version__, ui
 from nexus.agent import Agent
-from nexus.models import resolve_model, DEFAULT_MODEL, ALIASES
-from nexus import ui
-from nexus.tools import tool_get_project_structure
+from nexus.doctor import run_doctor
 from nexus.history import get_history
 from nexus.memory import ConversationMemory
+from nexus.models import DEFAULT_MODEL, resolve_model
+from nexus.tools import tool_get_project_structure
 
 
 def parse_args():
@@ -42,6 +43,8 @@ Examples:
 
 Environment:
   NVIDIA_API_KEY                     Your NVIDIA API key (from build.nvidia.com)
+  GROQ_API_KEY                       Optional hosted fallback
+  OPENROUTER_API_KEY                 Optional hosted fallback
   Ollama                             Required for Nova Intern (nova_codex model)
         """,
     )
@@ -51,13 +54,23 @@ Environment:
         help="Single prompt to run (omit for interactive mode)",
     )
     parser.add_argument(
+        "--version",
+        action="version",
+        version=f"NexusAI {__version__}",
+    )
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Run installation and backend diagnostics, then exit",
+    )
+    parser.add_argument(
         "--model", "-m",
         default=DEFAULT_MODEL,
         help=f"Model to use (default: {DEFAULT_MODEL}). Use --list-models to see all.",
     )
     parser.add_argument(
         "--api-key", "-k",
-        help="NVIDIA API key (or set NVIDIA_API_KEY env var)",
+        help="NVIDIA API key (prefer an environment variable to avoid shell history)",
     )
     parser.add_argument(
         "--working-dir", "-d",
@@ -422,8 +435,9 @@ def run_interactive(agent: Agent):
 def run_web(api_key: str, model: str, port: int, working_dir: str | None):
     """Launch the web interface."""
     try:
-        from nexus.webapp.server import create_app
         import uvicorn
+
+        from nexus.webapp.server import create_app
 
         ui.print_banner()
         ui.console.print(
@@ -432,7 +446,7 @@ def run_web(api_key: str, model: str, port: int, working_dir: str | None):
         )
 
         app = create_app(api_key=api_key, model=model, working_dir=working_dir)
-        uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
+        uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
     except ImportError as e:
         ui.print_error(f"Web dependencies not installed: {e}")
@@ -445,8 +459,10 @@ def start_background_web_server(api_key: str, model: str, port: int, working_dir
     import threading
     import time
     import webbrowser
-    from nexus.webapp.server import create_app
+
     import uvicorn
+
+    from nexus.webapp.server import create_app
 
     def _run():
         try:
@@ -470,6 +486,24 @@ def start_background_web_server(api_key: str, model: str, port: int, working_dir
     threading.Thread(target=_open_browser, daemon=True).start()
 
 
+def non_interactive_exit_code(content: str, events: list[dict]) -> int:
+    """Return a machine-meaningful status for one-shot CLI execution."""
+    if any(
+        event.get("type") == "tool_call" and not event.get("success", False)
+        for event in events
+    ):
+        return 2
+    lowered = (content or "").strip().lower()
+    failure_markers = (
+        "nova backend error:",
+        "nova guardrails blocked",
+        "nova guardrails rejected",
+        "nexus ai provider failover error",
+        "❌",
+    )
+    return 2 if any(marker in lowered for marker in failure_markers) else 0
+
+
 def main():
     args = parse_args()
 
@@ -483,6 +517,15 @@ def main():
         ui.print_models_table()
         sys.exit(0)
 
+    if args.doctor:
+        model_cfg = resolve_model(args.model) or {}
+        success, report = run_doctor(
+            working_dir=args.working_dir,
+            nova_model=model_cfg.get("ollama_model", "nova_codex"),
+        )
+        print(report)
+        sys.exit(0 if success else 2)
+
     # Validate model
     model_cfg = resolve_model(args.model)
     if not model_cfg:
@@ -495,16 +538,22 @@ def main():
     from nexus.api import _load_env_file
     _load_env_file()
     api_key = args.api_key or os.environ.get("NVIDIA_API_KEY")
+    has_hosted_key = bool(
+        api_key
+        or os.environ.get("GROQ_API_KEY")
+        or os.environ.get("OPENROUTER_API_KEY")
+    )
     is_local_nova = model_cfg.get("backend") == "nova"
-    if not api_key and not is_local_nova:
+    if not has_hosted_key and not is_local_nova:
         ui.console.print()
-        ui.print_error("No NVIDIA API key found!")
+        ui.print_error("No hosted-provider API key found!")
         ui.console.print(
-            f"\n  [{ui.WHITE}]Get your free API key from:[/] [bold {ui.CYAN}]https://build.nvidia.com[/]\n"
-            f"\n  [{ui.WHITE}]Then either:[/]"
+            f"\n  [{ui.WHITE}]For NVIDIA, get an API key from:[/] "
+            f"[bold {ui.CYAN}]https://build.nvidia.com[/]\n"
+            f"\n  [{ui.WHITE}]Then set one of:[/]"
             f"\n    [bold {ui.GREEN}]export NVIDIA_API_KEY=nvapi-your-key-here[/]"
-            f"\n    [{ui.WHITE}]or run:[/]"
-            f"\n    [bold {ui.GREEN}]nexus --api-key nvapi-your-key-here[/]\n"
+            f"\n    [bold {ui.GREEN}]export GROQ_API_KEY=gsk-your-key-here[/]"
+            f"\n    [bold {ui.GREEN}]export OPENROUTER_API_KEY=sk-or-your-key-here[/]\n"
         )
         sys.exit(1)
 
@@ -564,14 +613,34 @@ def main():
             sys.exit(0 if success else 2)
         if args.print_mode or args.output_format != "text":
             content, events = agent.run_non_interactive(args.prompt)
+            exit_code = non_interactive_exit_code(content, events)
             if args.output_format == "json":
-                print(json.dumps({"result": content, "events": events, "session_id": agent.conversation_id}))
+                print(
+                    json.dumps(
+                        {
+                            "success": exit_code == 0,
+                            "result": content,
+                            "events": events,
+                            "session_id": agent.conversation_id,
+                        }
+                    )
+                )
             elif args.output_format == "stream-json":
                 for event in events:
                     print(json.dumps(event))
-                print(json.dumps({"type": "result", "result": content, "session_id": agent.conversation_id}))
+                print(
+                    json.dumps(
+                        {
+                            "type": "result",
+                            "success": exit_code == 0,
+                            "result": content,
+                            "session_id": agent.conversation_id,
+                        }
+                    )
+                )
             else:
                 print(content)
+            sys.exit(exit_code)
         else:
             agent.run(args.prompt)
         sys.exit(0)

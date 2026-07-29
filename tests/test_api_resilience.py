@@ -3,9 +3,21 @@ Test suit for API resilience: key rotation and Groq failover.
 """
 
 import os
+import threading
+import time
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
-from nexus.api import NvidiaClient, GROQ_MODEL_MAP, DEFAULT_GROQ_MODEL
+
+from nexus.api import DEFAULT_GROQ_MODEL, NvidiaClient
+from nexus.two_node_backend import CeilingCallTimeout, _run_ceiling_call
+
+
+@pytest.fixture(autouse=True)
+def provider_keys(monkeypatch):
+    """Keep resilience tests independent of a developer's local .env file."""
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
 
 
 @patch.dict(os.environ, {"GROQ_API_KEY": "fake_groq_key", "NVIDIA_FALLBACK_API_KEY_1": "fake_nvidia_key1", "NVIDIA_API_KEY": "fake_nvidia_key"})
@@ -19,17 +31,55 @@ def test_api_client_key_loading():
 def test_groq_model_resolution():
     """Verify model mapping to Groq models for tool calling compatibility."""
     client = NvidiaClient()
-    assert client.resolve_groq_model("z-ai/glm-5.2") == "llama-3.3-70b-versatile"
+    assert client.resolve_groq_model("z-ai/glm-5.2") == "openai/gpt-oss-120b"
     assert client.resolve_groq_model("meta/llama-3.3-70b-instruct") == "llama-3.3-70b-versatile"
-    assert client.resolve_groq_model("deepseek-ai/deepseek-v4-pro") == "llama-3.3-70b-versatile"
+    assert client.resolve_groq_model("deepseek-ai/deepseek-v4-pro") == "openai/gpt-oss-120b"
     assert client.resolve_groq_model("unknown-model") == DEFAULT_GROQ_MODEL
 
 
 def test_client_timeout():
-    """Verify client timeout defaults to 6.0s for fast resilience."""
+    """Verify hosted inference gets enough time to produce a first token."""
     client = NvidiaClient()
-    assert client.timeout == 6.0
-    assert client.client.timeout == 6.0
+    assert client.timeout == 60.0
+    assert client.client.timeout == 60.0
+
+
+def test_groq_only_configuration_is_supported(monkeypatch):
+    """A Groq key is sufficient to start the hosted client."""
+    for name in list(os.environ):
+        if name.startswith(("NVIDIA_API_KEY", "NVIDIA_FALLBACK_API_KEY")):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-only")
+    monkeypatch.setattr("nexus.api._load_env_file", lambda: None)
+
+    client = NvidiaClient()
+
+    assert client.nvidia_keys == []
+    assert client.groq_keys == ["gsk-only"]
+    assert str(client.client.base_url) == "https://api.groq.com/openai/v1/"
+
+
+def test_openrouter_only_configuration_is_supported(monkeypatch):
+    """An OpenRouter key is sufficient to start the hosted client."""
+    for name in list(os.environ):
+        if name.startswith(
+            (
+                "NVIDIA_API_KEY",
+                "NVIDIA_FALLBACK_API_KEY",
+                "GROQ_API_KEY",
+                "GROQ_FALLBACK_API_KEY",
+            )
+        ):
+            monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-only")
+    monkeypatch.setattr("nexus.api._load_env_file", lambda: None)
+
+    client = NvidiaClient()
+
+    assert client.nvidia_keys == []
+    assert client.groq_keys == []
+    assert str(client.client.base_url) == "https://openrouter.ai/api/v1/"
 
 
 def test_groq_fallback_execution():
@@ -88,7 +138,7 @@ def test_active_round_robin_key_rotation():
 def test_cloud_api_exhaustion_falls_back_to_local_nova():
     """Verify that when all cloud APIs fail, agent.run falls back to local Nova turn."""
     from nexus.agent import Agent
-    agent = Agent(model_key="deepseek-v4")
+    agent = Agent(api_key="nvapi-test", model_key="deepseek-v4")
 
     # Mock client.chat to simulate cloud rate limit exhaustion on a chat query
     with patch.object(agent.client, "chat", side_effect=RuntimeError("Rate limited after multiple retries")):
@@ -100,7 +150,7 @@ def test_cloud_api_exhaustion_falls_back_to_local_nova():
 
 def test_round_robin_key_pool():
     """Verify explicit RoundRobinKeyPool cycling and cooldown skipping."""
-    from nexus.api import RoundRobinKeyPool, NvidiaClient
+    from nexus.api import NvidiaClient, RoundRobinKeyPool
 
     pool = RoundRobinKeyPool(["k1", "k2", "k3"])
     assert pool.get_next_key() == "k1"
@@ -119,3 +169,20 @@ def test_round_robin_key_pool():
     client.nvidia_pool = RoundRobinKeyPool(client.nvidia_keys)
     assert client.get_next_key("nvidia") == "keyA"
     assert client.get_next_key("nvidia") == "keyB"
+
+
+def test_ceiling_timeout_works_outside_main_thread():
+    result = {}
+
+    def run():
+        try:
+            _run_ceiling_call(lambda: time.sleep(0.1), 0.01)
+        except CeilingCallTimeout:
+            result["timed_out"] = True
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    worker.join(timeout=1)
+
+    assert not worker.is_alive()
+    assert result == {"timed_out": True}

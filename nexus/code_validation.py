@@ -123,26 +123,35 @@ class GeneratedCodeValidator:
                 tree = ast.parse(text, filename=str(path))
             except SyntaxError:
                 return ""  # The compiler check reports the precise syntax error.
-            has_main = any(
+            has_literal_main = any(
                 isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "main"
                 for node in tree.body
             )
-            has_name_guard = any(
-                isinstance(node, ast.If)
-                and "__name__" in ast.unparse(node.test)
-                and "__main__" in ast.unparse(node.test)
-                and any(
-                    isinstance(child, ast.Call)
-                    and isinstance(child.func, ast.Name)
-                    and child.func.id == "main"
-                    for statement in node.body
-                    for child in ast.walk(statement)
-                )
-                for node in tree.body
+            guarded_calls: set[str] = set()
+            for node in tree.body:
+                if not (
+                    isinstance(node, ast.If)
+                    and "__name__" in ast.unparse(node.test)
+                    and "__main__" in ast.unparse(node.test)
+                ):
+                    continue
+                for statement in node.body:
+                    for child in ast.walk(statement):
+                        if not isinstance(child, ast.Call):
+                            continue
+                        if isinstance(child.func, ast.Name):
+                            guarded_calls.add(child.func.id)
+                        elif isinstance(child.func, ast.Attribute):
+                            guarded_calls.add(child.func.attr)
+
+            requires_literal_main = bool(
+                re.search(r"\bmain\s+function\b|\bdef\s+main\b", prompt, re.I)
             )
-            if not has_main:
+            if requires_literal_main and not has_literal_main:
                 return "required Python main function is missing"
-            if not has_name_guard:
+            if not guarded_calls:
+                return "required Python __name__ entrypoint guard is missing"
+            if requires_literal_main and "main" not in guarded_calls:
                 return "required Python __name__ entrypoint guard calling main() is missing"
         patterns = {
             ".go": r"\bfunc\s+main\s*\(",
@@ -165,7 +174,13 @@ class GeneratedCodeValidator:
             return "candidate ends with an ellipsis and appears truncated"
         suffix = path.suffix.lower()
         if suffix in {".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".cpp", ".cc", ".cxx", ".c", ".java"}:
-            scrubbed = re.sub(r"//.*?$|/\*.*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"", "", text, flags=re.M | re.S)
+            scrubbed = re.sub(
+                r"//.*?$|/\*.*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|"
+                r"`(?:\\.|[^`\\])*`",
+                "",
+                text,
+                flags=re.M | re.S,
+            )
             pairs = (("{", "}"), ("(", ")"), ("[", "]"))
             for left, right in pairs:
                 if scrubbed.count(left) != scrubbed.count(right):

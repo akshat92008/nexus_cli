@@ -1,6 +1,4 @@
-import json
 import os
-from pathlib import Path
 
 from nexus.agent import Agent
 from nexus.evidence import EvidenceTrail, verify_mutation
@@ -57,6 +55,55 @@ def test_package_guard_blocks_nonexistent_dependency_without_writing(tmp_path):
     )
     assert len(checks) == 1
     assert checks[0].blocked
+
+
+def test_package_guard_requires_confirmation_when_registry_is_unavailable():
+    check = PackageCheck(
+        "example-package",
+        "pypi",
+        "unverified",
+        "registry could not be verified: offline",
+    )
+    assert not check.blocked
+    assert check.requires_confirmation
+
+
+def test_agent_holds_unverified_dependency_for_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
+    old_cwd = os.getcwd()
+    try:
+        agent = Agent(
+            model_key="nova3b",
+            working_dir=str(tmp_path),
+            permission_mode="acceptEdits",
+        )
+        monkeypatch.setattr(
+            agent.package_guard,
+            "check_file_change",
+            lambda _path, _content: [
+                PackageCheck(
+                    "example-package",
+                    "pypi",
+                    "unverified",
+                    "registry could not be verified: offline",
+                )
+            ],
+        )
+        result, success = agent._execute_tool_with_safety(
+            "write_file",
+            {
+                "path": "requirements.txt",
+                "content": "example-package==1.0\n",
+                "_nova_guardrail": {"passed": True, "summary": "test"},
+            },
+        )
+    finally:
+        os.chdir(old_cwd)
+
+    assert not success
+    assert "PENDING_CONFIRMATION" in result
+    assert "not executed" in result
+    assert not (tmp_path / "requirements.txt").exists()
 
 
 def test_trust_is_invalidated_on_every_config_change(tmp_path):

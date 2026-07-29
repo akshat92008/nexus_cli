@@ -3,19 +3,14 @@ Rich terminal UI — beautiful output for the coding agent.
 """
 
 import os
-import shutil
-from rich.console import Console
-from rich.panel import Panel
-from rich.markup import escape
-from rich.markdown import Markdown
-from rich.table import Table
-from rich.text import Text
-from rich.syntax import Syntax
-from rich.columns import Columns
-from rich.rule import Rule
-from rich.live import Live
-from rich.spinner import Spinner
+
 from rich import box
+from rich.console import Console
+from rich.markup import escape
+from rich.panel import Panel
+from rich.rule import Rule
+from rich.table import Table
+
 from nexus.models import list_models
 
 console = Console()
@@ -400,8 +395,8 @@ def get_prompt(model_name: str) -> str:
     global _prompt_session
     try:
         from prompt_toolkit import PromptSession
-        from prompt_toolkit.history import FileHistory
         from prompt_toolkit.formatted_text import HTML
+        from prompt_toolkit.history import FileHistory
 
         if _prompt_session is None:
             # Save command history to a hidden file in user's home directory

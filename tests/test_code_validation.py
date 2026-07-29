@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 
 from nexus.code_validation import GeneratedCodeValidator
+from nexus.nova_runtime import AtomicTask
 from nexus.two_node_backend import TwoNodeBackend
-from pipeline import AtomicTask
 
 
 @dataclass
@@ -38,6 +38,42 @@ def test_python_main_must_be_called_by_name_guard(tmp_path):
     )
     assert not checks[0].passed
     assert "__name__" in checks[0].output
+
+
+def test_python_cli_may_use_named_framework_entrypoint(tmp_path):
+    path = tmp_path / "cli.py"
+    path.write_text(
+        "def cli():\n"
+        "    print('ok')\n\n"
+        "if __name__ == '__main__':\n"
+        "    cli()\n"
+    )
+    checks = GeneratedCodeValidator(str(tmp_path)).validate(
+        [Action("cli.py")], "Create a Python CLI entrypoint"
+    )
+    assert checks[0].passed
+
+
+def test_javascript_template_literals_do_not_trigger_false_truncation(tmp_path):
+    path = tmp_path / "render.js"
+    path.write_text(
+        "function render(item) {\n"
+        "  return `<div data-id=\"${item.id}\">${item.name}</div>`;\n"
+        "}\n"
+    )
+    checks = GeneratedCodeValidator(str(tmp_path)).validate(
+        [Action("render.js")], "Create render.js"
+    )
+    assert checks[0].passed
+
+
+def test_javascript_array_join_is_not_path_join(tmp_path):
+    path = tmp_path / "format.js"
+    path.write_text("const output = ['a', 'b'].join(',');\n")
+    checks = GeneratedCodeValidator(str(tmp_path)).validate(
+        [Action("format.js")], "Create format.js"
+    )
+    assert checks[0].passed
 
 
 def test_nonnegative_boundary_guard_cannot_reject_zero(tmp_path):

@@ -5,8 +5,9 @@ Plugins bundle custom skills, lifecycle hooks, and extra tool implementations.
 """
 
 from typing import Any
-from nexus.skills.base import BaseSkill
+
 from nexus.hooks.base import BaseHook
+from nexus.skills.base import BaseSkill
 
 
 class BasePlugin:

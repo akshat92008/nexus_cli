@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-
 DEPENDENCY_FILES = {
     "requirements.txt": "pypi",
     "requirements-dev.txt": "pypi",
@@ -35,7 +34,12 @@ class PackageCheck:
 
     @property
     def blocked(self) -> bool:
-        return self.status in {"blocked", "unverified"}
+        return self.status == "blocked"
+
+    @property
+    def requires_confirmation(self) -> bool:
+        """Registry outages are uncertainty, not proof that a package is malicious."""
+        return self.status == "unverified"
 
 
 class PackageGuard:

@@ -12,43 +12,42 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Any
-
-from nexus.api import NvidiaClient
-from nexus.models import resolve_model, resolve_model_key, DEFAULT_MODEL, MODELS
-from nexus.tools import TOOL_DEFINITIONS, execute_tool, tool_get_project_structure, tool_git_status
-from nexus.history import get_history, init_history
-from nexus.memory import ConversationMemory, compact_messages
-
-# Phase 1: Core Engine Imports
-from nexus.planner import PlanningEngine, PlanType, TaskStatus, IntentType
-from nexus.reflection import ReflectionEngine, ReflectionVerdict
-from nexus.context_manager import ContextManager
-from nexus.safety import SafetyLayer, SafetyLevel, SafetyCheck
-from nexus.project_memory import ProjectMemory
-from nexus.user_memory import UserMemory
-from nexus.verification import VerificationEngine, CheckType
-from nexus.approvals import preview_mutation
-from nexus.evidence import EvidenceTrail, command_exit_code, verify_mutation
-from nexus.package_guard import PackageGuard
-from nexus.trust import TrustStore
-from nexus.paths import nexus_home
-from nexus.code_validation import GeneratedCodeValidator
 from types import SimpleNamespace
+from typing import Any
 
-# Phase 2: Skills & Subagents
-from nexus.skills.loader import SkillRegistry, SkillLoader
-from nexus.subagents.orchestrator import SubagentOrchestrator
-from nexus.subagents.templates import create_subagent
+from nexus import ui
+from nexus.api import NvidiaClient
+from nexus.approvals import preview_mutation
+from nexus.code_validation import GeneratedCodeValidator
+from nexus.context_manager import ContextManager
+from nexus.evidence import EvidenceTrail, command_exit_code, verify_mutation
+from nexus.history import init_history
+from nexus.hooks.base import HookContext, HookEvent
+from nexus.hooks.builtin import create_builtin_hooks
 
 # Phase 3: Hooks, MCP & Plugins
 from nexus.hooks.runner import HookRunner
-from nexus.hooks.base import HookEvent, HookContext
-from nexus.hooks.builtin import create_builtin_hooks
 from nexus.mcp.client import MCPClient
-from nexus.plugins.loader import PluginLoader
+from nexus.memory import ConversationMemory, compact_messages
+from nexus.models import DEFAULT_MODEL, MODELS, resolve_model_key
+from nexus.package_guard import PackageGuard
+from nexus.paths import nexus_home
 
-from nexus import ui
+# Phase 1: Core Engine Imports
+from nexus.planner import IntentType, PlanningEngine, PlanType, TaskStatus
+from nexus.plugins.loader import PluginLoader
+from nexus.project_memory import ProjectMemory
+from nexus.reflection import ReflectionEngine, ReflectionVerdict
+from nexus.safety import SafetyCheck, SafetyLayer, SafetyLevel
+
+# Phase 2: Skills & Subagents
+from nexus.skills.loader import SkillLoader, SkillRegistry
+from nexus.subagents.orchestrator import SubagentOrchestrator
+from nexus.subagents.templates import create_subagent
+from nexus.tools import TOOL_DEFINITIONS, execute_tool, tool_get_project_structure, tool_git_status
+from nexus.trust import TrustStore
+from nexus.user_memory import UserMemory
+from nexus.verification import CheckType, VerificationEngine
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -553,6 +552,45 @@ class Agent:
                 if early_check.level == SafetyLevel.BLOCKED:
                     return f"❌ BLOCKED: {early_check.reason}", False
 
+        # Resolve scope before previews, dependency inspection, hooks, or tool
+        # dispatch. This prevents an unapproved path from being read merely to
+        # construct a diff.
+        scope_paths = (
+            [edit.get("path", "") for edit in args.get("edits", [])]
+            if name == "multi_edit"
+            else [file_path]
+        )
+        for scoped_path in (item for item in scope_paths if item):
+            resolved_file = Path(scoped_path).expanduser()
+            if not resolved_file.is_absolute():
+                resolved_file = Path(self.working_dir) / resolved_file
+            resolved_file = resolved_file.resolve()
+            roots = [Path(self.working_dir), *(Path(item) for item in self.additional_dirs)]
+            if any(_is_relative_to(resolved_file, root) for root in roots):
+                continue
+            if not _user_confirmed:
+                scope_check = SafetyCheck(
+                    level=SafetyLevel.DANGEROUS,
+                    operation=f"{name} outside workspace",
+                    reason="File access is outside the current workspace",
+                    details=str(resolved_file),
+                    requires_confirmation=True,
+                )
+                confirmation_id = self._queue_confirmation(
+                    name=name,
+                    args=pending_args,
+                    safety_check=scope_check,
+                    edit_confirmed=_edit_confirmed,
+                )
+                return (
+                    "⏸️ PENDING_CONFIRMATION "
+                    f"[{confirmation_id}]: {scope_check.reason}. "
+                    "This operation was not executed. Review the exact operation, then "
+                    f"enter /confirm {confirmation_id} or /cancel {confirmation_id}.\n"
+                    f"{scope_check.details}",
+                    False,
+                )
+
         # ── Package existence gate (before dependency writes or installs) ─
         package_checks = []
         package_warning_text = ""
@@ -577,6 +615,39 @@ class Agent:
                     f"  {check.registry}:{check.name} — {check.reason}" for check in blocked
                 )
                 return f"❌ BLOCKED by anti-slopsquatting guard:\n{details}", False
+            unverified = [
+                check for check in package_checks if check.requires_confirmation
+            ]
+            if unverified and not _user_confirmed:
+                details = "\n".join(
+                    f"  {check.registry}:{check.name} — {check.reason}"
+                    for check in unverified
+                )
+                uncertainty_check = SafetyCheck(
+                    level=SafetyLevel.DANGEROUS,
+                    operation=f"{name} with unverified package metadata",
+                    reason=(
+                        "The package registry could not be verified. This is not "
+                        "treated as proof of a malicious package, but continuing "
+                        "requires explicit approval"
+                    ),
+                    details=details,
+                    requires_confirmation=True,
+                )
+                confirmation_id = self._queue_confirmation(
+                    name=name,
+                    args=pending_args,
+                    safety_check=uncertainty_check,
+                    edit_confirmed=_edit_confirmed,
+                )
+                return (
+                    "⏸️ PENDING_CONFIRMATION "
+                    f"[{confirmation_id}]: {uncertainty_check.reason}. "
+                    "This operation was not executed. Review the exact operation, then "
+                    f"enter /confirm {confirmation_id} or /cancel {confirmation_id}.\n"
+                    f"{details}",
+                    False,
+                )
             warnings = [check for check in package_checks if check.status == "warn"]
             if warnings:
                 package_warning_text = "⚠️ PACKAGE RISK WARNING:\n" + "\n".join(
@@ -653,33 +724,6 @@ class Agent:
                 )
             else:
                 safety_check = self.safety.check_git_operation([name] + [str(v) for v in args.values() if isinstance(v, str)])
-
-        # Reads/writes outside the authorized workspace always require an
-        # exact one-shot confirmation, even when the operation is otherwise safe.
-        scope_paths = (
-            [edit.get("path", "") for edit in args.get("edits", [])]
-            if name == "multi_edit"
-            else [file_path]
-        )
-        for scoped_path in (item for item in scope_paths if item):
-            try:
-                resolved_file = Path(scoped_path).expanduser()
-                if not resolved_file.is_absolute():
-                    resolved_file = Path(self.working_dir) / resolved_file
-                resolved_file = resolved_file.resolve()
-                roots = [Path(self.working_dir), *(Path(item) for item in self.additional_dirs)]
-                if not any(_is_relative_to(resolved_file, root) for root in roots):
-                    raise ValueError
-            except ValueError:
-                if not (safety_check and safety_check.level == SafetyLevel.BLOCKED):
-                    safety_check = SafetyCheck(
-                        level=SafetyLevel.DANGEROUS,
-                        operation=f"{name} outside workspace",
-                        reason="File access is outside the current workspace",
-                        details=str(resolved_file),
-                        requires_confirmation=True,
-                    )
-                    break
 
         safety_warning = ""
         if safety_check and not safety_check.is_allowed:

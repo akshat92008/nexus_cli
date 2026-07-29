@@ -8,14 +8,12 @@ Architecture:
     File Access Tracker → Relevance Scoring → Token Budget → Context Assembly
 """
 
-import os
-import re
 import json
+import re
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from collections import defaultdict
-from typing import Optional
 
 
 @dataclass

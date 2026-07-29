@@ -5,7 +5,7 @@ Functions:
     binary_search: Perform binary search on a sorted list.
 """
 
-from typing import Any, List, Optional, TypeVar
+from typing import List, TypeVar
 
 T = TypeVar("T")
 

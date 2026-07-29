@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from nexus.memory import ConversationMemory, compact_messages, _get_preview
+from nexus.memory import ConversationMemory, _get_preview, compact_messages
 
 
 def test_save_and_load_conversation():

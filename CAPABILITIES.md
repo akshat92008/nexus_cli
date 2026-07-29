@@ -1,6 +1,6 @@
 # NEXUS CLI and `nova_codex` capability report
 
-Measured on 2026-07-27. The latest local Nova model used by Nexus is the Ollama model named **`nova_codex`**. Nexus exposes it through the model key `nova3b` and aliases including `nova_codex`, `nova`, and `local`.
+Updated on 2026-07-29. The local Nova model used by Nexus is the Ollama model named **`nova_codex`**. Nexus exposes it through the model key `nova3b` and aliases including `nova_codex`, `nova`, and `local`.
 
 This report separates model generation ability from Nexus enforcement. “Guarded” means Nexus can detect and stop a bad result; it does not mean `nova_codex` always generates the right result on its first attempt.
 
@@ -20,7 +20,9 @@ This report separates model generation ability from Nexus enforcement. “Guarde
 - Strict `CREATE` versus `MODIFY` semantics; nonexistent modify targets and existing create targets fail.
 - Empty, truncated, unbalanced, malformed, and nested-marker output is rejected or canonicalized before application.
 - Python AST and JSON parsing; Node syntax checks; Go, C, C++, and Rust compiler checks when the compiler exists.
-- Required Python, Go, C/C++, Rust, and JavaScript entrypoint checks.
+- Required Python, Go, C/C++, Rust, and JavaScript entrypoint checks. Python
+  framework entrypoints such as `cli()` are accepted when called from an
+  `if __name__ == "__main__"` guard.
 - Targeted semantic checks for nonnegative boundary errors, recursive self-calls, stable relative-path roots, missing JavaScript built-in imports, and exact-output trailing separators/newlines.
 - One clean compiler/semantic repair from the beginning; the hosted two-node path additionally retries Nova and can escalate the individual failed subtask to the Ceiling.
 - Candidate files are validated in isolated trees. Failed Nova candidates are never promoted into Ceiling retry context or the real workspace.
@@ -57,7 +59,7 @@ This report separates model generation ability from Nexus enforcement. “Guarde
 - Dangerous actions require an exact, one-shot confirmation ID; repeating the command does not grant permission.
 - Workspace confinement and explicit `--add-dir` authorization; batched edits scope-check every path.
 - Content-addressed trust for project instructions, MCP definitions, hooks, and plugin manifests. Any byte change invalidates approval and displays a diff.
-- Anti-slopsquatting checks against live PyPI, npm, crates.io, and Go registries before dependency writes or install commands. Missing and unreachable packages are blocked; new/low-download packages warn.
+- Anti-slopsquatting checks against live PyPI, npm, crates.io, and Go registries before dependency writes or install commands. Confirmed-missing packages are blocked; registry outages are labelled unverified and require explicit approval; new/low-download packages warn.
 - Web file APIs are workspace-confined and localhost CORS-scoped.
 
 ### Verified completion and recovery
@@ -79,11 +81,14 @@ This report separates model generation ability from Nexus enforcement. “Guarde
 
 Nexus now covers the core local coding-agent surface: tool loop, file/shell/git/search tools, diff approvals, permission modes, checkpoints, sessions, project instructions, skills, subagents, hooks, MCP, plugins, background processes, headless output, and evidence-backed verification.
 
-It does not yet implement a long-lived LSP client, automatic per-session Git worktrees, notebook-cell-aware editing, scheduled prompt orchestration, peer-to-peer agent teams, or Anthropic-specific cloud/mobile/IDE/Remote Control services. See `CLAUDE_CODE_PARITY.md` for the source-backed feature comparison.
+It does not yet implement a long-lived LSP client, automatic per-session Git worktrees, notebook-cell-aware editing, scheduled prompt orchestration, peer-to-peer agent teams, or Anthropic-specific cloud/mobile/IDE/Remote Control services. See `CLAUDE_CODE_PARITY.md` for the source-backed feature comparison and `ROADMAP.md` for the complete long-term Nexus product contract.
 
 ## Raw verification record
 
-- Deterministic Python suite: **119 passed in 12.68s** on the final run.
+- Launch-candidate deterministic Python suite: **137 passed** on 2026-07-29.
+- The release gate also runs Ruff, byte-compilation, sdist/wheel builds, an
+  isolated wheel-target install, packaged Nova and web backend imports,
+  `nexus --version`, and `nexus --doctor`.
 - A real eight-scenario matrix achieved 8/8 with native compilers/runtime checks: `verification_evidence/20260727T021905Z/manifest.json`.
 - Later repeated matrices are intentionally retained and include 7/8 and 5/8 runs. They demonstrate model nondeterminism and that failures were not relabeled as passes.
 - Evidence-complete transcripts and copied JSONL trails are under `verification_evidence/`; each manifest records exact commands, return codes, expected output, actual output, workspace, and per-step verdict.

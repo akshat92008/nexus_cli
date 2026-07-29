@@ -11,7 +11,6 @@ import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional
 
 
 class CheckType(str, Enum):
@@ -272,7 +271,6 @@ class VerificationEngine:
 
         # Check if tools are actually available (for Python projects)
         if self.project_type == "python":
-            root = Path(self.working_dir)
             if not self._command_exists("ruff"):
                 if "lint" in resolved and "ruff" in resolved["lint"]:
                     if self._python_module_exists("flake8"):

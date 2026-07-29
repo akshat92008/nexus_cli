@@ -8,7 +8,6 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-
 TRUSTED_CONFIG_NAMES = {
     "NEXUS.md", "nexus.md", ".nexus.md", "CLAUDE.md", "AGENT.md", "AGENTS.md",
     ".mcp.json", "mcp_servers.json", "settings.json", "settings.local.json",

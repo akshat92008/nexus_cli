@@ -12,35 +12,31 @@ import contextlib
 import json
 import os
 import re
-import signal
 import shutil
-import sys
+import signal
 import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
 
-
-NOVA_ROOT = Path(__file__).resolve().parents[2]
-if str(NOVA_ROOT) not in sys.path:
-    sys.path.insert(0, str(NOVA_ROOT))
-
-from constraint_checker import ConstraintExtractor, ConstraintVerifier  # noqa: E402
-from guardrail import TaskGuardrail  # noqa: E402
-from output_parser import NovaOutputParser  # noqa: E402
-from pipeline import (  # noqa: E402
-    AtomicTask,
+from nexus.code_validation import GeneratedCodeValidator
+from nexus.nova_backend import PROMPT_PATH, NovaPipelineBackend, NovaToolProposal
+from nexus.nova_runtime import (
     CEILING_SYSTEM_PROMPT,
+    AtomicTask,
     CeilingNode,
+    ConstraintExtractor,
+    ConstraintVerifier,
     InternNode,
+    NovaOutputParser,
+    TaskGuardrail,
     TestExecutor,
     extract_prompt_paths,
 )
-
-from nexus.nova_backend import NovaPipelineBackend, NovaToolProposal, PROMPT_PATH
-from nexus.code_validation import GeneratedCodeValidator
 
 
 class CeilingCallTimeout(TimeoutError):
@@ -50,7 +46,12 @@ class CeilingCallTimeout(TimeoutError):
 @contextlib.contextmanager
 def ceiling_timeout(seconds: int):
     """Hard timeout for blocking Ceiling API calls on Unix-like systems."""
-    if seconds <= 0 or not hasattr(signal, "SIGALRM"):
+    can_use_alarm = (
+        seconds > 0
+        and hasattr(signal, "SIGALRM")
+        and threading.current_thread() is threading.main_thread()
+    )
+    if not can_use_alarm:
         yield
         return
 
@@ -66,6 +67,30 @@ def ceiling_timeout(seconds: int):
     finally:
         signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_handler)
+
+
+def _run_ceiling_call(call, timeout_seconds: float):
+    """Run a blocking provider call with a timeout in CLI and worker threads."""
+    if timeout_seconds <= 0:
+        return call()
+    if (
+        hasattr(signal, "SIGALRM")
+        and threading.current_thread() is threading.main_thread()
+    ):
+        with ceiling_timeout(int(timeout_seconds)):
+            return call()
+
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nexus-ceiling")
+    future = executor.submit(call)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise CeilingCallTimeout(
+            f"Ceiling API call exceeded {timeout_seconds:g}s"
+        ) from exc
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 CEILING_DIRECT_SYSTEM = """You are the Ceiling node in a two-node coding agent.
@@ -201,8 +226,8 @@ class NvidiaCeilingNode:
             prompt = f"{planner_context}\n\nUser request:\n{request}"
         timeout = int(os.environ.get("NEXUS_CEILING_CALL_TIMEOUT", "60"))
         try:
-            with ceiling_timeout(timeout):
-                response = self.client.chat.completions.create(
+            response = _run_ceiling_call(
+                lambda: self.client.chat.completions.create(
                     model=self.model_name,
                     messages=[
                         {
@@ -220,13 +245,15 @@ class NvidiaCeilingNode:
                     ],
                     temperature=0.2,
                     max_tokens=2048,
-                )
+                ),
+                timeout,
+            )
             text = response.choices[0].message.content or ""
             self.tokens_used += getattr(response.usage, "total_tokens", 0)
             tasks = self._parser_node._parse_tasks(text)
             if tasks:
                 return tasks, text
-        except Exception as e:
+        except Exception:
             # Fallback to single atomic local task when remote API is rate limited or unavailable
             pass
 
@@ -247,8 +274,8 @@ class NvidiaCeilingNode:
         )
         timeout = int(os.environ.get("NEXUS_CEILING_CALL_TIMEOUT", "60"))
         try:
-            with ceiling_timeout(timeout):
-                response = self.client.chat.completions.create(
+            response = _run_ceiling_call(
+                lambda: self.client.chat.completions.create(
                     model=self.model_name,
                     messages=[
                         {"role": "system", "content": CEILING_DIRECT_SYSTEM},
@@ -256,7 +283,9 @@ class NvidiaCeilingNode:
                     ],
                     temperature=0.2,
                     max_tokens=4096,
-                )
+                ),
+                timeout,
+            )
             self.tokens_used += getattr(response.usage, "total_tokens", 0)
             return response.choices[0].message.content or ""
         except Exception as e:

@@ -4,44 +4,42 @@ Supports multi-key NVIDIA rotation and Groq API ultimate fallback.
 """
 
 import os
-import json
 import time
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Tuple
+
 from openai import OpenAI
 
 NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
 
-# Default timeouts for resilience
-DEFAULT_NVIDIA_TIMEOUT = float(os.environ.get("NEXUS_NVIDIA_TIMEOUT", "6.0"))
-DEFAULT_GROQ_TIMEOUT = float(os.environ.get("NEXUS_GROQ_TIMEOUT", "6.0"))
+# Hosted inference can legitimately take more than a few seconds before the
+# first token. Keep the defaults conservative while allowing operators to tune
+# them for their environment.
+DEFAULT_NVIDIA_TIMEOUT = float(os.environ.get("NEXUS_NVIDIA_TIMEOUT", "60.0"))
+DEFAULT_GROQ_TIMEOUT = float(os.environ.get("NEXUS_GROQ_TIMEOUT", "60.0"))
 
 # Groq model mappings for ultimate fallback (must support tool calling if used)
 GROQ_MODEL_MAP = {
     "meta/llama-3.3-70b-instruct": "llama-3.3-70b-versatile",
-    "deepseek-ai/deepseek-v4-pro": "llama-3.3-70b-versatile",
-    "deepseek-ai/deepseek-v4-flash": "llama-3.3-70b-versatile",
-    "z-ai/glm-5.2": "llama-3.3-70b-versatile",
-    "moonshotai/kimi-k2.6": "llama-3.3-70b-versatile",
-    "minimaxai/minimax-m3": "llama-3.3-70b-versatile",
-    "mistralai/codestral-22b-instruct-v0.1": "qwen-2.5-32b",
-    "qwen/qwen3.5-397b-a17b": "qwen-2.5-32b",
-    "nvidia/llama-3.3-nemotron-super-49b-v1.5": "llama-3.3-70b-versatile",
-    "meta/llama-3.1-70b-instruct": "llama-3.1-70b-versatile",
+    "deepseek-ai/deepseek-v4-pro": "openai/gpt-oss-120b",
+    "deepseek-ai/deepseek-v4-flash": "openai/gpt-oss-120b",
+    "z-ai/glm-5.2": "openai/gpt-oss-120b",
+    "moonshotai/kimi-k2.6": "openai/gpt-oss-120b",
+    "minimaxai/minimax-m3": "openai/gpt-oss-120b",
+    "qwen/qwen3.5-397b-a17b": "openai/gpt-oss-120b",
+    "nvidia/llama-3.3-nemotron-super-49b-v1.5": "openai/gpt-oss-120b",
+    "meta/llama-3.1-70b-instruct": "llama-3.3-70b-versatile",
 }
-DEFAULT_GROQ_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 
 
 def _load_env_file():
-    """Load environment variables from .env files if present."""
+    """Load local Nexus environment files without overriding process values."""
     possible_paths = [
         os.path.join(os.getcwd(), ".env"),
         os.path.join(Path(__file__).resolve().parents[1], ".env"),
-        os.path.expanduser("~/Desktop/nova-1.5b/coding_agent/.env"),
-        os.path.expanduser("~/Desktop/nova-1.5b/.env"),
-        os.path.expanduser("~/Desktop/coding_agent/.env"),
-        os.path.expanduser("~/Desktop/JARVIS/.env"),
+        os.path.expanduser("~/.config/nexus/.env"),
+        os.path.expanduser("~/.nexusai/.env"),
     ]
     for p in possible_paths:
         if os.path.exists(p):
@@ -160,8 +158,15 @@ class NvidiaClient:
                 timeout=DEFAULT_GROQ_TIMEOUT,
                 max_retries=0,
             )
+        elif os.environ.get("OPENROUTER_API_KEY"):
+            self.client = OpenAI(
+                base_url="https://openrouter.ai/api/v1",
+                api_key=os.environ["OPENROUTER_API_KEY"],
+                timeout=DEFAULT_GROQ_TIMEOUT,
+                max_retries=0,
+            )
         else:
-            raise ValueError("No valid API key found for NVIDIA or Groq.")
+            raise ValueError("No valid API key found for NVIDIA, Groq, or OpenRouter.")
 
     @property
     def all_keys(self) -> list[str]:
@@ -226,7 +231,7 @@ class NvidiaClient:
     ):
         """
         Send a chat completion request with automatic multi-key and multi-provider failover.
-        Tries NVIDIA Keys -> Alternative NVIDIA Models -> Groq API (multi-model/multi-key) -> OpenRouter / Gemini.
+        Tries NVIDIA keys, alternative NVIDIA models, Groq, then OpenRouter.
         """
         kwargs = {
             "messages": messages,
@@ -303,12 +308,18 @@ class NvidiaClient:
         # ── Step 3: Ultimate Fallback to Groq API (multi-key & multi-model) ──
         if self.groq_keys:
             primary_groq = self.resolve_groq_model(model_id)
-            groq_candidates = [primary_groq, "llama-3.3-70b-versatile", "llama-3.1-70b-versatile", "deepseek-r1-distill-llama-70b", "llama-3.1-8b-instant"]
+            groq_candidates = [
+                primary_groq,
+                "openai/gpt-oss-120b",
+                "llama-3.3-70b-versatile",
+                "openai/gpt-oss-20b",
+                "llama-3.1-8b-instant",
+            ]
             groq_candidates = list(dict.fromkeys(groq_candidates))
 
             groq_kwargs = dict(kwargs)
-            if groq_kwargs.get("max_tokens", 16384) > 4096:
-                groq_kwargs["max_tokens"] = 4096
+            if groq_kwargs.get("max_tokens", 16384) > 32768:
+                groq_kwargs["max_tokens"] = 32768
 
             for g_model in groq_candidates:
                 for g_key in self.groq_keys:
@@ -321,7 +332,7 @@ class NvidiaClient:
                         if "429" in err_str or "rate limit" in err_str.lower() or "413" in err_str or "400" in err_str:
                             continue  # Try next model or key if rate-limited or invalid model
 
-        # ── Step 4: Fallback to OpenRouter / Gemini if keys present ──────────
+        # ── Step 4: Fallback to OpenRouter if a key is present ───────────────
         openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
         if openrouter_key:
             try:

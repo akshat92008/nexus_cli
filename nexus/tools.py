@@ -9,22 +9,20 @@ Tools:
   Web:     web_fetch, web_search
 """
 
-import os
-import re
-import json
-import subprocess
 import fnmatch
 import hashlib
-import mimetypes
-import urllib.request
-import urllib.error
 import html
-from pathlib import Path
+import mimetypes
+import os
+import re
+import subprocess
+import urllib.error
+import urllib.request
 from datetime import datetime
+from pathlib import Path
 
 from nexus.history import get_history
 from nexus.paths import nexus_home
-
 
 # ── Tool definitions (OpenAI function-calling format) ────────────────────────
 
@@ -611,25 +609,16 @@ def _strip_html(html_text: str) -> str:
 
 def _resolve_path(path_str: str) -> Path:
     """
-    Intelligently resolve file and directory paths.
-    Expands ~, handles relative paths, and maps 'desktop/...' or 'Desktop/...'
-    to the user's actual Desktop directory if applicable.
+    Resolve file and directory paths without silently escaping the workspace.
+
+    Absolute paths and explicit ``~`` paths remain supported, but a relative
+    path such as ``desktop/app.py`` is kept relative to the current workspace.
+    Agent-level scope policy then decides whether an absolute path is allowed.
     """
     if not path_str:
         return Path.cwd()
 
     path_str = str(path_str).strip()
-    clean_path = path_str.replace("\\", "/")
-
-    # Handle explicit desktop paths like 'desktop/calculator' or 'Desktop/app.py'
-    if clean_path.lower().startswith("desktop/") or clean_path.lower() == "desktop":
-        desktop_dir = Path.home() / "Desktop"
-        if desktop_dir.exists():
-            if clean_path.lower() == "desktop":
-                return desktop_dir.resolve()
-            relative_part = clean_path.split("/", 1)[1]
-            return (desktop_dir / relative_part).resolve()
-
     return Path(path_str).expanduser().resolve()
 
 
@@ -744,7 +733,12 @@ def tool_edit_file(path: str, old_text: str, new_text: str) -> str:
             # Diagnostic feedback for LLM
             first_line = old_text.splitlines()[0] if old_text.strip() else old_text
             content_lines = content.splitlines()
-            similar = [f"L{i+1}: {l.strip()[:80]}" for i, l in enumerate(content_lines) if first_line.strip() in l.strip() or l.strip() in first_line.strip()]
+            similar = [
+                f"L{index + 1}: {line.strip()[:80]}"
+                for index, line in enumerate(content_lines)
+                if first_line.strip() in line.strip()
+                or line.strip() in first_line.strip()
+            ]
             hint = f"\nSimilar lines in {p.name}:\n" + "\n".join(similar[:5]) if similar else ""
             return f"❌ Text not found in {p.name}. Make sure old_text matches exactly.{hint}"
 
@@ -782,7 +776,7 @@ def tool_patch_file(path: str, start_line: int, end_line: int, new_content: str)
             start_line = int(start_line)
             end_line = int(end_line)
         except (ValueError, TypeError):
-            return f"❌ start_line and end_line must be integers"
+            return "❌ start_line and end_line must be integers"
 
         if start_line < 1 or start_line > len(lines) + 1:
             return f"❌ start_line {start_line} out of range (file has {len(lines)} lines)"
@@ -1499,8 +1493,6 @@ def normalize_tool_arguments(name: str, args: dict) -> dict:
             curr_user = getpass.getuser()
             p = re.sub(r"^/Users/\[?(?:username|user|yourname|name)\]?/", f"/Users/{curr_user}/", p, flags=re.I)
             p = re.sub(r"^/home/\[?(?:username|user|yourname|name)\]?/", f"/home/{curr_user}/", p, flags=re.I)
-            if p.lower().startswith("desktop/"):
-                p = os.path.join(os.path.expanduser("~/Desktop"), p.split("/", 1)[1])
             args["path"] = p
     elif name in ("run_command", "process_run"):
         if "command" not in args:

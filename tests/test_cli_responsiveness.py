@@ -2,14 +2,12 @@
 Tests for CLI Responsiveness, Real-Time Action Streaming, and Non-Interactive Tool Execution
 """
 
-import os
 import json
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from nexus.ui import LiveStatus, print_tool_call, print_tool_result
 from nexus.agent import Agent
 from nexus.tools import tool_run_command
+from nexus.ui import LiveStatus, print_tool_call
 
 
 def test_live_status_lifecycle():

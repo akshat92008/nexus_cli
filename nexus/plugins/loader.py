@@ -6,10 +6,10 @@ Discovers plugins in:
 2. global `~/.nexusai/plugins/`
 """
 
-import os
-import json
 import importlib.util
+import json
 from pathlib import Path
+
 from nexus.plugins.base import BasePlugin
 
 

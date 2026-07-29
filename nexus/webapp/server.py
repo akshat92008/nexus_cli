@@ -10,23 +10,23 @@ Endpoints:
   WS   /ws                  → WebSocket for real-time streaming chat
 """
 
+import asyncio
 import json
 import os
-import asyncio
 from pathlib import Path
+from urllib.parse import urlparse
 
 from starlette.applications import Starlette
-from starlette.routing import Route, WebSocketRoute, Mount
-from starlette.responses import HTMLResponse, JSONResponse, FileResponse
+from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import FileResponse, JSONResponse
+from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
-from starlette.middleware.cors import CORSMiddleware
 
 from nexus.agent import Agent
-from nexus.models import list_models, MODELS, ALIASES, resolve_model, DEFAULT_MODEL
 from nexus.memory import ConversationMemory
+from nexus.models import ALIASES, DEFAULT_MODEL, list_models
 from nexus.tools import TOOL_DEFINITIONS
-
 
 # Global state
 _agents: dict[str, Agent] = {}  # session_id -> Agent
@@ -34,6 +34,17 @@ _api_key: str = ""
 _default_model: str = DEFAULT_MODEL
 _working_dir: str = ""
 MAX_AGENTS = 50  # Evict oldest agents when exceeded
+SENSITIVE_FILENAMES = {
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    "credentials.json",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+}
+SENSITIVE_DIRNAMES = {".aws", ".git", ".nexusai", ".ssh"}
 
 
 def _workspace_path(raw: str) -> Path:
@@ -46,6 +57,28 @@ def _workspace_path(raw: str) -> Path:
     except ValueError as exc:
         raise PermissionError(f"Path is outside the workspace: {path}") from exc
     return path
+
+
+def _is_sensitive_path(path: Path) -> bool:
+    """Return True for common secret-bearing files that the UI must not expose."""
+    name = path.name.lower()
+    return (
+        name == ".env"
+        or name.startswith(".env.")
+        or name in SENSITIVE_FILENAMES
+        or any(part.lower() in SENSITIVE_DIRNAMES for part in path.parts)
+    )
+
+
+def _is_allowed_web_origin(origin: str | None) -> bool:
+    """Allow same-machine browser origins and non-browser clients only."""
+    if not origin:
+        return True
+    parsed = urlparse(origin)
+    return (
+        parsed.scheme in {"http", "https"}
+        and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
+    )
 
 
 def _get_agent(session_id: str) -> Agent:
@@ -100,7 +133,9 @@ async def api_files(request):
         ignore_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv", ".next", "dist", "build", ".nexusai"}
 
         for entry in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-            if entry.name.startswith(".") and entry.name not in (".env", ".gitignore"):
+            if entry.name.startswith(".") and entry.name != ".gitignore":
+                continue
+            if _is_sensitive_path(entry):
                 continue
             if entry.is_dir() and entry.name in ignore_dirs:
                 continue
@@ -133,6 +168,8 @@ async def api_file_content(request):
 
     try:
         p = _workspace_path(path)
+        if _is_sensitive_path(p):
+            return JSONResponse({"error": "Sensitive files are not exposed"}, status_code=403)
         if not p.is_file():
             return JSONResponse({"error": "Not a file"}, status_code=400)
         if p.stat().st_size > 2 * 1024 * 1024:
@@ -221,6 +258,9 @@ async def api_edit_decision(request):
 
 async def ws_chat(websocket: WebSocket):
     """WebSocket endpoint for real-time streaming chat."""
+    if not _is_allowed_web_origin(websocket.headers.get("origin")):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     session_id = "ws_default"
 

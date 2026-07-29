@@ -3,21 +3,19 @@ Unit tests for the upgraded NexusAI Agent OS Engines (Phase 1 core layers).
 Covers Planning, Reflection, Context Management, Safety, Project Memory, User Memory, and Verification.
 """
 
-import os
 import sys
 import tempfile
 from pathlib import Path
-import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from nexus.planner import PlanningEngine, PlanType, TaskStatus, IntentType
-from nexus.reflection import ReflectionEngine, ReflectionVerdict
 from nexus.context_manager import ContextManager
+from nexus.planner import IntentType, PlanningEngine, PlanType, TaskStatus
+from nexus.project_memory import ProjectMemory
+from nexus.reflection import ReflectionEngine, ReflectionVerdict
 from nexus.safety import SafetyLayer, SafetyLevel
-from nexus.project_memory import ProjectMemory, ProjectRules
 from nexus.user_memory import UserMemory
-from nexus.verification import VerificationEngine, CheckType, CheckStatus
+from nexus.verification import CheckType, VerificationEngine
 
 
 def test_planner_basic():

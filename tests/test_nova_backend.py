@@ -1,6 +1,7 @@
 """Focused tests for Nexus' Nova adapter."""
 
 from nexus.nova_backend import PROMPT_PATH, NovaPipelineBackend
+from nexus.nova_runtime import extract_prompt_paths
 from nexus.two_node_backend import TwoNodeBackend
 
 
@@ -13,12 +14,22 @@ def test_prompt_path_accepts_ceiling_punctuation():
     ]
 
 
+def test_prompt_path_ignores_framework_names():
+    text = "Build a Next.js app with Node.js, Express.js, Vue.js, and Chart.js."
+    assert extract_prompt_paths(text) == []
+
+
+def test_prompt_path_keeps_explicit_repository_files():
+    text = "Modify src/app.py and tests/test_app.py."
+    assert extract_prompt_paths(text) == ["src/app.py", "tests/test_app.py"]
+
+
 def test_verified_model_is_the_backend_default():
     assert NovaPipelineBackend().model == "nova_codex"
 
 
 def test_file_action_modify_without_patch_blocks_falls_back_to_write_file():
-    from output_parser import FileAction
+    from nexus.nova_runtime import FileAction
     backend = NovaPipelineBackend()
     action = FileAction(path="src/app.js", action="MODIFY", content="console.log('hello');")
     proposals = backend._file_action_to_tool_calls(action, "test guardrail summary")
@@ -29,7 +40,7 @@ def test_file_action_modify_without_patch_blocks_falls_back_to_write_file():
 
 
 def test_file_action_unified_diff_converts_to_edit_file():
-    from output_parser import FileAction
+    from nexus.nova_runtime import FileAction
     backend = NovaPipelineBackend()
     diff_content = (
         "--- a/todo.html\n"
@@ -49,7 +60,7 @@ def test_file_action_unified_diff_converts_to_edit_file():
 
 
 def test_file_action_unclosed_create_diff_header_stripping():
-    from output_parser import FileAction
+    from nexus.nova_runtime import FileAction
     backend = NovaPipelineBackend()
     content = "<<<<<<<\n# \n=======\nclass Node:\n    pass\n"
     action = FileAction(path="lru_cache.py", action="CREATE", content=content)
@@ -61,7 +72,7 @@ def test_file_action_unclosed_create_diff_header_stripping():
 
 
 def test_file_action_deduplicates_repetitive_loop_blocks():
-    from output_parser import FileAction
+    from nexus.nova_runtime import FileAction
     backend = NovaPipelineBackend()
     content = "```python\n# File: api_client.py\n<<<<<<<\n# \n=======\nimport json\nclass APIClient:\n    pass\n>>>>># File: api_client.py\n" * 3
     action = FileAction(path="api_client.py", action="MODIFY", content=content)
@@ -73,7 +84,7 @@ def test_file_action_deduplicates_repetitive_loop_blocks():
 
 
 def test_file_action_ignores_trailing_filename_label_artifacts():
-    from output_parser import FileAction
+    from nexus.nova_runtime import FileAction
     backend = NovaPipelineBackend()
     content = "<<<<<<<\n=======\nconst task = 1;\n>>>>>># File: task_queue.js\n task_queue.js"
     action = FileAction(path="task_queue.js", action="MODIFY", content=content)
@@ -85,7 +96,7 @@ def test_file_action_ignores_trailing_filename_label_artifacts():
 
 
 def test_cleaned_protocol_is_materialized_before_compilation(tmp_path):
-    from output_parser import FileAction
+    from nexus.nova_runtime import FileAction
 
     backend = NovaPipelineBackend()
     action = FileAction(
@@ -106,7 +117,7 @@ def test_cleaned_protocol_is_materialized_before_compilation(tmp_path):
 
 def test_ceiling_nested_language_fence_is_recovered():
     backend = object.__new__(TwoNodeBackend)
-    from output_parser import NovaOutputParser
+    from nexus.nova_runtime import NovaOutputParser
 
     backend.parser = NovaOutputParser()
     parsed = backend._parse_ceiling_response(

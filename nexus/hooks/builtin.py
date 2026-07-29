@@ -2,7 +2,7 @@
 Built-in Hooks — auto-format, auto-lint, auto-test, security scan.
 """
 
-from nexus.hooks.base import BaseHook, HookEvent, HookType, HookContext, HookResult
+from nexus.hooks.base import BaseHook, HookContext, HookEvent, HookResult, HookType
 
 
 class AutoFormatHook(BaseHook):
@@ -43,7 +43,7 @@ class AutoLintHook(BaseHook):
         elif path.endswith((".js", ".jsx", ".ts", ".tsx")):
             return f"npx eslint {path} --no-error-on-unmatched-pattern"
         elif path.endswith(".rs"):
-            return f"cargo clippy --quiet"
+            return "cargo clippy --quiet"
         return ""
 
 

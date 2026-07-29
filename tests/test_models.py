@@ -6,7 +6,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from nexus.models import MODELS, ALIASES, resolve_model, resolve_model_key, DEFAULT_MODEL, list_models
+from nexus.models import (
+    ALIASES,
+    DEFAULT_MODEL,
+    MODELS,
+    list_models,
+    resolve_model,
+    resolve_model_key,
+)
 
 
 def test_models_registry():
