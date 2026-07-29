@@ -1,0 +1,24 @@
+#!/bin/sh
+# Global launcher for a local Nexus checkout.
+
+set -eu
+
+SCRIPT_PATH=$0
+while [ -L "$SCRIPT_PATH" ]; do
+    SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")" && pwd)
+    SCRIPT_PATH=$(readlink "$SCRIPT_PATH")
+    case "$SCRIPT_PATH" in
+        /*) ;;
+        *) SCRIPT_PATH="$SCRIPT_DIR/$SCRIPT_PATH" ;;
+    esac
+done
+NEXUS_ROOT=$(CDPATH= cd -- "$(dirname -- "$SCRIPT_PATH")/.." && pwd)
+
+if [ -x "$NEXUS_ROOT/.venv/bin/python" ]; then
+    NEXUS_PYTHON="$NEXUS_ROOT/.venv/bin/python"
+else
+    NEXUS_PYTHON="${NEXUS_PYTHON:-python3}"
+fi
+
+export PYTHONPATH="$NEXUS_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+exec "$NEXUS_PYTHON" -m nexus.cli "$@"

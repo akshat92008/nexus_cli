@@ -1,0 +1,75 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nexusai-cli"
+version = "3.0.0"
+description = "NexusAI — a model-agnostic, verification-driven software-engineering runtime"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{name = "Akshat"}]
+keywords = ["ai", "coding-agent", "cli", "ollama", "nova"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development",
+]
+dependencies = [
+    "openai>=1.30.0",
+    "rich>=13.7.0",
+    "prompt_toolkit>=3.0.43",
+    "pygments>=2.17.0",
+    "starlette>=0.37.0",
+    "uvicorn[standard]>=0.29.0",
+    "websockets>=12.0",
+    "httpx[socks]>=0.27.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2.2",
+    "pytest>=8.3,<10",
+    "pytest-cov>=6,<8",
+    "ruff>=0.11,<1",
+]
+browser = [
+    "playwright>=1.50,<2",
+]
+intelligence = [
+    "tree-sitter-language-pack>=0.9,<1",
+]
+
+[project.scripts]
+nexus = "nexus.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/akshat92008/nexus_cli"
+Repository = "https://github.com/akshat92008/nexus_cli"
+Issues = "https://github.com/akshat92008/nexus_cli/issues"
+
+[tool.setuptools.packages.find]
+include = ["nexus*"]
+
+[tool.setuptools.package-data]
+"nexus.webapp" = ["static/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+exclude = ["build", "dist", "verification_evidence"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B"]
