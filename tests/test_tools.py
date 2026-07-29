@@ -9,6 +9,21 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from nexus.tools import TOOL_DEFINITIONS, TOOL_DISPATCH, execute_tool
 
 
+class _FakeHTTPResponse:
+    def __init__(self, body: str, content_type: str = "text/html; charset=utf-8"):
+        self._body = body.encode("utf-8")
+        self.headers = {"Content-Type": content_type}
+
+    def read(self, limit: int | None = None) -> bytes:
+        return self._body if limit is None else self._body[:limit]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+
 def test_all_tools_have_definitions():
     """Every tool in the dispatch table should have a definition."""
     dispatch_names = set(TOOL_DISPATCH.keys())
@@ -179,19 +194,29 @@ def test_git_status():
     assert "🌿" in result or "❌" in result
 
 
-def test_web_search():
-    """web_search should return results or a graceful error."""
+def test_web_search(monkeypatch):
+    """web_search should parse deterministic provider output without live network access."""
+    body = """
+    <a class="result__a" href="https://example.com/python">Python Guide</a>
+    <a class="result__snippet">A practical programming guide.</a>
+    """
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_args, **_kwargs: _FakeHTTPResponse(body),
+    )
     result = execute_tool("web_search", {"query": "python programming", "max_results": 2})
-    # May fail if offline, but should not crash
-    assert isinstance(result, str)
-    assert len(result) > 10
+    assert "Python Guide" in result
+    assert "https://example.com/python" in result
 
 
-def test_web_fetch():
-    """web_fetch should return content or a graceful error."""
+def test_web_fetch(monkeypatch):
+    """web_fetch should extract deterministic content without live network access."""
+    monkeypatch.setattr(
+        "urllib.request.urlopen",
+        lambda *_args, **_kwargs: _FakeHTTPResponse("<h1>Example Domain</h1>"),
+    )
     result = execute_tool("web_fetch", {"url": "https://example.com", "max_length": 500})
-    assert isinstance(result, str)
-    assert len(result) > 10
+    assert "Example Domain" in result
 
 
 def test_multi_edit():
