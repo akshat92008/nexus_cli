@@ -79,7 +79,7 @@ def test_budgeted_client_accounts_provider_usage():
     )
 
     class Client:
-        def chat_sync(self, *args, **kwargs):
+        def chat(self, *args, **kwargs):
             return response
 
     controller = BudgetController(
@@ -91,7 +91,7 @@ def test_budgeted_client_accounts_provider_usage():
         )
     )
     client = BudgetedClient(Client(), controller)
-    assert client.chat_sync(model_id="test", messages=[]) is response
+    assert client.chat(model_id="test", messages=[], stream=False) is response
     snapshot = controller.snapshot()
     assert snapshot["usage"]["hosted_calls"] == 1
     assert snapshot["usage"]["prompt_tokens"] == 120
@@ -106,16 +106,17 @@ def test_budgeted_client_caps_completion_before_provider_call():
     )
 
     class Client:
-        def chat_sync(self, *args, **kwargs):
+        def chat(self, *args, **kwargs):
             captured.update(kwargs)
             return response
 
     controller = BudgetController(BudgetLimits(max_completion_tokens=7))
     client = BudgetedClient(Client(), controller)
-    client.chat_sync(
+    client.chat(
         model_id="test",
         messages=[{"role": "user", "content": "hello"}],
         max_tokens=100,
+        stream=False,
     )
     assert captured["max_tokens"] == 7
 
