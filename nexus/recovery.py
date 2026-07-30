@@ -3,12 +3,11 @@ Recovery & Rollback Subsystem for Nexus CLI.
 """
 
 import os
-from pathlib import Path
-from typing import Any
 
 from nexus.history import FileHistory
-from nexus.run_state import RunLedger
 from nexus.run_catalog import RunCatalog
+from nexus.run_state import RunLedger
+
 
 class RollbackManager:
     """Manages restoring workspaces to the exact state before an agent run."""

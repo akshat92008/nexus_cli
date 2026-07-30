@@ -22,14 +22,15 @@ import shlex
 import subprocess
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
+from nexus.paths import nexus_home
+
 _tool_working_dir = contextvars.ContextVar('tool_working_dir', default=None)
 _tool_history = contextvars.ContextVar('tool_history', default=None)
-
-from contextlib import contextmanager
 
 
 @contextmanager
@@ -51,7 +52,6 @@ def get_history():
         from nexus.history import FileHistory
         return FileHistory()
     return history
-from nexus.paths import nexus_home
 
 # ── Tool definitions (OpenAI function-calling format) ────────────────────────
 
@@ -2205,39 +2205,6 @@ def tool_generate_dashboard(input_path: str, output_path: str) -> str:
         return f"✅ Dashboard successfully generated at {output_path}"
     except Exception as e:
         return f"❌ Failed to generate dashboard: {e}"
-
-def tool_github_list_issues(limit: int = 10) -> str:
-    try:
-        from nexus.github import GitHubIntegration
-        issues = GitHubIntegration.list_issues(limit=limit)
-        if not issues:
-            return "No open issues found."
-        lines = []
-        for i in issues:
-            lines.append(f"#{i.get('number')} [{i.get('state')}] {i.get('title')}")
-        return "\\n".join(lines)
-    except Exception as e:
-        return f"❌ GitHub Error: {e}"
-
-def tool_github_view_issue(number: str) -> str:
-    try:
-        from nexus.github import GitHubIntegration
-        issue = GitHubIntegration.view_issue(number)
-        if not issue:
-            return f"❌ Issue #{number} not found."
-        comments = "\\n".join(
-            f"- {item.get('author', {}).get('login', 'unknown')}: {item.get('body', '')}"
-            for item in issue.get("comments", [])
-        )
-        return (
-            f"Issue #{issue.get('number')}: {issue.get('title')}\\n"
-            f"State: {issue.get('state')}\\n"
-            f"URL: {issue.get('url')}\\n\\n"
-            f"{issue.get('body', '(no body)')}\\n\\n"
-            f"Comments:\\n{comments or '(none)'}"
-        )
-    except Exception as e:
-        return f"❌ GitHub Error: {e}"
 
 def tool_github_create_pr(title: str, body: str, base: str = "") -> str:
     try:

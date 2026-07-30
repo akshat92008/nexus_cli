@@ -7,7 +7,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from nexus.tools import TOOL_DEFINITIONS, TOOL_DISPATCH, execute_tool
+from nexus.tools import TOOL_DEFINITIONS, TOOL_DISPATCH, execute_tool  # noqa: E402
 
 
 class _FakeHTTPResponse:

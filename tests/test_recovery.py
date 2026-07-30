@@ -1,8 +1,8 @@
-import os
 from pathlib import Path
-from nexus.recovery import RollbackManager
-from nexus.run_state import RunLedger
+
 from nexus.history import FileHistory
+from nexus.recovery import RollbackManager
+
 
 def test_rollback_manager_no_run(tmp_path: Path):
     success, msg = RollbackManager.rollback("invalid-run-123")

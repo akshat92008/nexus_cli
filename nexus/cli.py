@@ -231,15 +231,63 @@ def _normalize_subcommand_argv() -> None:
 
 
 def _handle_workspace_commands() -> bool:
-    """Draft implementation for managing non-Git isolated copies."""
+    """Implementation for managing Git and non-Git isolated copies."""
     if len(sys.argv) < 2 or sys.argv[1] != "workspace":
         return False
-    if len(sys.argv) < 3 or sys.argv[2] not in {"status", "diff", "apply", "discard"}:
-        print("Usage: nexus workspace {status|diff|apply|discard}")
+    if len(sys.argv) < 3 or sys.argv[2] not in {"list", "status", "diff", "apply", "discard"}:
+        print("Usage: nexus workspace {list|status|diff|apply|discard} [session_id]")
         return True
     
     command = sys.argv[2]
-    print(f"nexus workspace {command}: This workflow is currently drafted and will be fully implemented in an upcoming release.")
+    from nexus.workspace import WorkspaceManager
+    manager = WorkspaceManager()
+    
+    if command == "list":
+        worktrees = manager.list_worktrees()
+        if not worktrees:
+            print("No active workspaces.")
+        else:
+            for w in worktrees:
+                print(f"[{w.created_at}] {Path(w.path).name} - {w.backend} - {w.branch or 'N/A'} (Source: {w.source_repository})")
+        return True
+        
+    session_id = sys.argv[3] if len(sys.argv) > 3 else None
+    if not session_id:
+        cwd = os.getcwd()
+        worktrees = manager.list_worktrees()
+        worktrees = [w for w in worktrees if w.source_repository == cwd]
+        if not worktrees:
+            print("No active workspaces for current directory.")
+            return True
+        session = manager.resolve_worktree(Path(worktrees[0].path).name)
+    else:
+        session = manager.resolve_worktree(session_id)
+        
+    if not session or not session.info:
+        print("Workspace not found.")
+        return True
+        
+    if command == "status":
+        print(json.dumps(session.status(), indent=2))
+    elif command == "diff":
+        diff_text = session.diff()
+        if diff_text:
+            print(diff_text)
+        else:
+            print("No changes.")
+    elif command == "apply":
+        try:
+            session.apply()
+            from nexus.ui import print_success
+            print_success("Workspace changes applied successfully.")
+        except Exception as e:
+            from nexus.ui import print_error
+            print_error(f"Apply failed: {e}")
+    elif command == "discard":
+        session.discard()
+        from nexus.ui import print_success
+        print_success("Workspace discarded.")
+        
     return True
 
 
@@ -678,8 +726,12 @@ def run_interactive(agent: Agent):
     """Run the interactive REPL loop."""
     ui.print_banner()
     ui.print_model_info(agent.model_key, agent.model_cfg)
+    if getattr(agent, "worktree", None) and agent.worktree.info:
+        ui.console.print(f"\n  [bold green]Workspace Active:[/] {agent.worktree.info.path}")
+        if agent.worktree.info.branch:
+            ui.console.print(f"  [bold green]Branch:[/] {agent.worktree.info.branch}")
     ui.console.print(
-        f"  [{ui.DIM}]Type your request, or /help for commands. /exit to quit.[/]\n"
+        f"\n  [{ui.DIM}]Type your request, or /help for commands. /exit to quit.[/]\n"
     )
 
     while True:
@@ -1032,6 +1084,11 @@ def main():
                     pass
             sys.exit(exit_code)
         else:
+            if getattr(agent, "worktree", None) and agent.worktree.info:
+                ui.console.print(f"\n  [bold green]Workspace Active:[/] {agent.worktree.info.path}")
+                if agent.worktree.info.branch:
+                    ui.console.print(f"  [bold green]Branch:[/] {agent.worktree.info.branch}")
+                ui.console.print("")
             agent.run(args.prompt)
             final_report = agent.export_final_report()
             status = final_report.get("status", "UNVERIFIED")

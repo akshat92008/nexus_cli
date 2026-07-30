@@ -19,7 +19,6 @@ from types import SimpleNamespace
 from typing import Any
 
 from nexus import ui
-from nexus.api import NvidiaClient
 from nexus.approvals import preview_mutation
 from nexus.budget import BudgetController, BudgetedClient, BudgetExceeded, BudgetLimits
 from nexus.code_validation import GeneratedCodeValidator
@@ -457,12 +456,13 @@ class Agent:
         if not resolved_key:
             return False
         cfg = MODELS[resolved_key]
-        if cfg.get("backend") != "nova" and self.client is None:
+        if cfg.get("backend") == "nova":
+            self.client = NovaProvider(model_name=cfg.get("ollama_model", "nova_codex"), working_dir=self.working_dir)
+        else:
             try:
-                self.client = BudgetedClient(
-                    NvidiaClient(api_key=self._api_key),
-                    self.budget,
-                )
+                primary = HostedProvider(api_key=self._api_key)
+                router = FallbackRouter(primary)
+                self.client = BudgetedClient(router, self.budget)
             except ValueError:
                 return False
         self.model_key = resolved_key
@@ -2208,7 +2208,6 @@ class Agent:
 
         # ── 4. Agentic loop ──────────────────────────────────────────────
         max_iterations = self.max_turns
-        iteration = 0
         _rate_limit_retries = 0
         _max_rate_limit_retries = 3
         _key_switches = 0
@@ -2216,10 +2215,10 @@ class Agent:
 
 
         # --- NEW ENGINE EXECUTION LOOP ---
-        engine = ExecutionEngine(self.client, max_turns=max_iterations)
+        engine = ExecutionEngine(self.client, max_turns=max_iterations, model_id=self.model_cfg["id"])
         
         def handle_tool(name, args):
-            tc = [{"id": f"call_{time.time()}", "name": name, "arguments": str(args)}]
+            tc = [{"id": f"call_{time.time()}", "name": name, "arguments": json.dumps(args)}]
             res = self._handle_tool_calls_interactive(tc)
             success = not res[0]["content"].startswith("❌")
             return success, res[0]["content"]
@@ -2594,10 +2593,10 @@ class Agent:
                 result = backend.run(user_input, planner_analysis=analysis)
         except Exception as e:
             if emit_ui:
-                ui.print_warning(f"Two-node backend error ({e}) — falling back to local Nova Codex...")
+                ui.print_warning(f"Two-node backend error: {e}")
             if self.messages and self.messages[-1]["role"] == "user":
                 self.messages.pop()
-            return self._run_nova_turn(user_input, emit_ui=emit_ui)
+            raise RuntimeError(f"Two-node backend failed: {e}") from e
 
         def record_result(candidate, phase: str) -> None:
             if candidate.execution_plan is not None:

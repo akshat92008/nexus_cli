@@ -6,7 +6,7 @@ import json
 from unittest.mock import patch
 
 from nexus.agent import Agent
-from nexus.tools import tool_run_command
+from nexus.tools import execute_tool
 from nexus.ui import LiveStatus, print_tool_call
 
 
@@ -30,8 +30,8 @@ def test_tool_call_formatting():
 
 
 def test_non_interactive_command_env():
-    """Verify tool_run_command passes non-interactive environment variables."""
-    res = tool_run_command("echo $CI $PAGER $DEBIAN_FRONTEND $TERM")
+    """Verify execute_tool('run_command') passes non-interactive environment variables."""
+    res = execute_tool("run_command", {"command": "echo $CI $PAGER $DEBIAN_FRONTEND $TERM"})
     assert "true" in res
     assert "cat" in res
     assert "noninteractive" in res

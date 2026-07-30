@@ -27,8 +27,13 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(prefix="nexus-release-gate-") as temp:
         root = Path(temp)
+        import shutil
+        # Copy the whole repo to the temp directory so concurrent builds don't collide
+        build_src = root / "src_copy"
+        shutil.copytree(REPO, build_src, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", "dist", "build", "*.egg-info", "legacy", "verification_evidence", "coding_agent", "bakeoff", "runs"))
+        
         dist = root / "dist"
-        run([python, "-m", "build", "--no-isolation", "--outdir", str(dist)])
+        run([python, "-m", "build", "--outdir", str(dist)], cwd=build_src)
 
         wheels = sorted(dist.glob("nexusai_cli-*.whl"))
         if len(wheels) != 1:
@@ -45,7 +50,8 @@ def main() -> int:
                 "--target",
                 str(installed),
                 str(wheels[0]),
-            ]
+            ],
+            cwd=build_src
         )
         smoke_env = dict(os.environ)
         smoke_env["PYTHONPATH"] = str(installed)
