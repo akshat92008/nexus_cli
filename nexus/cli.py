@@ -13,18 +13,16 @@ Usage:
 import argparse
 import json
 import os
-import subprocess
 import sys
 from pathlib import Path
 
 from nexus import __version__, ui
 from nexus.agent import Agent
 from nexus.doctor import run_doctor
-from nexus.tools import get_history
 from nexus.memory import ConversationMemory
 from nexus.models import DEFAULT_MODEL, resolve_model
 from nexus.run_catalog import RunCatalog
-from nexus.tools import tool_get_project_structure
+from nexus.tools import get_history, tool_get_project_structure
 
 
 def parse_args():
@@ -279,47 +277,38 @@ def _handle_run_management() -> bool:
             for event in catalog.replay(run_id):
                 print(json.dumps(event, ensure_ascii=False))
         else:
-            from nexus.history import FileHistory
-            from nexus.run_state import RunLedger
-
-            turn_dir = catalog.resolve(run_id)
-            session_id = turn_dir.parent.name
-            latest_turns = sorted(
-                path for path in turn_dir.parent.glob("turn-*") if path.is_dir()
-            )
-            if not latest_turns or latest_turns[-1] != turn_dir:
-                raise RuntimeError(
-                    "Only the latest turn in a session can be rolled back safely."
-                )
-            inspected = catalog.inspect(run_id)
-            metadata = inspected.get("final_report", {}).get("metadata", {})
-            history = FileHistory(session_id)
-            start = int(metadata.get("history_start", 0))
-            end = int(metadata.get("history_end", len(history.changes)))
-            if end != len(history.changes):
-                raise RuntimeError(
-                    "This is not the most recent applied run in the session; "
-                    "rolling it back would overwrite later work."
-                )
-            count = max(0, end - start)
-            if count == 0:
-                raise RuntimeError("The selected run has no applied file changes.")
-            success, detail = history.undo_changes(count)
+            from nexus.recovery import RollbackManager
+            success, detail = RollbackManager.rollback(run_id)
             if not success:
                 raise RuntimeError(detail)
-            request = inspected.get("request", {})
-            ledger = RunLedger(
-                session_id,
-                request.get("working_dir") or os.getcwd(),
-            )
-            ledger.resume_summary()
-            ledger.mark_rolled_back(detail)
             print(detail)
     except (FileNotFoundError, RuntimeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
     return True
 
+
+
+def _handle_generate_dashboard() -> bool:
+    """Resolve ``nexus generate-dashboard --input <json> --output <html_path>``."""
+    if len(sys.argv) < 2 or sys.argv[1] != "generate-dashboard":
+        return False
+    import argparse
+    parser = argparse.ArgumentParser(prog="nexus generate-dashboard")
+    parser.add_argument("--input", required=True, help="Path to benchmark-result JSON")
+    parser.add_argument("--output", required=True, help="Path to write the HTML dashboard")
+    args = parser.parse_args(sys.argv[2:])
+    
+    from nexus.dashboard import RegressionDashboard
+    try:
+        RegressionDashboard.generate(args.input, args.output)
+        from nexus.ui import print_success
+        print_success(f"Dashboard generated successfully at {args.output}")
+    except Exception as e:
+        from nexus.ui import print_error
+        print_error(f"Failed to generate dashboard: {e}")
+        sys.exit(1)
+    return True
 
 def _handle_benchmark() -> bool:
     """Run or validate a versioned public benchmark manifest."""
@@ -371,36 +360,26 @@ def _solve_issue_prompt() -> bool:
     if len(sys.argv) < 3 or not sys.argv[2].isdigit():
         raise SystemExit("Usage: nexus solve-issue <issue-number> [options]")
     issue_number = sys.argv[2]
+    
     try:
-        result = subprocess.run(
-            [
-                "gh",
-                "issue",
-                "view",
-                issue_number,
-                "--json",
-                "number,title,body,comments,url",
-            ],
-            cwd=os.getcwd(),
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-    except OSError as exc:
-        raise SystemExit("GitHub CLI is required for solve-issue") from exc
-    if result.returncode != 0:
-        raise SystemExit((result.stderr or result.stdout).strip())
-    issue = json.loads(result.stdout)
-    comments = "\n".join(
+        from nexus.github import GitHubIntegration
+        issue = GitHubIntegration.view_issue(issue_number)
+    except Exception as exc:
+        raise SystemExit(str(exc)) from exc
+        
+    if not issue:
+        raise SystemExit(f"Issue #{issue_number} not found or could not be parsed.")
+        
+    comments = "\\n".join(
         f"- {item.get('author', {}).get('login', 'unknown')}: {item.get('body', '')}"
         for item in issue.get("comments", [])
     )
     prompt = (
-        f"Solve GitHub issue #{issue['number']}: {issue['title']}\n\n"
-        f"{issue.get('body', '')}\n\nDiscussion:\n{comments or '(none)'}\n\n"
+        f"Solve GitHub issue #{issue.get('number')}: {issue.get('title')}\\n\\n"
+        f"{issue.get('body', '')}\\n\\nDiscussion:\\n{comments or '(none)'}\\n\\n"
         "Reproduce the issue, implement the smallest correct fix, add regression tests, "
-        "run deterministic verification, and return a reviewable diff. Do not push or "
-        "open a pull request without a separate explicit approval."
+        "and run deterministic verification. When the tests pass, use the github_create_pr "
+        "tool to open a pull request for this issue."
     )
     rest = sys.argv[3:]
     if "--mode" not in rest:
@@ -1044,6 +1023,13 @@ def main():
                 )
             else:
                 print(content)
+                print("\\n")
+                try:
+                    from nexus.report import FinalReportGenerator
+                    final_report_path = agent.run_ledger._require_turn() / "final_report.json"
+                    print(FinalReportGenerator.generate(final_report_path))
+                except Exception:
+                    pass
             sys.exit(exit_code)
         else:
             agent.run(args.prompt)
@@ -1054,6 +1040,14 @@ def main():
                 exit_code = 3
             elif status == "VERIFIED":
                 exit_code = 0
+                
+            try:
+                from nexus.report import FinalReportGenerator
+                final_report_path = agent.run_ledger._require_turn() / "final_report.json"
+                print("\\n")
+                print(FinalReportGenerator.generate(final_report_path))
+            except Exception:
+                pass
             sys.exit(exit_code)
 
     # Interactive mode

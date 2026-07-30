@@ -1,17 +1,30 @@
 """
 MCP Client — connects to MCP servers via stdio transport.
 
-Discovers available tools from MCP servers and exposes them as
+Disccovers available tools from MCP servers and exposes them as
 standard tool definitions compatible with the agent's tool system.
+
+Security:
+  - MCP subprocesses receive a minimal filtered environment
+  - PYTHONPATH is NOT inherited (prevents code injection)
+  - Tool call results are size-bounded
+  - All tool invocations are audit-logged
 """
 
 import json
+import logging
 import subprocess
 import threading
 from dataclasses import dataclass, field
 from typing import Optional
 
 from nexus.paths import nexus_home
+
+logger = logging.getLogger(__name__)
+
+# Maximum bytes from a single MCP tool call response
+_MAX_MCP_OUTPUT_BYTES = 2 * 1024 * 1024  # 2 MB
+_MCP_TOOL_CALL_TIMEOUT = 60.0  # seconds
 
 
 @dataclass
@@ -63,9 +76,11 @@ class MCPConnection:
         """Start the MCP server process and initialize the connection."""
         try:
             import os
+            # SECURITY: Minimal environment. PYTHONPATH is deliberately excluded
+            # to prevent code injection into the MCP server process.
             safe_env = {
                 k: v for k, v in os.environ.items()
-                if k in ("PATH", "USER", "HOME", "LANG", "LC_ALL", "TMPDIR", "NODE_ENV", "PYTHONPATH")
+                if k in ("PATH", "USER", "HOME", "LANG", "LC_ALL", "TMPDIR", "NODE_ENV")
             }
             env = {**safe_env, **self.config.env}
             self._process = subprocess.Popen(
@@ -112,6 +127,11 @@ class MCPConnection:
         if not self.connected or not self._process:
             return {"error": "Not connected"}
 
+        logger.info(
+            "MCP tool call: server=%s tool=%s",
+            self.config.name, tool_name,
+        )
+
         response = self._send_request("tools/call", {
             "name": tool_name,
             "arguments": arguments,
@@ -124,9 +144,24 @@ class MCPConnection:
                 for c in content
                 if c.get("type") == "text"
             ]
-            return {"result": "\n".join(text_parts), "success": True}
+            result_text = "\n".join(text_parts)
+            # SECURITY: Bound output size
+            if len(result_text) > _MAX_MCP_OUTPUT_BYTES:
+                result_text = result_text[:_MAX_MCP_OUTPUT_BYTES]
+                logger.warning(
+                    "MCP tool %s/%s output truncated to %d bytes",
+                    self.config.name, tool_name, _MAX_MCP_OUTPUT_BYTES,
+                )
+            return {"result": result_text, "success": True}
 
-        return {"error": response.get("error", {}).get("message", "Unknown error"), "success": False}
+        error_msg = "Unknown error"
+        if response and "error" in response:
+            error_msg = response.get("error", {}).get("message", "Unknown error")
+        logger.warning(
+            "MCP tool call failed: server=%s tool=%s error=%s",
+            self.config.name, tool_name, error_msg,
+        )
+        return {"error": error_msg, "success": False}
 
     def disconnect(self):
         """Disconnect from the MCP server."""

@@ -1,6 +1,4 @@
-import json
 import os
-from pathlib import Path
 
 from nexus.agent import Agent
 from nexus.evidence import EvidenceTrail, verify_mutation

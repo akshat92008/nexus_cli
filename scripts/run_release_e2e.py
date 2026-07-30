@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
-
 REPO = Path(__file__).resolve().parents[1]
 
 
@@ -138,7 +137,7 @@ def scenarios() -> list[Scenario]:
     return [
         Scenario(
             name="01_python_entrypoint",
-            model="kimi",
+            model="nova_codex",
             prompt=(
                 "Create exactly one file hello.py with a main function that prints exactly "
                 "hello-nexus, and call main() under an if __name__ == '__main__' guard."
@@ -147,7 +146,7 @@ def scenarios() -> list[Scenario]:
         ),
         Scenario(
             name="02_python_surgical_bugfix",
-            model="kimi",
+            model="nova_codex",
             prompt=(
                 "Modify exactly counter.py. Fix inclusive_count(limit) so a nonnegative limit includes "
                 "the limit itself, while a negative limit still returns an empty list. Preserve the function name."
@@ -173,7 +172,7 @@ def scenarios() -> list[Scenario]:
         ),
         Scenario(
             name="03_go_executable",
-            model="kimi",
+            model="nova_codex",
             prompt=(
                 "Create exactly main.go as a standalone Go executable. It must parse two integer command-line "
                 "arguments, print their sum followed by a newline, report invalid input to stderr, and exit nonzero. "
@@ -186,7 +185,7 @@ def scenarios() -> list[Scenario]:
         ),
         Scenario(
             name="04_cpp_dfs",
-            model="kimi",
+            model="nova_codex",
             prompt=(
                 "Create exactly graph_dfs.cpp as a complete C++17 executable. Build the directed graph "
                 "0->{1,2}, 1->{3}; run recursive depth-first traversal from 0; print exactly '0 1 3 2' and a newline. "
@@ -199,7 +198,7 @@ def scenarios() -> list[Scenario]:
         ),
         Scenario(
             name="05_javascript_recursive_lister",
-            model="kimi",
+            model="nova_codex",
             prompt=(
                 "Create exactly directory_lister.js as a dependency-free Node.js CLI. Given one directory argument, "
                 "recursively print only regular-file paths relative to that directory, one per line, sorted "
@@ -221,7 +220,7 @@ def scenarios() -> list[Scenario]:
         ),
         Scenario(
             name="06_registry_checked_package_json",
-            model="kimi",
+            model="nova_codex",
             prompt=(
                 "Create exactly package.json as valid JSON with name 'nexus-e2e', version '1.0.0', private true, "
                 "and exactly one runtime dependency: lodash at version '^4.17.21'."

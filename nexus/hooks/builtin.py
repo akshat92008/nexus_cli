@@ -1,8 +1,28 @@
 """
 Built-in Hooks — auto-format, auto-lint, auto-test, security scan.
+
+Security:
+  - All commands use argv lists, never shell strings
+  - shlex.split is NOT used on untrusted user input
+  - Paths are validated against the workspace root
+  - Each hook declares a failure_policy
 """
 
-from nexus.hooks.base import BaseHook, HookContext, HookEvent, HookResult, HookType
+import logging
+import os
+import re
+
+from nexus.hooks.base import (
+    BaseHook,
+    HookContext,
+    HookEvent,
+    HookFailurePolicy,
+    HookResult,
+    HookType,
+    validate_hook_path,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class AutoFormatHook(BaseHook):
@@ -13,9 +33,14 @@ class AutoFormatHook(BaseHook):
     hook_type = HookType.SHELL
     enabled = False  # Disabled by default
     priority = 30
+    failure_policy = HookFailurePolicy.WARN
 
     def get_command(self, context: HookContext) -> list[str]:
         path = context.file_path
+        # SECURITY: Validate path against workspace
+        if context.workspace_root and not validate_hook_path(path, context.workspace_root):
+            logger.warning("AutoFormatHook: path outside workspace: %s", path)
+            return []
         if path.endswith(".py"):
             return ["ruff", "format", path]
         elif path.endswith((".js", ".jsx", ".ts", ".tsx", ".css", ".json", ".md")):
@@ -35,9 +60,13 @@ class AutoLintHook(BaseHook):
     hook_type = HookType.SHELL
     enabled = False  # Disabled by default
     priority = 25
+    failure_policy = HookFailurePolicy.WARN
 
     def get_command(self, context: HookContext) -> list[str]:
         path = context.file_path
+        if context.workspace_root and not validate_hook_path(path, context.workspace_root):
+            logger.warning("AutoLintHook: path outside workspace: %s", path)
+            return []
         if path.endswith(".py"):
             return ["ruff", "check", path, "--no-fix"]
         elif path.endswith((".js", ".jsx", ".ts", ".tsx")):
@@ -55,20 +84,23 @@ class PreCommitTestHook(BaseHook):
     hook_type = HookType.SHELL
     enabled = False
     priority = 80
-
-    _test_commands = {
-        ".py": "python -m pytest -x -q",
-        ".js": "npm test",
-        ".ts": "npm test",
-        ".rs": "cargo test --quiet",
-        ".go": "go test ./...",
-    }
+    failure_policy = HookFailurePolicy.BLOCK
 
     def get_command(self, context: HookContext) -> list[str]:
-        # Use project-specific test command if available
-        if context.metadata.get("test_command"):
-            import shlex
-            return shlex.split(context.metadata["test_command"])
+        # SECURITY FIX: Do NOT use shlex.split on user-provided metadata.
+        # Only accept structured test commands from validated project config.
+        test_cmd = context.metadata.get("test_command")
+        if test_cmd and isinstance(test_cmd, list):
+            # Accept only pre-validated argv lists from project config
+            return test_cmd
+        elif test_cmd and isinstance(test_cmd, str):
+            # SECURITY: Reject string commands from metadata.
+            # String commands from untrusted sources could contain shell injection.
+            logger.warning(
+                "PreCommitTestHook: Rejected string test_command from metadata. "
+                "Only argv lists are accepted for security."
+            )
+            return ["python", "-m", "pytest", "-x", "-q"]
         # Default: run Python tests (most common for this project)
         return ["python", "-m", "pytest", "-x", "-q"]
 
@@ -81,45 +113,53 @@ class SecurityScanHook(BaseHook):
     hook_type = HookType.BLOCK
     enabled = False
     priority = 90
+    failure_policy = HookFailurePolicy.BLOCK
 
     def execute(self, context: HookContext) -> HookResult:
-        import subprocess
-        # Check if git-secrets is installed
-        git_secrets_check = subprocess.run(["command", "-v", "git-secrets"], capture_output=True, text=True)
-        if git_secrets_check.returncode == 0:
-            result = subprocess.run(["git", "secrets", "--scan"], capture_output=True, text=True, cwd=context.metadata.get("working_dir", "."))
+        """Perform a naive secret scan without executing external tools."""
+        working_dir = context.metadata.get("working_dir", ".")
+
+        # Validate working_dir
+        if context.workspace_root and not validate_hook_path(
+            working_dir, context.workspace_root
+        ):
             return HookResult(
                 hook_name=self.name,
                 event=context.event,
-                success=result.returncode == 0,
-                output=result.stdout + result.stderr,
+                success=False,
+                output=f"Working directory outside workspace: {working_dir}",
+                failure_policy=self.failure_policy,
             )
-        else:
-            # Fallback naive check
-            import re
-            import os
-            secret_pattern = re.compile(r'password|secret|api_key|private_key', re.IGNORECASE)
-            working_dir = context.metadata.get("working_dir", ".")
-            found = False
-            for root, dirs, files in os.walk(working_dir):
-                dirs[:] = [d for d in dirs if d not in {".git", "node_modules", "__pycache__"}]
-                for file in files:
-                    if file.endswith((".py", ".js", ".ts", ".env")):
-                        filepath = os.path.join(root, file)
-                        try:
-                            with open(filepath, "r", encoding="utf-8") as f:
-                                for line in f:
-                                    if secret_pattern.search(line):
-                                        found = True
-                                        break
-                        except Exception:
-                            pass
-            return HookResult(
-                hook_name=self.name,
-                event=context.event,
-                success=not found,
-                output="Secrets found!" if found else "No secrets found.",
-            )
+
+        # Naive secret scan (no external tools required)
+        secret_pattern = re.compile(
+            r'password|secret|api_key|private_key', re.IGNORECASE
+        )
+        found = False
+        for root, dirs, files in os.walk(working_dir):
+            dirs[:] = [
+                d for d in dirs
+                if d not in {".git", "node_modules", "__pycache__", ".venv", "venv"}
+            ]
+            for file in files:
+                if file.endswith((".py", ".js", ".ts", ".env")):
+                    filepath = os.path.join(root, file)
+                    try:
+                        with open(filepath, "r", encoding="utf-8") as f:
+                            for line in f:
+                                if secret_pattern.search(line):
+                                    found = True
+                                    break
+                    except (OSError, UnicodeDecodeError):
+                        continue
+        return HookResult(
+            hook_name=self.name,
+            event=context.event,
+            success=not found,
+            output="Secrets found!" if found else "No secrets found.",
+            blocked=found,
+            failure_policy=self.failure_policy,
+        )
 
 
 class NotifyOnErrorHook(BaseHook):
@@ -130,6 +170,7 @@ class NotifyOnErrorHook(BaseHook):
     hook_type = HookType.NOTIFY
     enabled = True
     priority = 50
+    failure_policy = HookFailurePolicy.WARN
 
     def execute(self, context: HookContext) -> HookResult:
         return HookResult(
@@ -137,6 +178,7 @@ class NotifyOnErrorHook(BaseHook):
             event=context.event,
             success=True,
             output=f"Error occurred: {context.error_message}",
+            failure_policy=self.failure_policy,
         )
 
 
@@ -148,6 +190,7 @@ class SessionStartHook(BaseHook):
     hook_type = HookType.NOTIFY
     enabled = True
     priority = 10
+    failure_policy = HookFailurePolicy.WARN
 
     def execute(self, context: HookContext) -> HookResult:
         return HookResult(
@@ -155,6 +198,7 @@ class SessionStartHook(BaseHook):
             event=context.event,
             success=True,
             output="Session started",
+            failure_policy=self.failure_policy,
         )
 
 

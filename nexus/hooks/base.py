@@ -1,9 +1,16 @@
 """
 Hook Base — types, events, and base class for lifecycle hooks.
+
+Security model:
+  - Hooks return argv vectors (list[str]), never shell command strings
+  - All paths are validated against the workspace root
+  - Each hook declares a failure policy: BLOCK, WARN, or ROLLBACK
+  - Hook commands run through the same sandbox as normal tools
 """
 
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 
 
 class HookEvent(str, Enum):
@@ -32,11 +39,18 @@ class HookEvent(str, Enum):
 
 class HookType(str, Enum):
     """Types of hook actions."""
-    SHELL = "shell"       # Run a shell command
+    SHELL = "shell"       # Run a shell command (as argv, NOT a shell string)
     PROMPT = "prompt"     # Inject a prompt into the agent
     TOOL = "tool"         # Call a specific tool
     NOTIFY = "notify"     # Show a notification
     BLOCK = "block"       # Block the operation
+
+
+class HookFailurePolicy(str, Enum):
+    """What happens when a hook fails."""
+    WARN = "warn"         # Log warning, continue operation
+    BLOCK = "block"       # Block the triggering operation
+    ROLLBACK = "rollback"  # Roll back the triggering operation
 
 
 @dataclass
@@ -52,6 +66,7 @@ class HookContext:
     tool_args: dict = field(default_factory=dict)
     tool_result: str = ""
     metadata: dict = field(default_factory=dict)
+    workspace_root: str = ""  # Workspace root for path validation
 
 
 @dataclass
@@ -63,22 +78,45 @@ class HookResult:
     output: str = ""
     blocked: bool = False  # If True, the triggering operation should be cancelled
     modified_content: str = ""  # If non-empty, use this instead of original content
+    failure_policy: HookFailurePolicy = HookFailurePolicy.WARN
+
+
+def validate_hook_path(path: str, workspace_root: str) -> bool:
+    """Validate that a path used in a hook command is within the workspace.
+
+    Returns True if the path is safe to use.
+    """
+    if not workspace_root:
+        return True  # No workspace root to validate against
+
+    try:
+        resolved = Path(path).resolve()
+        ws_root = Path(workspace_root).resolve()
+        resolved.relative_to(ws_root)
+        return True
+    except (ValueError, OSError):
+        return False
 
 
 class BaseHook:
     """
     Base class for hooks. Subclass to create custom hooks.
 
-    Example:
+    SECURITY: ``get_command()`` must return a list[str] (argv vector),
+    never a single command string.  Paths must be validated against
+    the workspace root.
+
+    Example::
+
         class AutoFormatHook(BaseHook):
             name = "auto_format"
             events = [HookEvent.AFTER_FILE_EDIT]
             hook_type = HookType.SHELL
 
-            def get_command(self, context: HookContext) -> str:
+            def get_command(self, context: HookContext) -> list[str]:
                 if context.file_path.endswith(".py"):
-                    return f"ruff format {context.file_path}"
-                return ""
+                    return ["ruff", "format", context.file_path]
+                return []
     """
 
     name: str = "base_hook"
@@ -88,6 +126,7 @@ class BaseHook:
     enabled: bool = True
     priority: int = 50  # 0 = lowest, 100 = highest
     file_pattern: str = ""  # Glob pattern to filter by file (e.g., "*.py")
+    failure_policy: HookFailurePolicy = HookFailurePolicy.WARN
 
     def should_fire(self, context: HookContext) -> bool:
         """Determine if this hook should fire for the given context."""
@@ -115,10 +154,15 @@ class BaseHook:
             hook_name=self.name,
             event=context.event,
             success=True,
+            failure_policy=self.failure_policy,
         )
 
     def get_command(self, context: HookContext) -> list[str]:
-        """For SHELL hooks, return the command to run. Override in subclasses."""
+        """For SHELL hooks, return the command as an argv vector.
+
+        SECURITY: Never return a shell command string. Always return
+        a list of arguments. Never interpolate paths into shell strings.
+        """
         return []
 
     def get_prompt(self, context: HookContext) -> str:
@@ -134,4 +178,5 @@ class BaseHook:
             "enabled": self.enabled,
             "priority": self.priority,
             "file_pattern": self.file_pattern,
+            "failure_policy": self.failure_policy.value,
         }

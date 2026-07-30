@@ -14,6 +14,7 @@ class _FakeHTTPResponse:
     def __init__(self, body: str, content_type: str = "text/html; charset=utf-8"):
         self._body = body.encode("utf-8")
         self.headers = {"Content-Type": content_type}
+        self.url = "https://example.com"
 
     def read(self, limit: int | None = None) -> bytes:
         return self._body if limit is None else self._body[:limit]
@@ -33,7 +34,7 @@ def test_all_tools_have_definitions():
     missing_dispatch = definition_names - dispatch_names
     assert not missing_defs, f"Tools without definitions: {missing_defs}"
     assert not missing_dispatch, f"Definitions without dispatch: {missing_dispatch}"
-    assert len(TOOL_DEFINITIONS) == 34, f"Expected 34 tools, got {len(TOOL_DEFINITIONS)}"
+    assert len(TOOL_DEFINITIONS) == 38, f"Expected 38 tools, got {len(TOOL_DEFINITIONS)}"
 
 
 def test_process_status_rejects_unmanaged_pid():

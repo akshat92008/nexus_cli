@@ -6,6 +6,7 @@ user preferences, skills, subagents, hooks, MCP, and plugins.
 """
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -42,10 +43,15 @@ from nexus.planner import IntentType, PlanningEngine, PlanType, TaskStatus
 from nexus.plugins.loader import PluginLoader
 from nexus.policy import PermissionDecision, PolicyLoader
 from nexus.project_memory import ProjectMemory
+from nexus.providers.hosted import HostedProvider
+from nexus.providers.nova import NovaProvider
+from nexus.providers.router import FallbackRouter
 from nexus.reflection import ReflectionEngine, ReflectionVerdict
 from nexus.repo_graph import RepoGraph
 from nexus.run_catalog import RunCatalog
 from nexus.run_state import CriterionResult, CriterionStatus, RunLedger, RunStatus
+from nexus.runtime.engine import ExecutionEngine
+from nexus.runtime.events import EventType
 from nexus.safety import SafetyCheck, SafetyLayer, SafetyLevel
 
 # Phase 2: Skills & Subagents
@@ -243,11 +249,15 @@ class Agent:
                 output_price_per_million=output_price_per_million,
             )
         )
-        self.client = (
-            None
-            if self._is_nova_model()
-            else BudgetedClient(NvidiaClient(api_key=api_key), self.budget)
-        )
+        if self._is_nova_model():
+            provider = NovaProvider(model_name=self.model_cfg.get("ollama_model", "nova_codex"), working_dir=self.working_dir)
+            self.client = provider
+        else:
+            primary = HostedProvider(api_key=api_key)
+            router = FallbackRouter(primary)
+            from nexus.budget import BudgetedClient
+            # BudgetedClient duck-types the provider to add budget enforcement
+            self.client = BudgetedClient(router, self.budget)
 
         # State
         self.messages: list[dict] = []
@@ -319,21 +329,32 @@ class Agent:
             if mcp_config.exists() and self.trust.is_approved(mcp_config):
                 self.mcp.load_from_config(str(mcp_config))
                 self.mcp.connect_all()
-        except Exception:
-            pass  # MCP is optional and never loaded without content approval
+        except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
+            logging.getLogger(__name__).warning("MCP initialization failed: %s", exc)
 
-        # ── Phase 3: Plugins ─────────────────────────────────────────────
-        self.plugin_loader = PluginLoader(self.working_dir)
+        # ── Phase 3: Plugins (SECURITY: disabled by default) ─────────────
+        self._plugins_enabled = False  # Require --enable-plugins flag
+        self.plugin_loader = PluginLoader(
+            self.working_dir,
+            plugins_enabled=self._plugins_enabled,
+            trust_checker=self.trust.is_approved,
+        )
         try:
-            local_plugin_configs = list((Path(self.working_dir) / "nexus_plugins").glob("*/plugin.json"))
-            local_plugins_trusted = all(self.trust.is_approved(path) for path in local_plugin_configs)
-            for plugin in self.plugin_loader.discover_and_load() if local_plugins_trusted else []:
+            # SECURITY FIX: Eliminate all([]) bypass.
+            # An empty generator `all(x for x in [])` returns True,
+            # which would treat zero manifests as "all trusted".
+            # We now require plugins_enabled=True AND explicit trust.
+            for plugin in self.plugin_loader.discover_and_load():
                 for skill in plugin.get_skills():
                     self.skills.register(skill)
                 for hook in plugin.get_hooks():
                     self.hooks.register(hook)
-        except Exception:
-            pass  # Plugins are optional
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Plugin loading failed: %s. Diagnostics: %s",
+                exc,
+                self.plugin_loader.get_diagnostics_summary(),
+            )
 
         # Load project rules and user preferences
         self._load_rules_and_preferences()
@@ -352,9 +373,6 @@ class Agent:
             mcp_config = nexus_home() / "mcp_servers.json"
             if mcp_config.exists() and not self.trust.is_approved(mcp_config):
                 self.mcp.disconnect_all()
-            local_plugin_configs = list((Path(self.working_dir) / "nexus_plugins").glob("*/plugin.json"))
-            if any(not self.trust.is_approved(path) for path in local_plugin_configs):
-                self.plugin_loader.plugins.clear()
             rules_paths = self.project_mem.get_rules_paths()
             if any(not self.trust.is_approved(path) for path in rules_paths):
                 self.project_mem._rules = None
@@ -376,8 +394,15 @@ class Agent:
                 custom_cmds["format_command"] = rules.format_command
             if custom_cmds:
                 self.verifier = VerificationEngine(self.working_dir, custom_cmds)
-        except Exception:
-            pass
+        except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
+            logging.getLogger(__name__).debug(
+                "Failed to load project rules: %s", exc
+            )
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Unexpected error loading project rules: %s", exc
+            )
+
 
     def _update_system_prompt(self):
         """Combine base prompt with project memory, user preferences, and active skills."""
@@ -1211,7 +1236,7 @@ class Agent:
             r"|\b(?:docker|podman)\s+(?:pull|push)\b"
             r"|\bcargo\s+(?:add|install)\b|\bgo\s+get\b",
             command.lower(),
-        ):
+        ) or name == "github_create_pr":
             args["network"] = True
             pending_args["network"] = True
         mutation_tools = ("write_file", "edit_file", "patch_file", "multi_edit")
@@ -2189,189 +2214,93 @@ class Agent:
         _key_switches = 0
         _max_key_switches = max(1, len(getattr(self.client, "nvidia_keys", [1]))) if self.client else 1
 
-        while iteration < max_iterations:
-            iteration += 1
 
-            try:
-                live = ui.LiveStatus()
-                live.start(f"Connecting to {self.model_cfg['name']}...")
-                try:
-                    stream = self.client.chat(
-                        model_id=self.model_cfg["id"],
-                        messages=self._build_messages(),
-                        tools=self._get_tools(),
-                        stream=True,
-                    )
-                finally:
+        # --- NEW ENGINE EXECUTION LOOP ---
+        engine = ExecutionEngine(self.client, max_turns=max_iterations)
+        
+        def handle_tool(name, args):
+            tc = [{"id": f"call_{time.time()}", "name": name, "arguments": str(args)}]
+            res = self._handle_tool_calls_interactive(tc)
+            success = not res[0]["content"].startswith("❌")
+            return success, res[0]["content"]
+            
+        engine.tool_executor = handle_tool
+        
+        events = engine.run(self._build_messages(), tools=self._get_tools())
+        
+        live = ui.LiveStatus()
+        content = ""
+        
+        try:
+            for event in events:
+                if event.type == EventType.MODEL_REQUEST_STARTED:
+                    live.start(f"Connecting to {self.model_cfg['name']}...")
+                elif event.type == EventType.MODEL_REQUEST_COMPLETED:
                     live.stop()
-
-                content, tool_calls = self._handle_stream(stream)
-                self.run_ledger.append_model_call(
-                    role="planner_executor",
-                    model=self.model_cfg["id"],
-                    status="verified",
-                    usage=self.budget.snapshot().get("usage", {}),
-                    detail=f"stream iteration {iteration}",
-                )
-                _rate_limit_retries = 0  # Reset on success
-                _key_switches = 0
-
-            except Exception as e:
-                error_msg = str(e)
-                if self.run_ledger.turn_dir:
-                    self.run_ledger.append_model_call(
-                        role="planner_executor",
-                        model=self.model_cfg["id"],
-                        status="failed",
-                        detail=_redact_runtime_text(error_msg[:1000]),
-                    )
-                if isinstance(e, BudgetExceeded):
-                    content = f"BLOCKED: {error_msg}"
-                    self.run_ledger.append_event(
-                        "budget",
-                        status="blocked",
-                        detail=error_msg,
-                    )
-                    ui.print_error(content)
-                    self._finish_managed_run(content, [])
-                    return content
-                is_rate_limit = (
-                    "429" in error_msg
-                    or "rate" in error_msg.lower()
-                    or "resourceexhausted" in error_msg.lower()
-                    or "resource_exhausted" in error_msg.lower()
-                    or "too many requests" in error_msg.lower()
-                    or "request limit" in error_msg.lower()
-                )
-                is_context_overflow = (
-                    "context" in error_msg.lower()
-                    or "maximum context" in error_msg.lower()
-                    or "token limit" in error_msg.lower()
-                )
-                is_timeout = (
-                    "timed out" in error_msg.lower()
-                    or "timeout" in error_msg.lower()
-                    or "504" in error_msg
-                    or "502" in error_msg
-                )
-
-                # Compact conversation on context overflow
-                if is_context_overflow:
-                    ui.print_warning("Context budget exceeded — compacting conversation history...")
-                    self.compact_conversation()
-                    iteration -= 1
-                    continue
-
-                # Try switching fallback API key or provider (bounded to avoid infinite loop)
-                if (is_rate_limit or is_timeout or "401" in error_msg or "Unauthorized" in error_msg or "500" in error_msg):
-                    if self.client and hasattr(self.client, "switch_to_fallback") and _key_switches < _max_key_switches:
-                        _key_switches += 1
-                        if self.client.switch_to_fallback():
-                            # Silent background rotation
-                            iteration -= 1
-                            continue
-
-                # Auto-retry with exponential backoff for transient rate limits (skip if all cloud providers failed)
-                if (is_rate_limit or is_timeout) and "Nexus AI Provider Failover Error" not in error_msg and _rate_limit_retries < _max_rate_limit_retries:
-                    _rate_limit_retries += 1
-                    wait_time = min(2 ** _rate_limit_retries, 5)
-                    ui.print_warning(
-                        f"API delayed/rate-limited — retrying ({_rate_limit_retries}/{_max_rate_limit_retries})..."
-                    )
-                    time.sleep(wait_time)
-                    iteration -= 1
-                    continue
-
-                if "401" in error_msg or "Unauthorized" in error_msg:
-                    ui.print_error("Invalid API key. Check your NVIDIA_API_KEY / GROQ_API_KEY.")
-                elif is_rate_limit or "Nexus AI Provider Failover Error" in error_msg:
-                    ui.print_warning("Cloud API rate-limited — falling back to local Nova Codex (Nova 3B v11)...")
-                    if self.messages and self.messages[-1]["role"] == "user":
-                        self.messages.pop()
-                    content, _events = self._run_nova_turn(user_input, emit_ui=True)
-                    return content
-                elif "404" in error_msg:
-                    ui.print_error(f"Model '{self.model_cfg['id']}' not found. Try /models to switch.")
-                else:
-                    ui.print_error(f"API error: {error_msg}")
-
-                if self.messages and self.messages[-1]["role"] == "user":
-                    self.messages.pop()
-                content = f"Error: {error_msg}"
-                self.run_ledger.append_event(
-                    "provider",
-                    status="failed",
-                    detail=error_msg,
-                )
+                    _rate_limit_retries = 0
+                elif event.type == EventType.MODEL_STREAM_CHUNK:
+                    if live._is_active:
+                        live.stop()
+                    ui.console.print(event.text, end="", style=ui.WHITE, highlight=False)
+                elif event.type == EventType.TOOL_CALL_STARTED:
+                    live.update(f"Running tool {event.tool_name}...")
+                elif event.type == EventType.RUN_FAILED:
+                    raise RuntimeError(event.error)
+                elif event.type == EventType.RUN_COMPLETED:
+                    content = event.content
+        except Exception as e:
+            live.stop()
+            error_msg = str(e)
+            if isinstance(e, BudgetExceeded):
+                content = f"BLOCKED: {error_msg}"
+                self.run_ledger.append_event("budget", status="blocked", detail=error_msg)
+                ui.print_error(content)
                 self._finish_managed_run(content, [])
                 return content
+            
+            is_rate_limit = (
+                "429" in error_msg.lower()
+                or "rate" in error_msg.lower()
+                or "resourceexhausted" in error_msg.lower()
+                or "too many requests" in error_msg.lower()
+            )
+            
+            if is_rate_limit or "Nexus AI Provider Failover Error" in error_msg:
+                ui.print_warning("Cloud API rate-limited — falling back to local Nova Codex (Nova 3B v11)...")
+                if self.messages and self.messages[-1]["role"] == "user":
+                    self.messages.pop()
+                content, _events = self._run_nova_turn(user_input, emit_ui=True)
+                return content
+                
+            ui.print_error(f"API error: {error_msg}")
+            content = f"Error: {error_msg}"
+            self._finish_managed_run(content, [])
+            return content
+            
+        if content:
+            content = self._guard_completion_claims(content)
+            self.messages.append({"role": "assistant", "content": content})
+            ui.console.print()
+            
+        ui.print_response_complete()
 
-            # If there are tool calls, execute them and loop
-            if tool_calls:
-                assistant_msg = {
-                    "role": "assistant",
-                    "content": content or None,
-                    "tool_calls": [
-                        {
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {
-                                "name": tc["name"],
-                                "arguments": tc["arguments"],
-                            },
-                        }
-                        for tc in tool_calls
-                    ],
-                }
-                self.messages.append(assistant_msg)
+        # ── 5. Post-plan verification ────────────────────────────────
+        if plan and plan.is_complete:
+            ui.print_info("📋 Plan complete. Running verification...")
+            try:
+                report = self._record_verification_report(self.verifier.run_all())
+                ui.console.print(report.format_report())
+                if report.all_passed:
+                    self.hooks.fire(HookEvent.ON_PLAN_COMPLETE, HookContext(event=HookEvent.ON_PLAN_COMPLETE))
+                else:
+                    self.hooks.fire(HookEvent.ON_TEST_FAIL, HookContext(event=HookEvent.ON_TEST_FAIL))
+            except Exception:
+                pass
 
-                # Execute with safety, hooks, and reflection
-                tool_results = self._handle_tool_calls_interactive(tool_calls)
-                self.messages.extend(tool_results)
-
-                # Advance plan if active
-                if plan:
-                    next_step = plan.next_step
-                    if next_step:
-                        all_success = all(
-                            not r["content"].startswith("❌")
-                            for r in tool_results
-                        )
-                        self.planner.advance_step(
-                            next_step.id,
-                            TaskStatus.COMPLETED if all_success else TaskStatus.FAILED,
-                        )
-
-                continue
-
-            # No tool calls — we're done
-            if content:
-                content = self._guard_completion_claims(content)
-                self.messages.append({"role": "assistant", "content": content})
-
-            ui.print_response_complete()
-
-            # ── 5. Post-plan verification ────────────────────────────────
-            if plan and plan.is_complete:
-                ui.print_info("📋 Plan complete. Running verification...")
-                try:
-                    report = self._record_verification_report(self.verifier.run_all())
-                    ui.console.print(report.format_report())
-                    if report.all_passed:
-                        self.hooks.fire(HookEvent.ON_PLAN_COMPLETE, HookContext(event=HookEvent.ON_PLAN_COMPLETE))
-                    else:
-                        self.hooks.fire(HookEvent.ON_TEST_FAIL, HookContext(event=HookEvent.ON_TEST_FAIL))
-                except Exception:
-                    pass
-
-            self._auto_save()
-            self._finish_managed_run(content or "", [])
-            return content or ""
-
-        ui.print_warning("Reached maximum tool-call iterations (safety limit).")
         self._auto_save()
-        self._finish_managed_run("", [])
-        return ""
+        self._finish_managed_run(content or "", [])
+        return content or ""
+        # --- END NEW ENGINE EXECUTION LOOP ---
 
     # ── Non-Interactive Run (Web API) ────────────────────────────────────
 

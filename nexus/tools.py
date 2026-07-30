@@ -10,6 +10,7 @@ Tools:
   Web:     web_fetch, web_search
 """
 
+import contextvars
 import fnmatch
 import hashlib
 import html
@@ -25,12 +26,11 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
-import contextvars
-
 _tool_working_dir = contextvars.ContextVar('tool_working_dir', default=None)
 _tool_history = contextvars.ContextVar('tool_history', default=None)
 
 from contextlib import contextmanager
+
 
 @contextmanager
 def tool_context(working_dir: str, history=None):
@@ -819,9 +819,91 @@ TOOL_DEFINITIONS.extend(
                 },
             },
         },
-    ]
+    ],
 )
 
+TOOL_DEFINITIONS.extend([
+    {
+        "type": "function",
+        "function": {
+            "name": "github_list_issues",
+            "description": "List open issues in the GitHub repository.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of issues to list."
+                    }
+                },
+                "required": []
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_view_issue",
+            "description": "View a specific GitHub issue and its comments.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "number": {
+                        "type": "string",
+                        "description": "The issue number to view."
+                    }
+                },
+                "required": ["number"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "github_create_pr",
+            "description": "Create a Pull Request on GitHub for the current branch. DANGEROUS: Always verify tests pass before calling this.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "The title of the PR."
+                    },
+                    "body": {
+                        "type": "string",
+                        "description": "The description body of the PR."
+                    },
+                    "base": {
+                        "type": "string",
+                        "description": "The base branch to merge into (optional, defaults to repo default)."
+                    }
+                },
+                "required": ["title", "body"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "generate_dashboard",
+            "description": "Generate an HTML regression dashboard from a benchmark JSON result file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "input_path": {
+                        "type": "string",
+                        "description": "Path to the JSON benchmark result file."
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "Path where the HTML dashboard should be written."
+                    }
+                },
+                "required": ["input_path", "output_path"]
+            }
+        }
+    }
+])
 
 # ── Ignore patterns ─────────────────────────────────────────────────────────
 
@@ -1298,7 +1380,7 @@ def tool_process_run(
         }
         safe_env["NEXUS_SANDBOX"] = "restricted-background"
         
-        from nexus.sandbox import SandboxRunner, SandboxBackend, CommandSpec
+        from nexus.sandbox import CommandSpec, SandboxBackend, SandboxRunner
         sandbox = SandboxRunner(Path(work_dir))
         spec = CommandSpec.create(argv, work_dir, timeout_seconds=0, network=network)
         backend = sandbox.backend()
@@ -2081,6 +2163,90 @@ def tool_web_search(query: str, max_results: int = 5) -> str:
 
 # ── Dispatch ─────────────────────────────────────────────────────────────────
 
+# ── GitHub Tools ─────────────────────────────────────────────────────────────
+
+def tool_github_list_issues(limit: int = 10) -> str:
+    try:
+        from nexus.github import GitHubIntegration
+        issues = GitHubIntegration.list_issues(limit=limit)
+        if not issues:
+            return "No open issues found."
+        lines = []
+        for i in issues:
+            lines.append(f"#{i.get('number')} [{i.get('state')}] {i.get('title')}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ GitHub Error: {e}"
+
+def tool_github_view_issue(number: str) -> str:
+    try:
+        from nexus.github import GitHubIntegration
+        issue = GitHubIntegration.view_issue(number)
+        if not issue:
+            return f"❌ Issue #{number} not found."
+        comments = "\n".join(
+            f"- {item.get('author', {}).get('login', 'unknown')}: {item.get('body', '')}"
+            for item in issue.get("comments", [])
+        )
+        return (
+            f"Issue #{issue.get('number')}: {issue.get('title')}\n"
+            f"State: {issue.get('state')}\n"
+            f"URL: {issue.get('url')}\n\n"
+            f"{issue.get('body', '(no body)')}\n\n"
+            f"Comments:\n{comments or '(none)'}"
+        )
+    except Exception as e:
+        return f"❌ GitHub Error: {e}"
+
+def tool_generate_dashboard(input_path: str, output_path: str) -> str:
+    try:
+        from nexus.dashboard import RegressionDashboard
+        RegressionDashboard.generate(input_path, output_path)
+        return f"✅ Dashboard successfully generated at {output_path}"
+    except Exception as e:
+        return f"❌ Failed to generate dashboard: {e}"
+
+def tool_github_list_issues(limit: int = 10) -> str:
+    try:
+        from nexus.github import GitHubIntegration
+        issues = GitHubIntegration.list_issues(limit=limit)
+        if not issues:
+            return "No open issues found."
+        lines = []
+        for i in issues:
+            lines.append(f"#{i.get('number')} [{i.get('state')}] {i.get('title')}")
+        return "\\n".join(lines)
+    except Exception as e:
+        return f"❌ GitHub Error: {e}"
+
+def tool_github_view_issue(number: str) -> str:
+    try:
+        from nexus.github import GitHubIntegration
+        issue = GitHubIntegration.view_issue(number)
+        if not issue:
+            return f"❌ Issue #{number} not found."
+        comments = "\\n".join(
+            f"- {item.get('author', {}).get('login', 'unknown')}: {item.get('body', '')}"
+            for item in issue.get("comments", [])
+        )
+        return (
+            f"Issue #{issue.get('number')}: {issue.get('title')}\\n"
+            f"State: {issue.get('state')}\\n"
+            f"URL: {issue.get('url')}\\n\\n"
+            f"{issue.get('body', '(no body)')}\\n\\n"
+            f"Comments:\\n{comments or '(none)'}"
+        )
+    except Exception as e:
+        return f"❌ GitHub Error: {e}"
+
+def tool_github_create_pr(title: str, body: str, base: str = "") -> str:
+    try:
+        from nexus.github import GitHubIntegration
+        url = GitHubIntegration.create_pull_request(title, body, base)
+        return f"✅ Pull request created successfully: {url}"
+    except Exception as e:
+        return f"❌ GitHub Error: {e}"
+
 TOOL_DISPATCH = {
     # File tools
     "read_file": tool_read_file,
@@ -2122,8 +2288,11 @@ TOOL_DISPATCH = {
     "database_check": tool_database_check,
     "security_scan": tool_security_scan,
     "browser_check": tool_browser_check,
+    "github_list_issues": tool_github_list_issues,
+    "github_view_issue": tool_github_view_issue,
+    "github_create_pr": tool_github_create_pr,
+    "generate_dashboard": tool_generate_dashboard,
 }
-
 
 def normalize_tool_arguments(name: str, args: dict) -> dict:
     """Normalize common tool parameter name variations from LLMs."""
@@ -2173,6 +2342,7 @@ def normalize_tool_arguments(name: str, args: dict) -> dict:
                     args["query"] = args.pop(alt)
                     break
     return args
+
 
 
 def execute_tool(name: str, arguments: dict) -> str:

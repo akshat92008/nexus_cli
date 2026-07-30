@@ -8,8 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from nexus.agent import Agent
 import nexus.history as nexus_history
+from nexus.agent import Agent
 
 
 def _agent_for_tmp_path(tmp_path, monkeypatch) -> Agent:

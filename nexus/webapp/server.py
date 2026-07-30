@@ -13,16 +13,16 @@ Endpoints:
 import asyncio
 import json
 import os
+import secrets
 from pathlib import Path
 from urllib.parse import urlparse
 
 from starlette.applications import Starlette
 from starlette.middleware.cors import CORSMiddleware
-from starlette.responses import FileResponse, JSONResponse, HTMLResponse
+from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
-import secrets
 
 from nexus.agent import Agent
 from nexus.memory import ConversationMemory

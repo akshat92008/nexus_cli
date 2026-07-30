@@ -5,7 +5,6 @@ Supports multi-key NVIDIA rotation and a compatible Groq fallback.
 
 import os
 import time
-from pathlib import Path
 
 from openai import OpenAI
 
