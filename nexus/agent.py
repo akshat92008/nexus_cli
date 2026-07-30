@@ -1664,18 +1664,18 @@ class Agent:
             else:
                 result = execute_tool(name, args)
 
-        if safety_check and safety_check.level == SafetyLevel.WARN:
-            safety_warning = safety_check.format_warning()
-            result = safety_warning + "\n" + result
-        if package_warning_text:
-            result = package_warning_text + "\n" + result
-
         success = not result.startswith(("❌", "⏰", "⏸️"))
         if name in ("api_check", "database_check", "browser_check", "security_scan"):
             try:
                 success = json.loads(result).get("status") == "passed"
             except (AttributeError, TypeError, json.JSONDecodeError):
                 success = False
+
+        if safety_check and safety_check.level == SafetyLevel.WARN:
+            safety_warning = safety_check.format_warning()
+            result = safety_warning + "\n" + result
+        if package_warning_text:
+            result = package_warning_text + "\n" + result
 
         # ── Verified-completion evidence ─────────────────────────────────
         if success and name in mutation_tools:

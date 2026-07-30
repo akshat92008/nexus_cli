@@ -232,6 +232,19 @@ def _normalize_subcommand_argv() -> None:
         sys.argv = [sys.argv[0], "--resume-run", normalized_id, *sys.argv[3:]]
 
 
+def _handle_workspace_commands() -> bool:
+    """Draft implementation for managing non-Git isolated copies."""
+    if len(sys.argv) < 2 or sys.argv[1] != "workspace":
+        return False
+    if len(sys.argv) < 3 or sys.argv[2] not in {"status", "diff", "apply", "discard"}:
+        print("Usage: nexus workspace {status|diff|apply|discard}")
+        return True
+    
+    command = sys.argv[2]
+    print(f"nexus workspace {command}: This workflow is currently drafted and will be fully implemented in an upcoming release.")
+    return True
+
+
 def _handle_run_management() -> bool:
     """Handle durable run inspection commands before model initialization."""
     if len(sys.argv) < 2 or sys.argv[1] not in {
@@ -797,6 +810,8 @@ def non_interactive_exit_code(content: str, events: list[dict]) -> int:
 
 def main():
     if _handle_run_management():
+        return
+    if _handle_workspace_commands():
         return
     if _handle_benchmark():
         return

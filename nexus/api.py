@@ -28,7 +28,7 @@ GROQ_MODEL_MAP = {
     "minimaxai/minimax-m3": "openai/gpt-oss-120b",
     "qwen/qwen3.5-397b-a17b": "openai/gpt-oss-120b",
     "nvidia/llama-3.3-nemotron-super-49b-v1.5": "openai/gpt-oss-120b",
-    "meta/llama-3.1-70b-instruct": "llama-3.3-70b-versatile",
+    "meta/llama-3.1-70b-instruct": "openai/gpt-oss-120b",
 }
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 
@@ -36,8 +36,6 @@ DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
 def _load_env_file():
     """Load local Nexus environment files without overriding process values."""
     possible_paths = [
-        os.path.join(os.getcwd(), ".env"),
-        os.path.join(Path(__file__).resolve().parents[1], ".env"),
         os.path.expanduser("~/.config/nexus/.env"),
         os.path.expanduser("~/.nexusai/.env"),
     ]
@@ -313,9 +311,7 @@ class NvidiaClient:
             groq_candidates = [
                 primary_groq,
                 "openai/gpt-oss-120b",
-                "llama-3.3-70b-versatile",
                 "openai/gpt-oss-20b",
-                "llama-3.1-8b-instant",
             ]
             groq_candidates = list(dict.fromkeys(groq_candidates))
 

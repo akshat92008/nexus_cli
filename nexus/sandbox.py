@@ -292,9 +292,9 @@ class SandboxRunner:
         require_os_isolation: bool = False,
     ) -> CommandResult:
         """Compatibility path for a reviewed shell string."""
-        shell = os.environ.get("SHELL") or ("/bin/sh" if os.name != "nt" else "cmd.exe")
+        shell = "/bin/sh" if os.name != "nt" else "cmd.exe"
         argv = (
-            [shell, "-lc", command]
+            [shell, "-c", command]
             if os.name != "nt"
             else [shell, "/d", "/s", "/c", command]
         )
@@ -323,8 +323,20 @@ class SandboxRunner:
             "--unshare-ipc",
             "--unshare-uts",
             "--ro-bind",
-            "/",
-            "/",
+            "/usr",
+            "/usr",
+            "--ro-bind",
+            "/bin",
+            "/bin",
+            "--ro-bind",
+            "/lib",
+            "/lib",
+            "--ro-bind",
+            "/lib64",
+            "/lib64",
+            "--ro-bind",
+            "/etc/alternatives",
+            "/etc/alternatives",
             "--proc",
             "/proc",
             "--dev",
@@ -358,6 +370,8 @@ class SandboxRunner:
             "(deny default)",
             "(allow process*)",
             "(allow sysctl-read)",
+            "(allow mach-lookup)",
+            "(allow ipc-posix-shm)",
             "(allow file-read*)",
             f'(allow file-write* (subpath "{workspace}") (subpath "{temp_dir}"))',
             '(allow file-write-data (literal "/dev/null") (literal "/dev/zero"))',

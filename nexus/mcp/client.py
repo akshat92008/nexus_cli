@@ -159,6 +159,10 @@ class MCPConnection:
                 self._process.stdin.flush()
 
                 # Read response
+                import select
+                ready, _, _ = select.select([self._process.stdout], [], [], 30.0)
+                if not ready:
+                    return None
                 response_line = self._process.stdout.readline()
                 if response_line:
                     return json.loads(response_line)

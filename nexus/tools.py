@@ -1297,6 +1297,16 @@ def tool_process_run(
             or key.startswith("NEXUS_")
         }
         safe_env["NEXUS_SANDBOX"] = "restricted-background"
+        
+        from nexus.sandbox import SandboxRunner, SandboxBackend, CommandSpec
+        sandbox = SandboxRunner(Path(work_dir))
+        spec = CommandSpec.create(argv, work_dir, timeout_seconds=0, network=network)
+        backend = sandbox.backend()
+        if backend == SandboxBackend.BUBBLEWRAP:
+            argv = sandbox._bubblewrap_command(spec, Path(work_dir))
+        elif backend == SandboxBackend.MACOS:
+            argv, _ = sandbox._macos_command(spec, Path(work_dir))
+
         try:
             proc = subprocess.Popen(
                 argv,

@@ -747,6 +747,11 @@ class OllamaClient:
         )
         if not resolved_url.startswith(("http://", "https://")):
             resolved_url = f"http://{resolved_url}"
+        
+        parsed_host = resolved_url.split("://")[-1].split(":")[0]
+        if parsed_host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("NEXUS_ALLOW_REMOTE_OLLAMA"):
+            raise ValueError(f"Remote Ollama host '{parsed_host}' is blocked. Set NEXUS_ALLOW_REMOTE_OLLAMA=1 to override.")
+            
         self.base_url = resolved_url.rstrip("/")
         self.timeout = timeout or int(os.environ.get("NEXUS_OLLAMA_TIMEOUT", "180"))
 
