@@ -127,7 +127,7 @@ class ExecutionEngine:
                 return
 
             # Process Stream
-            full_content, tool_calls = self._process_stream(stream)
+            full_content, tool_calls = yield from self._process_stream(stream)
             yield self._create_and_emit(ModelRequestCompleted(model=self.model_id))
 
             # Record assistant message
@@ -205,6 +205,7 @@ class ExecutionEngine:
                 yield self._create_and_emit(
                     ToolCallCompleted(
                         tool_name=tool_name,
+                        arguments=safe_args,
                         result=result_text,
                         success=success,
                         error=None if success else result_text,
@@ -260,7 +261,7 @@ class ExecutionEngine:
 
             if hasattr(delta, "content") and delta.content:
                 full_content += delta.content
-                self._emit(ModelStreamChunk(text=delta.content))
+                yield self._create_and_emit(ModelStreamChunk(text=delta.content))
 
             if hasattr(delta, "tool_calls") and delta.tool_calls:
                 for tc in delta.tool_calls:

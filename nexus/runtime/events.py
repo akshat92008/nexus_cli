@@ -96,6 +96,7 @@ class ToolCallStarted(BaseEvent):
 class ToolCallCompleted(BaseEvent):
     type: EventType = EventType.TOOL_CALL_COMPLETED
     tool_name: str = ""
+    arguments: dict = field(default_factory=dict)
     result: str = ""
     success: bool = True
     error: str | None = None

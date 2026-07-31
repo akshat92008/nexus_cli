@@ -2142,9 +2142,10 @@ class Agent:
 
         return full_content, tool_calls
 
-    def _handle_tool_calls_interactive(self, tool_calls: list[dict]) -> list[dict]:
+    def _handle_tool_calls_interactive(self, tool_calls: list[dict]) -> tuple[list[dict], list[bool]]:
         """Execute tool calls with UI output and return tool result messages."""
         results = []
+        successes = []
         for tc in tool_calls:
             name = tc["name"]
             try:
@@ -2189,8 +2190,9 @@ class Agent:
                 "tool_call_id": tc["id"],
                 "content": truncated_res,
             })
+            successes.append(success)
 
-        return results
+        return results, successes
 
     # ── Main Run Loop (Interactive CLI) ──────────────────────────────────
 
@@ -2282,9 +2284,8 @@ class Agent:
         
         def handle_tool(name, args):
             tc = [{"id": f"call_{time.time()}", "name": name, "arguments": json.dumps(args)}]
-            res = self._handle_tool_calls_interactive(tc)
-            success = not res[0]["content"].startswith("❌")
-            return success, res[0]["content"]
+            res, successes = self._handle_tool_calls_interactive(tc)
+            return successes[0], res[0]["content"]
             
         engine.tool_executor = handle_tool
         
@@ -2292,6 +2293,7 @@ class Agent:
         
         live = ui.LiveStatus()
         content = ""
+        accumulated_events = []
         
         try:
             for event in events:
@@ -2306,6 +2308,15 @@ class Agent:
                     ui.console.print(event.text, end="", style=ui.WHITE, highlight=False)
                 elif event.type == EventType.TOOL_CALL_STARTED:
                     live.update(f"Running tool {event.tool_name}...")
+                elif event.type == EventType.TOOL_CALL_COMPLETED:
+                    accumulated_events.append({
+                        "type": "tool_call",
+                        "name": event.tool_name,
+                        "args": event.arguments,
+                        "result": event.result,
+                        "success": event.success,
+                        "node": "interactive",
+                    })
                 elif event.type == EventType.RUN_FAILED:
                     raise RuntimeError(event.error)
                 elif event.type == EventType.RUN_COMPLETED:
@@ -2317,7 +2328,7 @@ class Agent:
                 content = f"BLOCKED: {error_msg}"
                 self.run_ledger.append_event("budget", status="blocked", detail=error_msg)
                 ui.print_error(content)
-                self._finish_managed_run(content, [])
+                self._finish_managed_run(content, accumulated_events)
                 return content
             
             is_rate_limit = (
@@ -2336,7 +2347,7 @@ class Agent:
                 
             ui.print_error(f"API error: {error_msg}")
             content = f"Error: {error_msg}"
-            self._finish_managed_run(content, [])
+            self._finish_managed_run(content, accumulated_events)
             return content
             
         if content:
@@ -2360,7 +2371,7 @@ class Agent:
                 pass
 
         self._auto_save()
-        self._finish_managed_run(content or "", [])
+        self._finish_managed_run(content or "", accumulated_events)
         return content or ""
         # --- END NEW ENGINE EXECUTION LOOP ---
 

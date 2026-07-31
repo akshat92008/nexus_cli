@@ -185,12 +185,38 @@ class BenchmarkRunner:
     def __init__(self, suite: BenchmarkSuite):
         self.suite = suite
 
+    def _preflight_check(self) -> bool:
+        import os
+        from nexus.models import resolve_model
+        model = os.environ.get("NEXUS_MODEL", "nova")
+        model_cfg = resolve_model(model)
+        if not model_cfg:
+            return False
+        if model_cfg.get("backend") != "nova":
+            if not any(k in os.environ for k in ["NVIDIA_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"]):
+                return False
+        return True
+
     def run(self, *, dry_run: bool = False) -> BenchmarkReport:
         started = _utc_now()
-        results = [
-            self._validate_task(task) if dry_run else self._run_task(task)
-            for task in self.suite.tasks
-        ]
+        
+        if not dry_run and not self._preflight_check():
+            results = [
+                BenchmarkTaskResult(
+                    task_id=task.id,
+                    category=task.category,
+                    status="INVALID_CONFIGURATION",
+                    duration_ms=0,
+                    detail="Backend preflight failed (missing API key or invalid model)",
+                )
+                for task in self.suite.tasks
+            ]
+        else:
+            results = [
+                self._validate_task(task) if dry_run else self._run_task(task)
+                for task in self.suite.tasks
+            ]
+            
         return BenchmarkReport(
             suite=self.suite.name,
             nexus_version=__version__,

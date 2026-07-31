@@ -878,15 +878,22 @@ def main():
         "workspace": "acceptEdits",
         "autonomous": "acceptEdits",
         "local-only": "acceptEdits",
-        "quality": "acceptEdits",
+        "quality": "default",
         "budget": "acceptEdits",
         "ci": "acceptEdits",
     }
     if args.permission_mode == "default":
         args.permission_mode = mode_permissions[args.mode]
-    if args.mode == "local-only":
+        
+    if args.mode == "local-only" or args.mode == "budget":
         args.model = "nova_codex"
-    if args.mode == "ci":
+    
+    if args.mode == "budget":
+        if args.max_cost_usd is None:
+            args.max_cost_usd = 0.10
+    elif args.mode == "quality":
+        args.max_turns = max(args.max_turns, 20)
+    elif args.mode == "ci":
         args.print_mode = True
         if args.output_format == "text":
             args.output_format = "json"
