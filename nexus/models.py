@@ -2,6 +2,8 @@
 Model registry — hosted NVIDIA models plus local Nova backends.
 """
 
+import os
+
 MODELS = {
     # ── Flagship Reasoning & Coding ──────────────────────────────────
     "llama-3.3-70b": {
@@ -76,6 +78,19 @@ MODELS = {
         "description": "Meta's highly capable 70B instruction-tuned model",
         "supports_tools": True,
     },
+    "custom": {
+        "id": "",
+        "name": "Custom Hosted Model",
+        "category": "custom",
+        "context": 200000,
+        "description": (
+            "Any OpenAI-compatible or OpenRouter-hosted model. Pass --model-id "
+            "or set NEXUS_MODEL_ID; a custom endpoint can be configured with "
+            "NEXUS_OPENAI_BASE_URL and NEXUS_OPENAI_API_KEY."
+        ),
+        "supports_tools": True,
+        "backend": "custom",
+    },
     "nova3b": {
         "id": "local/nova3b",
         "name": "Nova Codex (Nova 3B v11)",
@@ -121,6 +136,9 @@ ALIASES = {
     "nova3b11": "nova3b",
     "nova_codex": "nova3b",
     "local": "nova3b",
+    "custom": "custom",
+    "frontier": "custom",
+    "openrouter": "custom",
 }
 
 DEFAULT_MODEL = "glm-5.2"
@@ -140,14 +158,22 @@ def resolve_model_key(name: str) -> str | None:
 
 
 def resolve_model(name: str) -> dict | None:
-    """Resolve a model name or alias to its config dict."""
+    """Resolve a model name or alias to an isolated config dictionary."""
     key = resolve_model_key(name)
-    return MODELS[key] if key else None
+    if not key:
+        return None
+    config = dict(MODELS[key])
+    if key == "custom":
+        config["id"] = os.environ.get("NEXUS_MODEL_ID", "").strip()
+        if config["id"]:
+            config["name"] = f"Custom Hosted Model ({config['id']})"
+    return config
 
 
 def list_models() -> list[dict]:
     """Return all models sorted by category."""
     results = []
     for key, cfg in sorted(MODELS.items(), key=lambda x: (x[1]["category"], x[0])):
-        results.append({"key": key, **cfg})
+        resolved = resolve_model(key) or dict(cfg)
+        results.append({"key": key, **resolved})
     return results

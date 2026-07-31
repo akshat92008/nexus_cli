@@ -218,7 +218,7 @@ def test_web_search(monkeypatch):
 def test_web_fetch(monkeypatch):
     """web_fetch should extract deterministic content without live network access."""
     monkeypatch.setattr(
-        "urllib.request.urlopen",
+        "nexus.tools._safe_urlopen",
         lambda *_args, **_kwargs: _FakeHTTPResponse("<h1>Example Domain</h1>"),
     )
     result = execute_tool("web_fetch", {"url": "https://example.com", "max_length": 500})

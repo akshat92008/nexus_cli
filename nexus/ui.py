@@ -84,7 +84,7 @@ def print_help():
         ("/help", "Show this command helper menu"),
         ("/models", "List available Ceiling models and the local Nova Intern option"),
         ("/model <name>", "Switch the active Ceiling model (e.g. /model kimi; /model nova_codex for local-only Nova)"),
-        ("/tools", "List all 34 built-in developer tools"),
+        ("/tools", "List all 38 built-in developer tools"),
         ("/clear", "Clear session conversation history"),
         ("/reset", "Reset the conversation session and clear terminal"),
         ("/project", "Print structural tree of the working directory"),

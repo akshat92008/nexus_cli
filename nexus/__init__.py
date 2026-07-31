@@ -1,3 +1,3 @@
-"""NexusAI — hosted planning with guarded local Nova V11 execution."""
+"""NexusAI — model-agnostic, verification-driven software-engineering runtime."""
 
-__version__ = "3.0.0"
+__version__ = "3.1.0"

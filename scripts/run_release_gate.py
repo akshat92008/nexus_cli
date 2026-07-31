@@ -69,7 +69,7 @@ def main() -> int:
                     "assert create_app('release-smoke').routes; "
                     "dist = importlib.metadata.distribution('nexusai-cli'); "
                     "assert any(ep.name == 'nexus' for ep in dist.entry_points); "
-                    "assert nexus.__version__ == '3.0.0'"
+                    "assert nexus.__version__ == '3.1.0'"
                 ),
             ],
             cwd=root,

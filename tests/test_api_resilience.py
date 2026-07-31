@@ -138,7 +138,8 @@ def test_active_round_robin_key_rotation():
 def test_cloud_api_exhaustion_falls_back_to_local_nova():
     """Verify that when all cloud APIs fail, agent.run falls back to local Nova turn."""
     from nexus.agent import Agent
-    agent = Agent(api_key="nvapi-test", model_key="deepseek-v4")
+    agent = Agent(api_key="nvapi-test", model_key="deepseek-v4", enable_nova_fallback=True)
+    agent.local_intern_enabled = True
 
     # Mock client.chat to simulate cloud rate limit exhaustion on a chat query
     with patch.object(agent.client, "chat", side_effect=RuntimeError("Rate limited after multiple retries")):

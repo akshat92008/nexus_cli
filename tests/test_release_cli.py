@@ -60,7 +60,7 @@ def test_module_entrypoint_exposes_version():
         timeout=10,
     )
     assert result.returncode == 0
-    assert result.stdout.strip() == "NexusAI 3.0.0"
+    assert result.stdout.strip() == "NexusAI 3.1.0"
 
 
 def test_ollama_host_without_scheme_is_normalized(monkeypatch):

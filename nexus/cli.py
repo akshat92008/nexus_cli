@@ -69,8 +69,18 @@ Environment:
         help=f"Model to use (default: {DEFAULT_MODEL}). Use --list-models to see all.",
     )
     parser.add_argument(
+        "--model-id",
+        default=os.environ.get("NEXUS_MODEL_ID"),
+        help="Override the provider model ID; required for --model custom",
+    )
+    parser.add_argument(
         "--api-key", "-k",
-        help="NVIDIA API key (prefer an environment variable to avoid shell history)",
+        help="Hosted provider API key (prefer an environment variable to avoid shell history)",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("NEXUS_OPENAI_BASE_URL"),
+        help="Custom OpenAI-compatible base URL",
     )
     parser.add_argument(
         "--working-dir", "-d",
@@ -85,6 +95,25 @@ Environment:
         "--no-tools",
         action="store_true",
         help="Disable tool calling (pure chat mode)",
+    )
+    parser.add_argument(
+        "--local-intern",
+        choices=("off", "auto", "required"),
+        default=os.environ.get("NEXUS_LOCAL_INTERN", "off"),
+        help=(
+            "Use Nova as an optional local intern for hosted coding tasks: "
+            "off, auto when available, or required (default: off)"
+        ),
+    )
+    parser.add_argument(
+        "--enable-nova-fallback",
+        action="store_true",
+        help="Allow hosted-provider failures to fall back to local Nova when available",
+    )
+    parser.add_argument(
+        "--enable-plugins",
+        action="store_true",
+        help="Load explicitly trusted local plugins in isolated workers",
     )
     parser.add_argument(
         "--system", "-s",
@@ -765,7 +794,7 @@ def run_interactive(agent: Agent):
             break
 
 
-def run_web(api_key: str, model: str, port: int, working_dir: str | None):
+def run_web(api_key: str, model: str, port: int, working_dir: str | None, model_id_override: str | None = None, local_intern_mode: str = "off", enable_nova_fallback: bool = False, plugins_enabled: bool = False, tools_enabled: bool = True):
     """Launch the web interface."""
     try:
         import uvicorn
@@ -778,7 +807,16 @@ def run_web(api_key: str, model: str, port: int, working_dir: str | None):
             f"  [{ui.DIM}]Press Ctrl+C to stop[/]\n"
         )
 
-        app = create_app(api_key=api_key, model=model, working_dir=working_dir)
+        app = create_app(
+            api_key=api_key, 
+            model=model, 
+            working_dir=working_dir,
+            model_id_override=model_id_override,
+            local_intern_mode=local_intern_mode,
+            enable_nova_fallback=enable_nova_fallback,
+            plugins_enabled=plugins_enabled,
+            tools_enabled=tools_enabled
+        )
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
     except ImportError as e:
@@ -925,32 +963,54 @@ def main():
         ui.print_models_table()
         sys.exit(1)
 
-    # Determine API key
     from nexus.api import _load_env_file
     _load_env_file()
     api_key = args.api_key or os.environ.get("NVIDIA_API_KEY")
     has_hosted_key = bool(
         api_key
+        or os.environ.get("NEXUS_OPENAI_API_KEY")
         or os.environ.get("GROQ_API_KEY")
         or os.environ.get("OPENROUTER_API_KEY")
     )
     is_local_nova = model_cfg.get("backend") == "nova"
     if not has_hosted_key and not is_local_nova:
         ui.console.print()
-        ui.print_error("No hosted-provider API key found!")
+        ui.print_error("No usable hosted-provider credential found!")
         ui.console.print(
             f"\n  [{ui.WHITE}]For NVIDIA, get an API key from:[/] "
             f"[bold {ui.CYAN}]https://build.nvidia.com[/]\n"
             f"\n  [{ui.WHITE}]Then set one of:[/]"
             f"\n    [bold {ui.GREEN}]export NVIDIA_API_KEY=nvapi-your-key-here[/]"
             f"\n    [bold {ui.GREEN}]export GROQ_API_KEY=gsk-your-key-here[/]"
-            f"\n    [bold {ui.GREEN}]export OPENROUTER_API_KEY=sk-or-your-key-here[/]\n"
+            f"\n    [bold {ui.GREEN}]export OPENROUTER_API_KEY=sk-or-your-key-here[/]"
+            f"\n\n  [{ui.WHITE}]For a custom OpenAI-compatible endpoint:[/]"
+            f"\n    [bold {ui.GREEN}]export NEXUS_OPENAI_BASE_URL=https://provider.example/v1[/]"
+            f"\n    [bold {ui.GREEN}]export NEXUS_OPENAI_API_KEY=your-key[/]"
+            f"\n    [bold {ui.GREEN}]nexus --model custom --model-id provider/model[/]\n"
         )
         sys.exit(1)
 
+    from nexus.preflight import probe_model
+    selected_probe = probe_model(model_cfg, model_name=args.model)
+    if not selected_probe.ready:
+        ui.print_error(selected_probe.detail)
+        for action in selected_probe.remediation:
+            ui.print_info(action)
+        sys.exit(2)
+
     # Web mode
     if args.web:
-        run_web(api_key, args.model, args.port, args.working_dir)
+        run_web(
+            api_key, 
+            args.model, 
+            args.port, 
+            args.working_dir,
+            model_id_override=args.model_id,
+            local_intern_mode=args.local_intern,
+            enable_nova_fallback=args.enable_nova_fallback,
+            plugins_enabled=args.enable_plugins,
+            tools_enabled=not args.no_tools,
+        )
         return
 
     # Disable tools if requested
@@ -978,6 +1038,11 @@ def main():
             max_cost_usd=args.max_cost_usd,
             input_price_per_million=args.input_price_per_million,
             output_price_per_million=args.output_price_per_million,
+            model_id_override=args.model_id,
+            local_intern_mode=args.local_intern,
+            enable_nova_fallback=args.enable_nova_fallback,
+            plugins_enabled=args.enable_plugins,
+            tools_enabled=not args.no_tools,
         )
     except ValueError as e:
         ui.print_error(str(e))
