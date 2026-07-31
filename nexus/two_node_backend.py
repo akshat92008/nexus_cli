@@ -24,8 +24,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from nexus.code_validation import GeneratedCodeValidator
-from nexus.execution import (
-    ExecutionEngine,
+from nexus.runtime.kernel import (
+    ExecutionKernel,
     ReviewOutcome,
     TaskOutcome,
     classify_failure,
@@ -552,10 +552,10 @@ class TwoNodeBackend:
                     findings=findings,
                 )
 
-            execution_result = ExecutionEngine(
+            execution_result = ExecutionKernel(
                 execution_plan,
                 self.run_ledger,
-            ).run(
+            ).run_dag(
                 execute_step,
                 repair=repair_step,
                 reviewer=review_plan,

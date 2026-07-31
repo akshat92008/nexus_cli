@@ -1,0 +1,22 @@
+{
+  "schema_version": "nexus.benchmark.v1",
+  "name": "Nexus Core Performance",
+  "tasks": [
+    {
+      "id": "core-01",
+      "category": "single-file-edit",
+      "prompt": "Implement a simple Hello World in hello.py",
+      "repository": "./tests/fixtures/hello_world",
+      "verification": [
+        ["python3", "-c", "import hello; assert hello.say_hello() == 'Hello World'"]
+      ],
+      "timeout_seconds": 300,
+      "allowed_paths": [
+        "hello.py"
+      ],
+      "expected_changed_files": [
+        "hello.py"
+      ]
+    }
+  ]
+}

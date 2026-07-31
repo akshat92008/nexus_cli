@@ -128,6 +128,9 @@ class GitWorktreeSession:
 
         try:
             shutil.copytree(self.repository, self.path, ignore=ignore)
+            baseline_path = Path(str(self.path) + "_baseline")
+            if not baseline_path.exists():
+                shutil.copytree(self.repository, baseline_path, ignore=ignore)
         except OSError as exc:
             raise WorktreeError(f"Could not create temporary isolated copy: {exc}") from exc
         self.info = WorktreeInfo(
@@ -313,10 +316,49 @@ class GitWorktreeSession:
 
             src = self.path
             dst = self.repository
+            baseline = Path(str(self.path) + "_baseline")
+            backup = Path(str(self.path) + "_backup")
+
             _ignore = {
                 ".git", ".nexusai", ".pytest_cache", ".ruff_cache",
                 "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
             }
+            
+            def _collect_files(base: "Path") -> list["Path"]:
+                out = []
+                for entry in base.rglob("*"):
+                    if entry.is_file() and not any(part in _ignore for part in entry.parts):
+                        out.append(entry)
+                return out
+                
+            def _check_concurrent_changes(base: Path, current: Path) -> bool:
+                if not base.exists() or not current.exists():
+                    return False
+                base_files = {f.relative_to(base): f for f in _collect_files(base)}
+                curr_files = {f.relative_to(current): f for f in _collect_files(current)}
+                if set(base_files.keys()) != set(curr_files.keys()):
+                    return True
+                for rel in base_files:
+                    try:
+                        if base_files[rel].read_bytes() != curr_files[rel].read_bytes():
+                            return True
+                    except OSError:
+                        return True
+                return False
+                
+            if baseline.exists() and _check_concurrent_changes(baseline, dst):
+                raise WorktreeError(
+                    "Concurrent changes detected in source repository. "
+                    "Refusing to apply non-Git temporary copy to prevent data loss."
+                )
+                
+            if not backup.exists():
+                try:
+                    def _ignore_func(_d: str, names: list[str]) -> set[str]:
+                        return {n for n in names if n in _ignore}
+                    _shutil.copytree(dst, backup, ignore=_ignore_func)
+                except OSError as exc:
+                    raise WorktreeError(f"Could not create backup of source repository: {exc}") from exc
 
             def _sync(src_dir: "Path", dst_dir: "Path") -> None:
                 dst_dir.mkdir(parents=True, exist_ok=True)
@@ -361,6 +403,10 @@ class GitWorktreeSession:
         else:
             if Path(self.path).exists():
                 shutil.rmtree(self.path, ignore_errors=True)
+            baseline = Path(str(self.path) + "_baseline")
+            if baseline.exists():
+                shutil.rmtree(baseline, ignore_errors=True)
+            # We explicitly keep the backup directory in case the user needs it
         if self.info_path.exists():
             self.info_path.unlink(missing_ok=True)
         self.info = None

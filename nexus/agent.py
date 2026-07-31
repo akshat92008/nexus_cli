@@ -38,9 +38,9 @@ from nexus.package_guard import PackageGuard
 from nexus.paths import nexus_home
 
 # Phase 1: Core Engine Imports
-from nexus.planner import IntentType, PlanningEngine, PlanType, TaskStatus
+from nexus.planner import IntentType, PlanningEngine, PlanType, TaskStatus, TaskType, get_task_type
 from nexus.plugins.loader import PluginLoader
-from nexus.policy import PermissionDecision, PolicyLoader
+from nexus.policy import ModePolicy, PermissionDecision, PolicyLoader
 from nexus.project_memory import ProjectMemory
 from nexus.providers.hosted import HostedProvider
 from nexus.providers.nova import NovaProvider
@@ -49,7 +49,7 @@ from nexus.reflection import ReflectionEngine, ReflectionVerdict
 from nexus.repo_graph import RepoGraph
 from nexus.run_catalog import RunCatalog
 from nexus.run_state import CriterionResult, CriterionStatus, RunLedger, RunStatus
-from nexus.runtime.engine import ExecutionEngine
+from nexus.runtime.kernel import ExecutionKernel
 from nexus.runtime.events import EventType
 from nexus.safety import SafetyCheck, SafetyLayer, SafetyLevel
 
@@ -202,6 +202,7 @@ class Agent:
         self,
         api_key: str | None = None,
         model_key: str = DEFAULT_MODEL,
+        mode_policy: ModePolicy | None = None,
         working_dir: str | None = None,
         permission_mode: str = "default",
         allowed_tools: list[str] | None = None,
@@ -237,6 +238,7 @@ class Agent:
         else:
             self.working_dir = self.source_working_dir
         # P0-3 FIX: Remove os.chdir(self.working_dir) to prevent global process state pollution
+        self.mode_policy = mode_policy or ModePolicy()
 
         # Model and backend selection
         resolved_key = resolve_model_key(model_key) or DEFAULT_MODEL
@@ -679,6 +681,12 @@ class Agent:
             status="verified",
             detail="Request and execution contract persisted before model execution.",
         )
+        if plan and hasattr(plan, "steps"):
+            current_step = next(
+                (s for s in plan.steps if s.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)), None
+            )
+            if current_step:
+                self.planner.advance_step(current_step.id, TaskStatus.IN_PROGRESS)
 
     def _finish_managed_run(
         self,
@@ -735,36 +743,29 @@ class Agent:
             if item.get("kind") == "independent_review"
             and item.get("status") == "verified"
         ]
+        verification_records = [
+            item for item in evidence if item.get("kind") == "verification_check"
+        ]
         passing_checks = [
-            item
-            for item in passing_commands
-            if any(
-                term in item.get("command", "").lower()
-                for term in (
-                    "test",
-                    "pytest",
-                    "jest",
-                    "vitest",
-                )
-            )
+            item for item in verification_records if item.get("status") == "verified"
         ]
 
         def matching_checks(criterion: str) -> list[dict[str, Any]]:
             lowered = criterion.lower()
             if "lint" in lowered or "type" in lowered:
-                markers = ("lint", "ruff", "mypy", "pyright", "tsc", "clippy", "vet")
+                target_types = {"lint", "type_check"}
             elif "security" in lowered or "vulnerab" in lowered:
-                markers = ("audit", "bandit", "semgrep", "security", "safety")
+                target_types = {"security"}
             elif "build" in lowered or "compile" in lowered:
-                markers = ("build", "compile", "cargo check", "go test", "tsc")
+                target_types = {"build"}
             elif "test" in lowered or "regression" in lowered or "coverage" in lowered:
-                markers = ("test", "pytest", "jest", "vitest", "rspec", "phpunit")
+                target_types = {"test", "browser", "database", "api"}
             else:
                 return []
             return [
                 item
-                for item in passing_commands
-                if any(marker in item.get("command", "").lower() for marker in markers)
+                for item in passing_checks
+                if item.get("metadata", {}).get("check_type") in target_types
             ]
 
         plan = self._active_plan
@@ -845,9 +846,17 @@ class Agent:
                     *passing_behavioral,
                     *approved_reviews,
                 ]
-                objective_satisfied = bool(verified_mutations) and bool(
-                    passing_checks or passing_behavioral
-                ) and bool(approved_reviews or self._is_nova_model())
+                task_type = get_task_type(self._active_analysis.get("intent", IntentType.UNKNOWN))
+                
+                if task_type == TaskType.READ_ONLY:
+                    objective_satisfied = True
+                elif task_type == TaskType.OPERATIONAL:
+                    objective_satisfied = bool(passing_checks or passing_behavioral or successful_command_text)
+                else:
+                    objective_satisfied = bool(verified_mutations) and bool(
+                        passing_checks or passing_behavioral
+                    ) and bool(approved_reviews or self._is_nova_model())
+
                 results.append(
                     CriterionResult(
                         criterion,
@@ -1377,12 +1386,12 @@ class Agent:
             return f"❌ BLOCKED: {name} is denied by the active permission rules.", False
         if self.allowed_tools and name not in self.allowed_tools:
             return f"❌ BLOCKED: {name} is not in the active tool allowlist.", False
-        if self.permission_mode == "plan" and (
+        if not self.mode_policy.may_edit and (
             name in mutation_tools
             or name in ("run_command", "run_process", "process_run")
             or name.startswith("git_")
         ):
-            return "❌ BLOCKED: Plan mode is read-only. Switch permission mode before executing changes.", False
+            return "❌ BLOCKED: Current mode is read-only. Switch mode before executing changes.", False
 
         policy_capability = ""
         policy_targets: list[str] = []
@@ -2309,7 +2318,7 @@ class Agent:
 
         # --- NEW ENGINE EXECUTION LOOP ---
         _run_id = self.run_ledger.session_id if hasattr(self, "run_ledger") and self.run_ledger else None
-        engine = ExecutionEngine(
+        engine = ExecutionKernel(
             self.client,
             max_turns=max_iterations,
             model_id=self.model_cfg["id"],
@@ -2323,7 +2332,7 @@ class Agent:
             
         engine.tool_executor = handle_tool
         
-        events = engine.run(self._build_messages(), tools=self._get_tools())
+        events = engine.run_interactive(self._build_messages(), tools=self._get_tools())
         
         live = ui.LiveStatus()
         content = ""
@@ -2398,7 +2407,18 @@ class Agent:
         ui.print_response_complete()
 
         # ── 5. Post-plan verification ────────────────────────────────
-        if plan and plan.is_complete:
+        if plan and hasattr(plan, "steps"):
+            current_step = next(
+                (s for s in plan.steps if s.status == TaskStatus.IN_PROGRESS), None
+            )
+            if current_step:
+                # If there were errors, mark failed, otherwise completed
+                if any(e.get("status") == "failed" for e in accumulated_events if isinstance(e, dict)):
+                    self.planner.advance_step(current_step.id, TaskStatus.FAILED, "Errors encountered during step")
+                else:
+                    self.planner.advance_step(current_step.id, TaskStatus.COMPLETED, "Step executed successfully")
+
+        if plan and plan.is_complete():
             ui.print_info("📋 Plan complete. Running verification...")
             try:
                 report = self._record_verification_report(self.verifier.run_all())
@@ -3009,7 +3029,7 @@ class Agent:
             status = "verified" if check.passed else "failed"
             exit_code = 0 if check.passed else 1
             self.evidence.append(
-                kind="command",
+                kind="verification_check",
                 claim=f"project verification: {check.check_type.value}",
                 status=status,
                 tool="verification_engine",
@@ -3019,6 +3039,7 @@ class Agent:
                 metadata={
                     "duration_ms": check.duration_ms,
                     "check_status": check.status.value,
+                    "check_type": check.check_type.value,
                 },
             )
             if self.run_ledger.turn_dir:

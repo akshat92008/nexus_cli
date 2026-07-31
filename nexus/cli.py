@@ -21,6 +21,7 @@ from nexus.agent import Agent
 from nexus.doctor import run_doctor
 from nexus.memory import ConversationMemory
 from nexus.models import DEFAULT_MODEL, resolve_model
+from nexus.policy import get_mode_policy
 from nexus.run_catalog import RunCatalog
 from nexus.tools import get_history, tool_get_project_structure
 
@@ -1024,6 +1025,7 @@ def main():
             api_key=api_key,
             model_key=args.model,
             working_dir=args.working_dir,
+            mode_policy=get_mode_policy(args.mode),
             permission_mode=args.permission_mode,
             allowed_tools=args.allowed_tools,
             disallowed_tools=args.disallowed_tools,

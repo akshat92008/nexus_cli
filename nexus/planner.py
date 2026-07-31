@@ -55,6 +55,21 @@ class IntentType(str, Enum):
     UNKNOWN = "unknown"
 
 
+class TaskType(str, Enum):
+    """Broad categorization of tasks for verification boundaries."""
+    READ_ONLY = "read_only"
+    MUTATION = "mutation"
+    OPERATIONAL = "operational"
+
+
+def get_task_type(intent: IntentType) -> TaskType:
+    if intent in (IntentType.EXPLAIN, IntentType.REVIEW, IntentType.SEARCH, IntentType.CHAT):
+        return TaskType.READ_ONLY
+    elif intent in (IntentType.DEPLOY, IntentType.CONFIGURE):
+        return TaskType.OPERATIONAL
+    return TaskType.MUTATION
+
+
 class Difficulty(str, Enum):
     """Estimated task difficulty."""
     TRIVIAL = "trivial"     # < 1 tool call

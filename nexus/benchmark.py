@@ -138,12 +138,18 @@ class BenchmarkReport:
             "summary": {
                 "tasks": len(self.results),
                 "passed": passed,
+                "verified_passed": sum(1 for item in self.results if item.passed and item.agent_status == "VERIFIED"),
                 "failed": len(self.results) - passed,
-                "success_rate": (
+                "pass_rate": (
                     round(passed / len(self.results), 4) if self.results else 0.0
+                ),
+                "verified_pass_rate": (
+                    round(sum(1 for item in self.results if item.passed and item.agent_status == "VERIFIED") / len(self.results), 4) if self.results else 0.0
                 ),
                 "total_duration_ms": sum(item.duration_ms for item in self.results),
                 "total_model_calls": sum(item.model_calls for item in self.results),
+                "average_model_calls": round(sum(item.model_calls for item in self.results) / len(self.results), 2) if self.results else 0.0,
+                "average_retries": round(sum(item.retries for item in self.results) / len(self.results), 2) if self.results else 0.0,
                 "total_prompt_tokens": sum(item.prompt_tokens for item in self.results),
                 "total_completion_tokens": sum(
                     item.completion_tokens for item in self.results
@@ -151,6 +157,9 @@ class BenchmarkReport:
                 "total_cost_usd": round(
                     sum(item.estimated_cost_usd or 0.0 for item in self.results), 8
                 ),
+                "average_cost_usd": round(
+                    sum(item.estimated_cost_usd or 0.0 for item in self.results) / len(self.results), 4
+                ) if self.results else 0.0,
             },
             "results": [asdict(item) for item in self.results],
         }
