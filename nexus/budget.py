@@ -190,17 +190,29 @@ class BudgetedClient:
         return getattr(self._wrapped_client, name)
 
     def chat(self, *args: Any, **kwargs: Any) -> Any:
-        args, kwargs = self._apply_budget(args, kwargs)
+        kwargs = self._apply_budget(kwargs)
         response = self._wrapped_client.chat(*args, **kwargs)
-        if not kwargs.get("stream", True):
-            self._record_response_usage(response)
+        if kwargs.get("stream", False):
+            # Wrap the generator so usage from the final sentinel chunk is captured.
+            return self._wrap_stream(response)
+        self._record_response_usage(response)
         return response
 
     def chat_sync(self, *args: Any, **kwargs: Any) -> Any:
-        args, kwargs = self._apply_budget(args, kwargs)
+        kwargs = self._apply_budget(kwargs)
         response = self._wrapped_client.chat_sync(*args, **kwargs)
         self._record_response_usage(response)
         return response
+
+    def _wrap_stream(self, stream: Any) -> Any:
+        for chunk in stream:
+            usage = getattr(chunk, "usage", None)
+            if usage is not None:
+                self._budget_controller.record_usage(
+                    getattr(usage, "prompt_tokens", 0) or 0,
+                    getattr(usage, "completion_tokens", 0) or 0,
+                )
+            yield chunk
 
     def _record_response_usage(self, response: Any) -> None:
         usage = getattr(response, "usage", None)
@@ -211,25 +223,13 @@ class BudgetedClient:
             getattr(usage, "completion_tokens", 0) or 0,
         )
 
-    def _apply_budget(
-        self,
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
-    ) -> tuple[tuple[Any, ...], dict[str, Any]]:
-        mutable_args = list(args)
+    def _apply_budget(self, kwargs: dict[str, Any]) -> dict[str, Any]:
         mutable_kwargs = dict(kwargs)
         messages = mutable_kwargs.get("messages")
-        if messages is None and len(mutable_args) > 1:
-            messages = mutable_args[1]
         requested = mutable_kwargs.get("max_tokens")
-        if requested is None and len(mutable_args) > 4:
-            requested = mutable_args[4]
         allowed = self._budget_controller.before_hosted_call(
             messages if isinstance(messages, list) else [],
             int(requested if requested is not None else 16384),
         )
-        if len(mutable_args) > 4:
-            mutable_args[4] = allowed
-        else:
-            mutable_kwargs["max_tokens"] = allowed
-        return tuple(mutable_args), mutable_kwargs
+        mutable_kwargs["max_tokens"] = allowed
+        return mutable_kwargs

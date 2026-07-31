@@ -503,6 +503,63 @@ class Agent:
         self.messages = compact_messages(self.messages, keep_recent=12)
         return old_count - len(self.messages)
 
+    def export_final_report(self) -> dict:
+        """Return the final report dict for the current run.
+
+        Reads ``final_report.json`` from the active run-turn directory.
+        When no active turn is in progress, scans the session directory for the
+        most recent turn and reads from there.
+
+        Always returns a dict — never raises — so the CLI completion path can
+        safely call this after ``Agent.run()`` regardless of what happened
+        during the run.
+
+        Returns:
+            A dict with at minimum a ``"status"`` key. On success the dict
+            contains all fields written by the verification/reporting layer.
+            On failure it contains ``{"status": "UNVERIFIED", "error": "..."}``.
+        """
+        # 1. Try the active turn directory first
+        turn_dir: Path | None = None
+        try:
+            turn_dir = self.run_ledger._require_turn()
+        except Exception:
+            pass
+
+        # 2. Fall back to scanning session_dir for the most recently modified turn dir
+        if turn_dir is None:
+            try:
+                session_dir = self.run_ledger.session_dir
+                turn_dirs = sorted(
+                    [d for d in session_dir.iterdir() if d.is_dir() and d.name.startswith("turn-")],
+                    key=lambda d: d.name,
+                    reverse=True,
+                )
+                if turn_dirs:
+                    turn_dir = turn_dirs[0]
+            except Exception:
+                pass
+
+        if turn_dir is None:
+            return {
+                "status": "UNVERIFIED",
+                "error": "No run data found: no active or historical run turns exist",
+            }
+
+        report_path = turn_dir / "final_report.json"
+        if not report_path.exists():
+            return {
+                "status": "UNVERIFIED",
+                "error": "No final report generated for this run",
+            }
+        try:
+            return json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {
+                "status": "UNVERIFIED",
+                "error": f"Failed to read final report: {exc}",
+            }
+
     def load_conversation(self, conv_id: str) -> bool:
         """Load a conversation from memory."""
         data = self.memory.load_conversation(conv_id)
@@ -2215,7 +2272,13 @@ class Agent:
 
 
         # --- NEW ENGINE EXECUTION LOOP ---
-        engine = ExecutionEngine(self.client, max_turns=max_iterations, model_id=self.model_cfg["id"])
+        _run_id = self.run_ledger.session_id if hasattr(self, "run_ledger") and self.run_ledger else None
+        engine = ExecutionEngine(
+            self.client,
+            max_turns=max_iterations,
+            model_id=self.model_cfg["id"],
+            run_id=_run_id,
+        )
         
         def handle_tool(name, args):
             tc = [{"id": f"call_{time.time()}", "name": name, "arguments": json.dumps(args)}]

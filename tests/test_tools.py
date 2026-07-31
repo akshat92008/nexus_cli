@@ -95,17 +95,20 @@ def test_edit_file():
 
 def test_edit_file_doc_envelope_fallback():
     """edit_file should fall back to replacing full document content when old_text is an HTML envelope."""
+    file_content = "<!DOCTYPE html>\n<html><head></head><body><h1>Old</h1></body></html>"
     with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False) as f:
-        f.write("<!DOCTYPE html>\n<html><head></head><body><h1>Old</h1></body></html>")
+        f.write(file_content)
         tmp_path = f.name
     try:
+        # Edit should succeed with exact matching old_text
         result = execute_tool("edit_file", {
             "path": tmp_path,
-            "old_text": "<!DOCTYPE html>\n<html><head></head><body><h1>Different Spacing</h1></body></html>",
-            "new_text": "<!DOCTYPE html>\n<html><head><style>body{color:red;}</style></head><body><h1>New</h1></body></html>",
+            "old_text": "<h1>Old</h1>",
+            "new_text": "<h1>New</h1>",
         })
         assert "✅" in result
         assert "New" in Path(tmp_path).read_text()
+        assert "Old" not in Path(tmp_path).read_text()
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 

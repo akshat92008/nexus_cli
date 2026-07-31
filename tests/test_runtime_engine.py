@@ -15,7 +15,7 @@ class MockProvider:
         self.id = "mock"
         self.name = "Mock Provider"
 
-    def chat(self, model_id, messages, tools=None, stream=False):
+    def chat(self, model_id, messages, tools=None, stream=False, max_tokens=None, temperature=None, **kwargs):
         if self.call_count >= len(self.responses):
             raise RuntimeError("No more mock responses")
         

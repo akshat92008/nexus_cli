@@ -190,19 +190,75 @@ class GitWorktreeSession:
             )
             return result.stdout
         else:
-            result = subprocess.run(
-                ["diff", "-urN", str(self.repository), str(self.path)],
-                capture_output=True,
-                text=True,
-            )
-            return result.stdout
+            # Python-native unified diff — cross-platform, no Unix diff required
+            import difflib
+            lines: list[str] = []
+            src = self.path
+            dst = self.repository
+            _ignore = {
+                ".git", ".nexusai", ".pytest_cache", "__pycache__",
+                "node_modules", ".venv", "venv", "dist", "build",
+            }
+
+            def _collect_files(base: "Path") -> list["Path"]:
+                out = []
+                for entry in base.rglob("*"):
+                    if entry.is_file() and not any(
+                        part in _ignore for part in entry.parts
+                    ):
+                        out.append(entry)
+                return out
+
+            src_files = {f.relative_to(src) for f in _collect_files(src)}
+            dst_files = {f.relative_to(dst) for f in _collect_files(dst)}
+
+            for rel in sorted(src_files | dst_files):
+                src_f = src / rel
+                dst_f = dst / rel
+                src_lines = src_f.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True) if src_f.exists() else []
+                dst_lines = dst_f.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True) if dst_f.exists() else []
+                diff_lines = list(difflib.unified_diff(
+                    dst_lines, src_lines,
+                    fromfile=f"a/{rel}",
+                    tofile=f"b/{rel}",
+                ))
+                lines.extend(diff_lines)
+
+            return "".join(lines)
 
     def apply(self) -> None:
-        """Apply changes from the worktree back to the source repository safely."""
+        """Apply changes from the worktree back to the source repository safely.
+
+        For Git worktrees:
+          1. Re-checks the source repository for uncommitted changes (so concurrent
+             edits do not silently corrupt the merge).
+          2. Creates an immutable backup ref before merging.
+          3. On merge failure, runs ``git merge --abort`` automatically.
+
+        For temporary copies:
+          Uses Python's shutil (cross-platform) instead of rsync.
+
+        Raises:
+            WorktreeError: On any failure. The source repository is left in a
+                clean, mergeable state.
+        """
         if not self.info:
             return
         if self.info.backend == "git-worktree":
-            # Auto-commit any uncommitted changes in the worktree branch
+            # ── Pre-apply safety check ────────────────────────────────────
+            dirty_now = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=self.repository,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if dirty_now:
+                raise WorktreeError(
+                    "Source repository has uncommitted changes since the workspace was "
+                    "created. Commit or stash them before applying workspace changes."
+                )
+
+            # ── Auto-commit any uncommitted worktree changes ──────────────
             status = subprocess.run(
                 ["git", "status", "--porcelain"],
                 cwd=self.path,
@@ -216,7 +272,22 @@ class GitWorktreeSession:
                     cwd=self.path,
                     check=True,
                 )
-            # Merge the branch back into the source repository
+
+            # ── Create backup ref before merge ────────────────────────────
+            backup_ref = f"refs/nexus/pre-apply-{self.session_id}"
+            head_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=self.repository,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(
+                ["git", "update-ref", backup_ref, head_sha],
+                cwd=self.repository,
+                capture_output=True,
+            )
+
+            # ── Merge with automatic abort on failure ─────────────────────
             result = subprocess.run(
                 ["git", "merge", self.info.branch, "--no-edit"],
                 cwd=self.repository,
@@ -224,19 +295,53 @@ class GitWorktreeSession:
                 text=True,
             )
             if result.returncode != 0:
-                raise WorktreeError(f"Failed to merge branch: {result.stderr or result.stdout}")
+                # Auto-abort to leave the source repository clean
+                subprocess.run(
+                    ["git", "merge", "--abort"],
+                    cwd=self.repository,
+                    capture_output=True,
+                )
+                raise WorktreeError(
+                    f"Failed to merge branch '{self.info.branch}': "
+                    f"{result.stderr or result.stdout}\n"
+                    f"The source repository has been automatically restored. "
+                    f"Backup ref is available at {backup_ref}."
+                )
         else:
-            # Sync temporary copy changes back using rsync
-            rsync_cmd = [
-                "rsync", "-a", "--delete",
-                "--exclude=.git", "--exclude=.nexusai", "--exclude=.pytest_cache", 
-                "--exclude=__pycache__", "--exclude=node_modules", "--exclude=.venv", 
-                "--exclude=venv", "--exclude=dist", "--exclude=build",
-                f"{self.path}/", f"{self.repository}/"
-            ]
-            result = subprocess.run(rsync_cmd, capture_output=True, text=True)
-            if result.returncode != 0:
-                raise WorktreeError(f"Failed to sync temporary copy: {result.stderr or result.stdout}")
+            # ── Python-native sync (cross-platform, no rsync required) ────
+            import shutil as _shutil
+
+            src = self.path
+            dst = self.repository
+            _ignore = {
+                ".git", ".nexusai", ".pytest_cache", ".ruff_cache",
+                "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
+            }
+
+            def _sync(src_dir: "Path", dst_dir: "Path") -> None:
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                src_names = {e.name for e in src_dir.iterdir()}
+                for entry in src_dir.iterdir():
+                    if entry.name in _ignore:
+                        continue
+                    dst_entry = dst_dir / entry.name
+                    if entry.is_dir():
+                        _sync(entry, dst_entry)
+                    else:
+                        _shutil.copy2(str(entry), str(dst_entry))
+                # Remove files in dst that are absent in src (mirrors rsync --delete)
+                if dst_dir.exists():
+                    for entry in dst_dir.iterdir():
+                        if entry.name not in src_names and entry.name not in _ignore:
+                            if entry.is_dir():
+                                _shutil.rmtree(entry, ignore_errors=True)
+                            else:
+                                entry.unlink(missing_ok=True)
+
+            try:
+                _sync(src, dst)
+            except OSError as exc:
+                raise WorktreeError(f"Failed to sync temporary copy: {exc}") from exc
 
     def discard(self) -> None:
         """Discard the worktree or temporary copy and clean up metadata."""

@@ -1102,17 +1102,7 @@ def tool_edit_file(path: str, old_text: str, new_text: str) -> str:
                     count = 1
 
         if count == 0:
-            # 3. Full-document or major-replacement fallback if exact and line matching fail
-            content_lines = content.splitlines()
-            old_lines = old_text.splitlines()
-            is_doc_envelope = old_text.strip().lower().startswith("<!doctype") or old_text.strip().lower().startswith("<html")
-            is_major_replacement = len(content_lines) > 0 and len(old_lines) >= max(3, int(0.6 * len(content_lines)))
-            if is_doc_envelope or is_major_replacement:
-                target_old = content
-                count = 1
-
-        if count == 0:
-            # Diagnostic feedback for LLM
+            # Diagnostic feedback for LLM — fail clearly, never silently replace the whole file
             first_line = old_text.splitlines()[0] if old_text.strip() else old_text
             content_lines = content.splitlines()
             similar = [
@@ -1163,6 +1153,9 @@ def tool_patch_file(path: str, start_line: int, end_line: int, new_content: str)
         if start_line < 1 or start_line > len(lines) + 1:
             return f"❌ start_line {start_line} out of range (file has {len(lines)} lines)"
 
+        if end_line != 0 and end_line < start_line:
+            return f"❌ end_line ({end_line}) must be >= start_line ({start_line}) or 0 for insert mode"
+
         # Snapshot
         history = get_history()
         snapshot = history.snapshot_before_write(str(p))
@@ -1190,16 +1183,68 @@ def tool_patch_file(path: str, start_line: int, end_line: int, new_content: str)
 
 
 def tool_multi_edit(edits: list[dict]) -> str:
-    """Apply multiple edits across files. Tracked for undo."""
-    results = []
+    """Apply multiple edits across files atomically. Tracked for undo.
+
+    All edits are validated before any are applied. If any edit fails
+    validation or application, all previously applied edits are rolled back
+    via the file history, leaving the workspace unchanged.
+    """
+    if not edits:
+        return "📝 Multi-edit: no edits provided"
+
+    history = get_history()
+    applied_paths: list[str] = []  # track files we've changed for rollback
+    snapshots: dict[str, object] = {}  # pre-edit snapshots keyed by path
+    results: list[str] = []
+
+    # Phase 1 — Pre-validate all edits (read files, check old_text exists)
+    for i, edit in enumerate(edits):
+        path = edit.get("path", "")
+        old_text = edit.get("old_text", "")
+        if not path:
+            return f"❌ Multi-edit aborted: edit #{i+1} is missing 'path'. No files changed."
+        try:
+            p = _resolve_path(path)
+        except Exception as exc:
+            return f"❌ Multi-edit aborted: edit #{i+1} path error — {exc}. No files changed."
+        if not p.exists():
+            return f"❌ Multi-edit aborted: edit #{i+1} file not found: {path}. No files changed."
+        content = p.read_text(encoding="utf-8")
+        if old_text and old_text not in content:
+            first_line = old_text.splitlines()[0][:60] if old_text.strip() else old_text[:60]
+            return (
+                f"❌ Multi-edit aborted: edit #{i+1} old_text not found in {p.name} "
+                f"(starts with: {first_line!r}). No files changed."
+            )
+
+    # Phase 2 — Apply edits, rolling back on any failure
     for i, edit in enumerate(edits):
         path = edit.get("path", "")
         old_text = edit.get("old_text", "")
         new_text = edit.get("new_text", "")
-        if not path:
-            results.append(f"  {i+1}. ❌ Missing path")
-            continue
+        p = _resolve_path(path)
+
+        # Take snapshot for potential rollback
+        if str(p) not in snapshots:
+            snapshots[str(p)] = history.snapshot_before_write(str(p))
+
         result = tool_edit_file(path, old_text, new_text)
+        if result.startswith("❌"):
+            # Roll back every applied change by restoring from snapshot
+            import shutil as _shutil
+            for applied_path in applied_paths:
+                snap = snapshots.get(applied_path)
+                if snap and Path(str(snap)).exists():
+                    try:
+                        _shutil.copy2(str(snap), applied_path)
+                    except Exception:
+                        pass
+            return (
+                f"❌ Multi-edit aborted at edit #{i+1}: {result}. "
+                f"All {len(applied_paths)} preceding edits have been rolled back."
+            )
+        applied_paths.append(str(p))
+        history.record_change(str(p), "multi_edit", snapshots.get(str(p)))
         results.append(f"  {i+1}. {result}")
 
     success_count = sum(1 for r in results if "✅" in r)

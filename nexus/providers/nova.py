@@ -19,6 +19,8 @@ class NovaProvider(Provider):
             working_dir=working_dir,
         )
 
+    # ── Provider protocol ────────────────────────────────────────────────────
+
     @property
     def id(self) -> str:
         return "nova"
@@ -27,35 +29,75 @@ class NovaProvider(Provider):
     def name(self) -> str:
         return "Nova Local Pipeline"
 
-    def chat(self, model_id: str, messages: list[dict], tools: list[dict] | None = None, stream: bool = False) -> Any:
-        # Nova pipeline currently takes the raw user input and processes it through 
-        # its own local guardrails and context gathering.
-        # We extract the last user message to feed into the pipeline.
+    # ── Core chat methods ────────────────────────────────────────────────────
+
+    def chat(
+        self,
+        model_id: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        stream: bool = False,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Run the Nova pipeline with the last user message as input.
+
+        max_tokens / temperature are accepted for protocol compatibility but
+        are not forwarded to the local pipeline (Nova manages its own limits).
+        """
         user_input = ""
         for msg in reversed(messages):
-            if msg["role"] == "user":
-                user_input = msg["content"]
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                user_input = content if isinstance(content, str) else str(content)
                 break
-        
-        # Return a simulated stream/response format that the engine can process
+
         result = self._backend.run(user_input)
-        
+
         if stream:
-            # Fake stream for compatibility
+            # Wrap in a minimal streaming-compatible generator so the engine
+            # does not need to branch on provider type.
             def _stream():
                 class DummyChunk:
-                    class Choice:
-                        class Delta:
-                            def __init__(self, content):
+                    class _Choice:
+                        class _Delta:
+                            tool_calls = None
+
+                            def __init__(self, content: str):
                                 self.content = content
-                        def __init__(self, content):
-                            self.delta = self.Delta(content)
-                    def __init__(self, content):
-                        self.choices = [self.Choice(content)]
+
+                        def __init__(self, content: str):
+                            self.delta = self._Delta(content)
+
+                    def __init__(self, content: str):
+                        self.choices = [self._Choice(content)]
+
                 yield DummyChunk(result.output)
+
             return _stream()
-            
+
         return result
+
+    def chat_sync(
+        self,
+        model_id: str,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        """Blocking Nova pipeline call (same as non-streaming chat)."""
+        return self.chat(
+            model_id,
+            messages,
+            tools=tools,
+            stream=False,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            **kwargs,
+        )
 
     def count_tokens(self, text: str) -> int:
         return len(text) // 4  # Fallback estimate

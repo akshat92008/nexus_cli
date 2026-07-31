@@ -59,6 +59,11 @@ class FakeProvider(Provider):
                 choices = [DummyChoice()]
             return DummyResponse()
             
+    def chat_sync(self, model_id, messages, tools=None, max_tokens=None, temperature=None, **kwargs):
+        """Synchronous (non-streaming) version for protocol compliance."""
+        return self.chat(model_id, messages, tools=tools, stream=False,
+                         max_tokens=max_tokens, temperature=temperature)
+
     def count_tokens(self, text):
         return len(text)
 
