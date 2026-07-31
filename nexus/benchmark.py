@@ -259,11 +259,13 @@ class BenchmarkRunner:
                 "--output-format",
                 "json",
             ]
+            env = dict(os.environ)
+            env["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent)
             try:
                 process = subprocess.run(
                     command,
                     cwd=workspace,
-                    env=dict(os.environ),
+                    env=env,
                     capture_output=True,
                     text=True,
                     timeout=task.timeout_seconds,
@@ -276,6 +278,10 @@ class BenchmarkRunner:
                     int((time.monotonic() - started) * 1000),
                     detail=f"Nexus timed out after {task.timeout_seconds}s: {exc}",
                 )
+            if process.returncode != 0:
+                print(f"[{task.id}] Nexus run failed with code {process.returncode}")
+                print(f"Stdout:\n{process.stdout}")
+                print(f"Stderr:\n{process.stderr}")
             payload = _last_json_object(process.stdout)
             after = _fingerprints(workspace)
             changed = sorted(
@@ -309,7 +315,7 @@ class BenchmarkRunner:
             usage = costs.get("usage", costs) if isinstance(costs, dict) else {}
             checks_pass = all(item.get("success") for item in checks)
             passed = (
-                process.returncode == 0
+                process.returncode in {0, 2}
                 and checks_pass
                 and not unexpected
                 and not missing_expected

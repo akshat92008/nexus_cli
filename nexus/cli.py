@@ -65,7 +65,7 @@ Environment:
     )
     parser.add_argument(
         "--model", "-m",
-        default=DEFAULT_MODEL,
+        default=os.environ.get("NEXUS_MODEL", DEFAULT_MODEL),
         help=f"Model to use (default: {DEFAULT_MODEL}). Use --list-models to see all.",
     )
     parser.add_argument(
