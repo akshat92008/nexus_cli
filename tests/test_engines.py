@@ -70,6 +70,7 @@ def test_context_manager():
     """Test context tracking, file imports tracking, and architecture summarization."""
     with tempfile.TemporaryDirectory() as tmpdir:
         cm = ContextManager(working_dir=tmpdir)
+        (Path(tmpdir) / "main.py").write_text("import os\n")
 
         # Test basic tracking
         cm.track_file_access("main.py", was_edited=True)
@@ -103,6 +104,54 @@ def test_context_summaries_and_dependency_impact_survive_restart(tmp_path, monke
     assert "functions: execute" in relevant
     assert "service.py" in impact
     assert "domain.py" in impact
+
+
+def test_context_refresh_removes_stale_dependencies_and_deleted_files(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "old_domain.py").write_text("class Old: pass\n")
+    (workspace / "new_domain.py").write_text("class New: pass\n")
+    service = workspace / "service.py"
+    service.write_text("from old_domain import Old\n\ndef execute(): return Old()\n")
+
+    manager = ContextManager(str(workspace))
+    for path in ("old_domain.py", "new_domain.py", "service.py"):
+        manager.track_file_access(path)
+    service.write_text("from new_domain import New\n\ndef execute(): return New()\n")
+    (workspace / "old_domain.py").unlink()
+
+    new_impact = manager.get_change_impact_context(["new_domain.py"])
+    context = manager.get_relevant_context("service execute")
+
+    assert "service.py" in new_impact
+    assert "old_domain.py" not in context
+    assert "new_domain" in manager._file_contexts[str(service.resolve())].imports
+
+
+def test_relative_python_and_javascript_imports_build_real_dependency_edges(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
+    workspace = tmp_path / "repo"
+    package = workspace / "pkg"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    (package / "domain.py").write_text("class Entity: pass\n")
+    (package / "service.py").write_text("from .domain import Entity\n")
+    (workspace / "domain.ts").write_text("export const value = 1\n")
+    (workspace / "client.ts").write_text("import { value } from './domain'\n")
+
+    manager = ContextManager(str(workspace))
+    for path in ("pkg/domain.py", "pkg/service.py", "domain.ts", "client.ts"):
+        manager.track_file_access(path)
+
+    assert str((package / "service.py").resolve()) in manager.get_dependency_context(
+        "pkg/domain.py"
+    )
+    assert str((workspace / "client.ts").resolve()) in manager.get_dependency_context(
+        "domain.ts"
+    )
 
 
 def test_safety_layer():

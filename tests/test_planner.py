@@ -4,7 +4,28 @@ import pytest
 
 os.environ["NVIDIA_API_KEY"] = "test"
 from nexus.agent import Agent
-from nexus.planner import Difficulty, ExecutionPlan, IntentType, PlanStep, PlanType, TaskStatus
+from nexus.planner import (
+    Difficulty,
+    ExecutionPlan,
+    IntentType,
+    PlanStep,
+    PlanType,
+    TaskStatus,
+    estimate_difficulty,
+)
+
+
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "Build Shopify from one prompt",
+        "Build my whole startup",
+        "Create an enterprise ERP",
+        "Make a production-grade multi-tenant platform",
+    ],
+)
+def test_short_product_scale_prompts_are_always_massive(prompt):
+    assert estimate_difficulty(prompt, IntentType.BUILD) == Difficulty.MASSIVE
 
 
 def test_advance_step_dependency_enforcement():
@@ -83,9 +104,22 @@ def test_massive_build_persists_product_architecture_and_subsystem_contracts(
         "data-platform",
         "api-and-integrations",
         "platform-and-observability",
+        "catalog-and-pricing",
+        "inventory-and-fulfillment",
+        "checkout-orders-and-payments",
+        "merchant-operations",
     }
     assert all(step.phase for step in plan.steps)
     assert all("run_command" not in step.tools_needed for step in plan.steps)
+    assert plan.budgets["max_tool_calls"] >= sum(
+        step.max_tool_calls + 1 for step in plan.steps
+    )
+    subsystem_steps = {step.subsystem: step for step in plan.steps if step.subsystem}
+    assert subsystem_steps["inventory-and-fulfillment"].id not in subsystem_steps[
+        "catalog-and-pricing"
+    ].depends_on
+    integration = next(step for step in plan.steps if step.phase == "integration")
+    assert set(integration.depends_on) == {step.id for step in subsystem_steps.values()}
 
     loaded = planner.load_plan(plan.id)
     assert loaded is not None
@@ -120,3 +154,20 @@ def test_failed_massive_step_creates_a_persisted_replan(tmp_path, monkeypatch):
     assert plan.failure_replans[-1]["subsystem"] == "data-platform"
     assert "root cause" in plan.failure_replans[-1]["required_action"]
     assert planner.load_plan(plan.id).failure_replans == plan.failure_replans
+
+
+def test_erp_prompt_creates_domain_specific_contracts(tmp_path, monkeypatch):
+    from nexus import planner as planner_module
+
+    monkeypatch.setattr(planner_module, "PLANS_DIR", tmp_path)
+    planner = planner_module.PlanningEngine()
+    analysis = planner.analyze("Build an entire manufacturing ERP")
+    plan = planner.create_plan("Build an entire manufacturing ERP", analysis)
+
+    assert analysis["difficulty"] == Difficulty.MASSIVE
+    assert set(plan.product_spec["domain_modules"]) == {
+        "master-data",
+        "inventory-and-warehouses",
+        "procurement-and-sales",
+        "finance-and-reporting",
+    }

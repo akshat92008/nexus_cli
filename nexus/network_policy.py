@@ -135,6 +135,12 @@ class NetworkPolicy:
         hostname = (parsed.hostname or "").lower().rstrip(".")
         if not hostname:
             return NetworkViolation(url, "Empty hostname", "empty_host")
+        if parsed.username is not None or parsed.password is not None:
+            return NetworkViolation(
+                url,
+                "Credentials in URL authority are not allowed",
+                "userinfo",
+            )
 
         # Check metadata hosts
         if hostname in _METADATA_HOSTS:
@@ -309,6 +315,18 @@ class NetworkPolicy:
                 url,
                 f"Unspecified address blocked: {ip_str}",
                 "unspecified",
+            )
+
+        # Includes reserved/documentation ranges and shared carrier-grade NAT
+        # space. These are never valid public web destinations for agent tools.
+        if not addr.is_global and not (
+            (addr.is_loopback and self.allow_localhost)
+            or (addr.is_private and self.allow_private)
+        ):
+            return NetworkViolation(
+                url,
+                f"Non-public address blocked: {ip_str} (resolved from {hostname})",
+                "special_range",
             )
 
         return None

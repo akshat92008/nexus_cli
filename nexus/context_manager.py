@@ -33,6 +33,8 @@ class FileContext:
     language: str = ""
     imports: list[str] = field(default_factory=list)
     exports: list[str] = field(default_factory=list)
+    content_sha256: str = ""
+    modified_ns: int = 0
 
     @property
     def basename(self) -> str:
@@ -276,6 +278,7 @@ class ContextManager:
         if abs_path in self._file_contexts:
             imports = self._extract_imports(content, Path(filepath).suffix.lower())
             self._file_contexts[abs_path].imports = imports
+            self._dependency_graph[abs_path].clear()
             for imp in imports:
                 resolved = self._resolve_import(abs_path, imp)
                 if resolved:
@@ -287,6 +290,7 @@ class ContextManager:
         Build an optimized context string based on current relevance.
         Prioritizes recently accessed and edited files.
         """
+        self._refresh_stale_contexts()
         if not self._file_contexts:
             return ""
 
@@ -406,12 +410,20 @@ class ContextManager:
             self._file_contexts[abs_path].summary = summary
             self._file_contexts[abs_path].line_count = line_count
             self._file_contexts[abs_path].exports = self._extract_exports(content, lang)
+            self._file_contexts[abs_path].content_sha256 = hashlib.sha256(
+                content.encode("utf-8", errors="replace")
+            ).hexdigest()
+            try:
+                self._file_contexts[abs_path].modified_ns = Path(abs_path).stat().st_mtime_ns
+            except OSError:
+                self._file_contexts[abs_path].modified_ns = 0
             self._save_cache()
 
         return summary
 
     def get_change_impact_context(self, filepaths: list[str]) -> str:
         """Return persistent summaries for changed files and their dependents."""
+        self._refresh_stale_contexts()
         impacted: set[str] = set()
         for filepath in filepaths:
             absolute = self._absolute_path(filepath)
@@ -443,11 +455,45 @@ class ContextManager:
                     for key, value in item.items()
                     if key in FileContext.__dataclass_fields__
                 })
-                self._file_contexts[context.path] = context
+                try:
+                    Path(context.path).resolve().relative_to(Path(self.working_dir))
+                except (OSError, ValueError):
+                    continue
+                if Path(context.path).is_file():
+                    self._file_contexts[context.path] = context
             for path, dependencies in payload.get("dependencies", {}).items():
                 self._dependency_graph[path].update(str(item) for item in dependencies)
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return
+
+    def _refresh_stale_contexts(self) -> None:
+        changed = False
+        for path, context in list(self._file_contexts.items()):
+            candidate = Path(path)
+            try:
+                stat = candidate.stat()
+            except OSError:
+                self._file_contexts.pop(path, None)
+                self._dependency_graph.pop(path, None)
+                for dependencies in self._dependency_graph.values():
+                    dependencies.discard(path)
+                changed = True
+                continue
+            if stat.st_size > 2_000_000:
+                continue
+            try:
+                content = candidate.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()
+            if digest != context.content_sha256:
+                self.summarize_file(path, content)
+                self.track_file_imports(path, content)
+            elif stat.st_mtime_ns != context.modified_ns:
+                context.modified_ns = stat.st_mtime_ns
+                changed = True
+        if changed:
+            self._save_cache()
 
     def _save_cache(self) -> None:
         payload = {
@@ -470,16 +516,26 @@ class ContextManager:
     def _resolve_import(self, source: str, imported: str) -> str:
         root = Path(self.working_dir)
         source_path = Path(source)
+        source_suffix = source_path.suffix.lower()
         candidates: list[Path] = []
-        if imported.startswith("."):
-            candidates.append((source_path.parent / imported).resolve())
-        elif source_path.suffix.lower() in (".py", ".pyi", ".pyx"):
+        if source_suffix in (".py", ".pyi", ".pyx") and imported.startswith("."):
+            leading_dots = len(imported) - len(imported.lstrip("."))
+            base = source_path.parent
+            for _ in range(max(0, leading_dots - 1)):
+                base = base.parent
+            module = imported.lstrip(".").replace(".", "/")
+            candidates.extend([base / f"{module}.py", base / module / "__init__.py"])
+        elif source_suffix in (".py", ".pyi", ".pyx"):
             module = imported.lstrip(".").replace(".", "/")
             candidates.extend([root / f"{module}.py", root / module / "__init__.py"])
         elif imported.startswith(("./", "../")):
             base = source_path.parent / imported
             candidates.extend(
-                [base, *(base.with_suffix(ext) for ext in (".ts", ".tsx", ".js", ".jsx"))]
+                [
+                    base,
+                    *(base.with_suffix(ext) for ext in (".ts", ".tsx", ".js", ".jsx")),
+                    *(base / f"index{ext}" for ext in (".ts", ".tsx", ".js", ".jsx")),
+                ]
             )
         for candidate in candidates:
             try:
@@ -751,7 +807,11 @@ class ContextManager:
 
         elif suffix in (".js", ".jsx", ".ts", ".tsx", ".mjs"):
             # JS/TS imports
-            for match in re.finditer(r"(?:import|require)\s*\(?['\"]([^'\"]+)['\"]", content):
+            for match in re.finditer(
+                r"(?:import\s+(?:[^'\"]+?\s+from\s+)?|require\s*\(\s*)"
+                r"['\"]([^'\"]+)['\"]",
+                content,
+            ):
                 imports.append(match.group(1))
 
         elif suffix in (".rs",):

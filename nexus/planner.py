@@ -373,6 +373,21 @@ def estimate_difficulty(user_input: str, intent: IntentType) -> Difficulty:
     text = user_input.lower()
     word_count = len(text.split())
 
+    # Product-scale requests remain massive even when the prompt is only a few
+    # words. Brand analogies and "whole startup" language otherwise bypassed
+    # planning entirely because the old classifier depended on word count.
+    massive_product_signals = (
+        r"\b(shopify|salesforce|sap|netflix|uber|airbnb)\b",
+        r"\b(erp|marketplace|distributed system|multi[ -]?tenant platform)\b",
+        r"\b(build|create|make)\s+(?:me\s+|my\s+)?(?:an?\s+)?(?:whole|entire|complete)\s+"
+        r"(?:startup|saas|platform|product|system)\b",
+        r"\bproduction[ -]?grade\s+(?:saas|platform|product|system)\b",
+    )
+    if intent == IntentType.BUILD and any(
+        re.search(pattern, text, re.IGNORECASE) for pattern in massive_product_signals
+    ):
+        return Difficulty.MASSIVE
+
     # Simple heuristics
     if intent in (IntentType.CHAT, IntentType.EXPLAIN, IntentType.SEARCH):
         return Difficulty.TRIVIAL if word_count < 15 else Difficulty.SIMPLE
@@ -695,7 +710,10 @@ class PlanningEngine:
             if "test" in step.title.lower() or "verify" in step.title.lower():
                 step.checks = list(dict.fromkeys([*step.checks, *verification]))
             step.risk = self._step_risk(step, intent)
-            step.retry_limit = 1 if step.risk == "high" else 2
+            if difficulty == Difficulty.MASSIVE:
+                step.retry_limit = 2 if step.risk == "high" else 3
+            else:
+                step.retry_limit = 1 if step.risk == "high" else 2
             step.max_tool_calls = {
                 Difficulty.SIMPLE: 5,
                 Difficulty.MODERATE: 10,
@@ -719,14 +737,24 @@ class PlanningEngine:
             subsystem_contracts=blueprint.get("subsystem_contracts", []),
             integration_plan=blueprint.get("integration_plan", {}),
             deployment_plan=blueprint.get("deployment_plan", {}),
-            retry_policy={"per_task": 2, "total_repairs": 5},
+            retry_policy={
+                "per_task": 3 if difficulty == Difficulty.MASSIVE else 2,
+                "total_repairs": (
+                    max(8, len(steps) // 2)
+                    if difficulty == Difficulty.MASSIVE
+                    else 5
+                ),
+            },
             budgets={
-                "max_tool_calls": {
-                    Difficulty.SIMPLE: 15,
-                    Difficulty.MODERATE: 35,
-                    Difficulty.COMPLEX: 75,
-                    Difficulty.MASSIVE: 150,
-                }.get(difficulty, 15),
+                "max_tool_calls": (
+                    max(300, sum(step.max_tool_calls + 1 for step in steps))
+                    if difficulty == Difficulty.MASSIVE
+                    else {
+                        Difficulty.SIMPLE: 15,
+                        Difficulty.MODERATE: 35,
+                        Difficulty.COMPLEX: 75,
+                    }.get(difficulty, 15)
+                ),
                 "max_hosted_calls": None,
                 "max_prompt_tokens": None,
                 "max_completion_tokens": None,
@@ -741,47 +769,152 @@ class PlanningEngine:
     @staticmethod
     def _build_system_blueprint(goal: str, skills: list[str]) -> dict:
         """Create the durable product-to-deployment hierarchy for a massive build."""
+        normalized_goal = goal.lower()
         subsystem_specs = [
             (
                 "identity-and-tenancy",
                 ["authentication", "authorization", "tenant isolation", "audit identity"],
                 ["identity API", "authorization policy", "tenant context"],
+                [],
             ),
             (
                 "core-domain",
                 ["domain rules", "state transitions", "transaction boundaries"],
                 ["domain services", "domain events", "stable error taxonomy"],
+                ["identity-and-tenancy"],
             ),
             (
                 "data-platform",
                 ["schema", "migrations", "indexes", "backup and restore"],
                 ["versioned migrations", "repositories", "data retention rules"],
+                ["core-domain"],
             ),
-            (
+        ]
+
+        domain_specs = []
+        if re.search(r"\b(shopify|commerce|e-?commerce|storefront|marketplace)\b", normalized_goal):
+            domain_specs.extend(
+                [
+                    (
+                        "catalog-and-pricing",
+                        ["products", "variants", "collections", "pricing", "promotions"],
+                        ["catalog API", "price calculation contract", "search projection"],
+                        ["core-domain", "data-platform"],
+                    ),
+                    (
+                        "inventory-and-fulfillment",
+                        ["stock ledger", "reservations", "warehouses", "shipping", "returns"],
+                        ["inventory ledger", "fulfillment workflow", "return contract"],
+                        ["core-domain", "data-platform"],
+                    ),
+                    (
+                        "checkout-orders-and-payments",
+                        ["carts", "checkout", "orders", "tax", "payments", "refunds"],
+                        ["idempotent checkout", "order state machine", "payment adapter"],
+                        [
+                            "identity-and-tenancy",
+                            "catalog-and-pricing",
+                            "inventory-and-fulfillment",
+                            "data-platform",
+                        ],
+                    ),
+                    (
+                        "merchant-operations",
+                        ["merchant onboarding", "admin workflows", "analytics", "support"],
+                        ["merchant console contract", "operational reports", "support audit trail"],
+                        [
+                            "identity-and-tenancy",
+                            "catalog-and-pricing",
+                            "inventory-and-fulfillment",
+                            "checkout-orders-and-payments",
+                        ],
+                    ),
+                ]
+            )
+        elif re.search(r"\b(erp|manufactur|procurement|warehouse|supply chain)\b", normalized_goal):
+            domain_specs.extend(
+                [
+                    (
+                        "master-data",
+                        ["organizations", "items", "vendors", "customers", "units and taxes"],
+                        ["master-data API", "validation rules", "import/export contract"],
+                        ["identity-and-tenancy", "data-platform"],
+                    ),
+                    (
+                        "inventory-and-warehouses",
+                        ["stock ledger", "lots", "transfers", "counts", "valuation"],
+                        ["immutable stock ledger", "warehouse workflows", "valuation reports"],
+                        ["master-data"],
+                    ),
+                    (
+                        "procurement-and-sales",
+                        ["purchase orders", "receipts", "sales orders", "shipments", "returns"],
+                        ["procure-to-pay workflow", "order-to-cash workflow", "approval policy"],
+                        ["master-data", "inventory-and-warehouses"],
+                    ),
+                    (
+                        "finance-and-reporting",
+                        ["invoices", "payments", "tax", "journal exports", "operational reporting"],
+                        ["financial posting contract", "reconciliation", "auditable reports"],
+                        ["procurement-and-sales", "data-platform"],
+                    ),
+                ]
+            )
+        elif re.search(r"\b(saas|subscription|startup|platform)\b", normalized_goal):
+            domain_specs.extend(
+                [
+                    (
+                        "subscriptions-and-billing",
+                        ["plans", "entitlements", "metering", "invoices", "payment recovery"],
+                        ["billing contract", "entitlement policy", "payment adapter"],
+                        ["identity-and-tenancy", "data-platform"],
+                    ),
+                    (
+                        "administration-and-reporting",
+                        ["tenant administration", "support", "audit", "usage analytics"],
+                        ["admin API", "audit reports", "support workflows"],
+                        ["subscriptions-and-billing"],
+                    ),
+                ]
+            )
+
+        domain_names = [item[0] for item in domain_specs]
+        subsystem_specs.extend(domain_specs)
+        subsystem_specs.extend(
+            [
+                (
                 "api-and-integrations",
                 ["versioned API", "validation", "idempotency", "external adapters"],
                 ["API contract", "integration adapters", "contract tests"],
-            ),
-            (
+                    ["identity-and-tenancy", "core-domain", "data-platform", *domain_names],
+                ),
+                (
                 "user-experience",
                 ["primary workflows", "responsive UI", "accessibility", "error recovery"],
                 ["routed UI", "typed client", "end-to-end user journeys"],
-            ),
-            (
+                    ["identity-and-tenancy", "api-and-integrations"],
+                ),
+                (
                 "async-workflows",
                 ["jobs", "queues", "retries", "dead-letter recovery"],
                 ["job contracts", "retry policy", "operational controls"],
-            ),
-            (
+                    ["core-domain", "data-platform", *domain_names],
+                ),
+                (
                 "platform-and-observability",
                 ["configuration", "secrets", "telemetry", "health", "deployment"],
                 ["deployment manifests", "dashboards", "runbooks", "rollback procedure"],
-            ),
-        ]
+                    [
+                        "identity-and-tenancy",
+                        "api-and-integrations",
+                        "user-experience",
+                        "async-workflows",
+                    ],
+                ),
+            ]
+        )
         contracts = []
-        previous = ""
-        for name, responsibilities, outputs in subsystem_specs:
-            dependencies = [previous] if previous else []
+        for name, responsibilities, outputs, dependencies in subsystem_specs:
             contracts.append(
                 {
                     "name": name,
@@ -800,12 +933,12 @@ class PlanningEngine:
                     ],
                 }
             )
-            previous = name
         return {
             "product_spec": {
                 "objective": goal.strip(),
                 "delivery_mode": "single-prompt long-horizon execution",
                 "required_capabilities": list(dict.fromkeys(skills)),
+                "domain_modules": domain_names,
                 "user_outcomes": [
                     "critical user journeys work end to end",
                     "administrators can operate and recover the product",
@@ -875,8 +1008,14 @@ class PlanningEngine:
                 contract_outputs=["architecture decisions", "versioned subsystem contracts"],
             ),
         ]
+        subsystem_step_ids: dict[str, int] = {}
         for contract in blueprint.get("subsystem_contracts", []):
             step_id = len(steps)
+            dependencies = [
+                subsystem_step_ids[name]
+                for name in contract.get("dependencies", [])
+                if name in subsystem_step_ids
+            ]
             steps.append(
                 PlanStep(
                     id=step_id,
@@ -894,13 +1033,14 @@ class PlanningEngine:
                         "edit_file",
                         "run_process",
                     ],
-                    depends_on=[step_id - 1],
+                    depends_on=dependencies or [1],
                     acceptance_criteria=list(contract.get("acceptance_criteria", [])),
                     checks=[f"{contract['name']} contract tests pass"],
                     contract_inputs=list(contract.get("inputs", [])),
                     contract_outputs=list(contract.get("outputs", [])),
                 )
             )
+            subsystem_step_ids[contract["name"]] = step_id
         integration_id = len(steps)
         steps.extend(
             [
@@ -910,7 +1050,7 @@ class PlanningEngine:
                     description="Connect subsystem contracts and exercise critical journeys across real boundaries.",
                     phase="integration",
                     tools_needed=["repo_impact", "edit_file", "run_process", "browser_check"],
-                    depends_on=[integration_id - 1],
+                    depends_on=list(subsystem_step_ids.values()) or [1],
                     contract_outputs=["integrated system", "end-to-end evidence"],
                 ),
                 PlanStep(

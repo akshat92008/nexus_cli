@@ -65,7 +65,13 @@ def main() -> int:
         )
 
         dist = root / "dist"
-        run([python, "-m", "build", "--outdir", str(dist)], cwd=build_src)
+        # Dependencies were already installed from the lockfile. Reusing that
+        # environment keeps the release gate deterministic and prevents an
+        # isolated build environment from reaching a package index mid-gate.
+        run(
+            [python, "-m", "build", "--no-isolation", "--outdir", str(dist)],
+            cwd=build_src,
+        )
 
         wheels = sorted(dist.glob("nexusai_cli-*.whl"))
         if len(wheels) != 1:
