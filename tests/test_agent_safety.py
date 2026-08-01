@@ -10,6 +10,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import nexus.history as nexus_history
 from nexus.agent import Agent
+from nexus.policy import get_mode_policy
+from nexus.sandbox import SandboxBackend, SandboxRunner
 
 
 def _agent_for_tmp_path(tmp_path, monkeypatch) -> Agent:
@@ -67,6 +69,31 @@ def test_explicit_confirmation_executes_only_the_pending_call(tmp_path, monkeypa
     assert not target.exists()
     assert not expired_success
     assert "expired" in expired
+
+
+def test_autonomous_mode_fails_closed_for_dangerous_command_without_native_sandbox(
+    tmp_path, monkeypatch
+):
+    target = tmp_path / "must_remain"
+    target.mkdir()
+    monkeypatch.setattr(SandboxRunner, "_backend_cache", SandboxBackend.RESTRICTED)
+    agent = Agent(
+        model_key="nova3b",
+        working_dir=str(tmp_path),
+        permission_mode="acceptEdits",
+        mode_policy=get_mode_policy("autonomous"),
+    )
+
+    pending, pending_success = agent._execute_tool_with_safety(
+        "run_command", {"command": "rm -rf ./must_remain"}
+    )
+    confirmed, confirmed_success = agent.confirm_pending_operation("danger-0001")
+
+    assert not pending_success
+    assert "PENDING_CONFIRMATION" in pending
+    assert not confirmed_success
+    assert "No supported OS sandbox" in confirmed
+    assert target.is_dir()
 
 
 def test_cancelled_dangerous_call_never_executes(tmp_path, monkeypatch):

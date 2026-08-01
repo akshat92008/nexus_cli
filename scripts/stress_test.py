@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 import concurrent.futures
-import subprocess
 import os
-import time
+import subprocess
 import sys
+import time
 from collections import Counter
 from pathlib import Path
 
+
 def run_test(cmd, env=None):
-    import tempfile
     import shutil
+    import tempfile
     try:
         with tempfile.TemporaryDirectory(prefix="nexus-stress-") as temp_dir:
             temp_path = Path(temp_dir)

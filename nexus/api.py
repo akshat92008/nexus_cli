@@ -20,7 +20,7 @@ DEFAULT_GROQ_TIMEOUT = float(os.environ.get("NEXUS_GROQ_TIMEOUT", "60.0"))
 
 # Groq model mappings for ultimate fallback (must support tool calling if used)
 GROQ_MODEL_MAP = {
-    "meta/llama-3.3-70b-instruct": "llama-3.3-70b-versatile",
+    "meta/llama-3.3-70b-instruct": "openai/gpt-oss-120b",
     "deepseek-ai/deepseek-v4-pro": "openai/gpt-oss-120b",
     "deepseek-ai/deepseek-v4-flash": "openai/gpt-oss-120b",
     "z-ai/glm-5.2": "openai/gpt-oss-120b",

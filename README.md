@@ -6,7 +6,7 @@ work; local Nova V11 executes suitable atomic changes through Ollama. Nexus
 owns repository understanding, permissions, workspaces, tools, tests, repair,
 evidence, budgets, rollback, and recovery.
 
-Version 3.0 is the single integrated runtime described by the product
+Version 3.1.1 is the launch-hardening runtime described by the product
 specification:
 
 - requests become acceptance criteria and dependency-aware execution
@@ -205,19 +205,19 @@ For contributors, the deterministic release gate is:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e ".[dev]"
+.venv/bin/pip install -e ".[dev,browser]"
 .venv/bin/python scripts/run_release_gate.py
 ```
 
 The separate `scripts/run_release_e2e.py` harness makes real model calls and is
-therefore an opt-in integration benchmark, not part of offline CI.
+opt-in for pull requests and mandatory for version-tag release artifacts.
 
 The public benchmark manifest is versioned and shell-free:
 
 ```bash
 nexus benchmark --manifest benchmarks/core.json --dry-run
 nexus benchmark --manifest benchmarks/core.json \
-  --output benchmarks/results/nexus-3.0.0.json
+  --output benchmarks/results/nexus-3.1.1.json
 ```
 
 ## Durable runs and recovery

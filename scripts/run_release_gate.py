@@ -3,10 +3,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -21,13 +24,15 @@ def run(command: list[str], *, cwd: Path = REPO, env: dict[str, str] | None = No
 
 def main() -> int:
     python = sys.executable
-    run([python, "-m", "ruff", "check", "nexus", "tests"])
+    commit_sha = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=REPO, text=True
+    ).strip()
+    run([python, "-m", "ruff", "check", "nexus", "tests", "scripts"])
     run([python, "-m", "pytest", "-q"])
     run([python, "-m", "compileall", "-q", "nexus", "tests"])
 
     with tempfile.TemporaryDirectory(prefix="nexus-release-gate-") as temp:
         root = Path(temp)
-        import shutil
         # Copy the whole repo to the temp directory so concurrent builds don't collide
         build_src = root / "src_copy"
         shutil.copytree(REPO, build_src, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", "dist", "build", "*.egg-info", "legacy", "verification_evidence", "coding_agent", "bakeoff", "runs"))
@@ -38,6 +43,25 @@ def main() -> int:
         wheels = sorted(dist.glob("nexusai_cli-*.whl"))
         if len(wheels) != 1:
             raise RuntimeError(f"expected one nexusai-cli wheel, found: {wheels}")
+
+        expected_members = {
+            path.relative_to(build_src).as_posix()
+            for path in (build_src / "nexus").rglob("*")
+            if path.is_file()
+            and (
+                path.suffix == ".py"
+                or "nexus/webapp/static" in path.relative_to(build_src).as_posix()
+            )
+        }
+        with zipfile.ZipFile(wheels[0]) as archive:
+            packaged_members = set(archive.namelist())
+        missing_members = sorted(expected_members - packaged_members)
+        if missing_members:
+            raise RuntimeError(
+                "wheel is missing source files from the tested commit: "
+                + ", ".join(missing_members)
+            )
+        wheel_sha256 = hashlib.sha256(wheels[0].read_bytes()).hexdigest()
 
         installed = root / "installed"
         run(
@@ -69,7 +93,7 @@ def main() -> int:
                     "assert create_app('release-smoke').routes; "
                     "dist = importlib.metadata.distribution('nexusai-cli'); "
                     "assert any(ep.name == 'nexus' for ep in dist.entry_points); "
-                    "assert nexus.__version__ == '3.1.0'"
+                    "assert nexus.__version__ == dist.version"
                 ),
             ],
             cwd=root,
@@ -105,6 +129,13 @@ def main() -> int:
             ],
             cwd=root,
             env=doctor_env,
+        )
+
+        print(
+            "\nRelease provenance: "
+            f"commit={commit_sha} wheel={wheels[0].name} sha256={wheel_sha256} "
+            f"packaged_source_files={len(expected_members)}",
+            flush=True,
         )
 
     print("\nNexus release gate passed.", flush=True)

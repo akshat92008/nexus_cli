@@ -377,6 +377,7 @@ class RunLedger:
         status: RunStatus,
         *,
         objective: str,
+        outcome: str = "",
         criteria: list[CriterionResult] | None = None,
         files_changed: list[str] | None = None,
         checks: list[dict[str, Any]] | None = None,
@@ -398,6 +399,7 @@ class RunLedger:
             "session_id": self.session_id,
             "turn_id": self.turn_id,
             "status": status.value,
+            "outcome": outcome or status.value,
             "objective": objective,
             "acceptance_criteria": [
                 {

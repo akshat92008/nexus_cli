@@ -15,11 +15,12 @@ Run it and preserve the result:
 ```bash
 nexus benchmark \
   --manifest benchmarks/core.json \
-  --output benchmarks/results/nexus-3.0.0.json
+  --output benchmarks/results/nexus-3.1.1.json
 ```
 
 Verification commands are JSON argv arrays, never shell strings. A passing
-result requires a successful Nexus exit, deterministic checks, permitted file
-scope, expected mutations, and a verified or partially verified run report.
+result requires a zero Nexus exit, deterministic checks, permitted file scope,
+expected mutations, and a fully `VERIFIED` internal run report. External and
+internal outcomes remain separate in the result schema.
 Provider-dependent results are not committed as product claims until the
 manifest, model configuration, environment, and raw result are published.

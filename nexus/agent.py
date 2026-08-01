@@ -834,6 +834,8 @@ class Agent:
         self,
         content: str,
         events: list[dict[str, Any]] | None = None,
+        *,
+        status_override: RunStatus | None = None,
     ) -> dict[str, Any]:
         """Evaluate evidence and write a machine-readable final report."""
         if not self.run_ledger.turn_dir:
@@ -890,13 +892,15 @@ class Agent:
         def matching_checks(criterion: str) -> list[dict[str, Any]]:
             lowered = criterion.lower()
             if "lint" in lowered or "type" in lowered:
-                target_types = {"lint", "type_check"}
+                target_types = {"lint", "type_check", "build"}
             elif "security" in lowered or "vulnerab" in lowered:
                 target_types = {"security"}
             elif "build" in lowered or "compile" in lowered:
                 target_types = {"build"}
             elif "test" in lowered or "regression" in lowered or "coverage" in lowered:
                 target_types = {"test", "browser", "database", "api"}
+            elif "run the project" in lowered or "works" in lowered or "smoke" in lowered:
+                target_types = {"test", "build", "browser", "api"}
             else:
                 return []
             return [
@@ -972,7 +976,9 @@ class Agent:
             for item in (events or [])
             if item.get("type") == "tool_call" and not item.get("success")
         ]
-        if (content or "").strip().upper().startswith("BLOCKED:"):
+        if status_override is not None:
+            run_status = status_override
+        elif (content or "").strip().upper().startswith("BLOCKED:"):
             run_status = RunStatus.BLOCKED
         elif self._pending_edits or self._pending_confirmations:
             run_status = RunStatus.AWAITING_APPROVAL
@@ -1009,9 +1015,56 @@ class Agent:
                 f"{len(self._pending_confirmations)} protected operation(s) still require approval."
             )
 
+        if run_status == RunStatus.VERIFIED:
+            outcome = "COMPLETED_VERIFIED"
+        elif run_status == RunStatus.BLOCKED:
+            outcome = "BLOCKED_BY_POLICY"
+        elif run_status == RunStatus.AWAITING_APPROVAL:
+            outcome = "AWAITING_APPROVAL"
+        elif run_status == RunStatus.ROLLED_BACK:
+            outcome = "ROLLED_BACK"
+        elif run_status == RunStatus.FAILED:
+            outcome = "FAILED"
+        elif changes:
+            outcome = "CHANGES_APPLIED_UNVERIFIED"
+        elif run_status == RunStatus.PARTIALLY_VERIFIED:
+            outcome = "COMPLETED_PARTIALLY_VERIFIED"
+        else:
+            outcome = "NO_CHANGES"
+
+        turn_dir = self.run_ledger.turn_dir
+
+        def jsonl_count(filename: str) -> int:
+            if turn_dir is None:
+                return 0
+            try:
+                return sum(
+                    1
+                    for line in (turn_dir / filename).read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                )
+            except OSError:
+                return 0
+
+        def event_kind_count(kind: str) -> int:
+            if turn_dir is None:
+                return 0
+            try:
+                records = [
+                    json.loads(line)
+                    for line in (turn_dir / "events.jsonl")
+                    .read_text(encoding="utf-8")
+                    .splitlines()
+                    if line.strip()
+                ]
+            except (OSError, json.JSONDecodeError):
+                return 0
+            return sum(item.get("kind") == kind for item in records)
+
         report = self.run_ledger.finalize(
             run_status,
             objective=self._active_objective,
+            outcome=outcome,
             criteria=results,
             files_changed=[item["filepath"] for item in changes],
             checks=checks,
@@ -1064,6 +1117,16 @@ class Agent:
                 "local_intern_mode": self.local_intern_mode,
                 "local_intern_enabled": self.local_intern_enabled,
                 "plugins_enabled": self._plugins_enabled,
+                "model_calls": jsonl_count("model_calls.jsonl"),
+                "tool_calls": jsonl_count("tool_calls.jsonl"),
+                "tests_executed": len(verification_records),
+                "criteria_satisfied": sum(
+                    item.status == CriterionStatus.SATISFIED for item in results
+                ),
+                "criteria_unverified": sum(
+                    item.status == CriterionStatus.UNVERIFIED for item in results
+                ),
+                "rollbacks": event_kind_count("rollback"),
             },
         )
         return report
@@ -1897,6 +1960,21 @@ class Agent:
                 False,
             )
 
+        # Autonomous production presets never execute a dangerous or networked
+        # command through the policy-only restricted subprocess fallback. Safe,
+        # local verification commands remain portable on hosts without bwrap or
+        # sandbox-exec; elevated operations fail closed unless native isolation
+        # is actually available.
+        if (
+            name in ("run_command", "run_process", "process_run")
+            and self.mode_policy.require_os_isolation
+            and (
+                bool(args.get("network"))
+                or bool(safety_check and safety_check.level == SafetyLevel.DANGEROUS)
+            )
+        ):
+            args["require_os_isolation"] = True
+
         # ── 5. Execute
         result = self._dispatch_tool_execution(name, args)
 
@@ -1913,6 +1991,7 @@ class Agent:
         # ── Verified-completion evidence
         if success and name in mutation_tools:
             verified, detail, artifacts = verify_mutation(name, args, self.working_dir)
+            code_checks = []
             code_failures = []
             if verified:
                 candidate_actions = []
@@ -1942,6 +2021,17 @@ class Agent:
                     detail += (
                         f" | rollback={'succeeded' if rollback_ok else 'failed'}: {rollback_output}"
                     )
+            if code_checks:
+                self.evidence.append(
+                    kind="verification_check",
+                    claim="generated code compiler and syntax validation",
+                    status="verified" if not code_failures else "failed",
+                    tool="generated_code_validator",
+                    command="generated-code-validator",
+                    exit_code=0 if not code_failures else 1,
+                    raw_output="\n".join(check.format() for check in code_checks),
+                    metadata={"check_type": "build"},
+                )
             self.evidence.append(
                 kind="file_mutation",
                 claim=f"{name} persisted the requested change",
@@ -2827,7 +2917,6 @@ class Agent:
         breakdown = self._guard_completion_claims(breakdown)
         self.messages.append({"role": "assistant", "content": breakdown})
         self._auto_save()
-        self._finish_managed_run(breakdown, events)
         return breakdown, events
 
     def _run_nova_turn(self, user_input: str, emit_ui: bool = True) -> tuple[str, list[dict]]:
@@ -2857,18 +2946,27 @@ class Agent:
             content = f"Nova guardrails blocked the output: {e}"
             if emit_ui:
                 ui.print_error(content)
-            self.messages.append({"role": "assistant", "content": content})
-            self._auto_save()
-            self._finish_managed_run(content, events)
-            return content, events
+            if self.messages and self.messages[-1].get("role") == "user":
+                self.messages.pop()
+            raise RuntimeError(content) from e
         except Exception as e:
             content = f"Nova backend error: {e}"
             if emit_ui:
                 ui.print_error(content)
-            self.messages.append({"role": "assistant", "content": content})
-            self._auto_save()
-            self._finish_managed_run(content, events)
-            return content, events
+            if self.messages and self.messages[-1].get("role") == "user":
+                self.messages.pop()
+            raise RuntimeError(content) from e
+
+        self.routing_stats["nova_tasks"] += 1
+        self.run_ledger.append_model_call(
+            role="intern",
+            model=self.model_cfg.get("ollama_model", "nova_codex"),
+            status="completed" if nova_result.raw_output else "failed",
+            detail=(
+                f"guarded proposals={len(nova_result.proposals)}; "
+                f"declared_test={bool(nova_result.test_command)}"
+            ),
+        )
 
         if emit_ui and nova_result.raw_output:
             ui.console.print(nova_result.raw_output)
@@ -2887,8 +2985,17 @@ class Agent:
                 "guardrail_output": nova_result.guardrail_output,
             }
         )
+        events.append(
+            {
+                "type": "model_turn",
+                "node": "nova",
+                "proposals": len(nova_result.proposals),
+                "declared_test": bool(nova_result.test_command),
+            }
+        )
 
         mutated = False
+        proposal_failed = False
         for proposal in nova_result.proposals:
             args = dict(proposal.args)
             display_args = {k: v for k, v in args.items() if k != "_nova_guardrail"}
@@ -2915,21 +3022,41 @@ class Agent:
                 "replace_file_content",
                 "multi_replace_file_content",
                 "write_to_file",
-                "run_command",
             }:
                 mutated = True
+            if not success:
+                proposal_failed = True
 
-        if mutated:
-            report = self.run_verification()
-            if emit_ui:
-                ui.console.print(report)
+        test_failed = False
+        if mutated and not proposal_failed and nova_result.test_command:
+            test_result, test_success, evidence_id = self._run_declared_test_command(
+                nova_result.test_command,
+                source="nova",
+                emit_ui=emit_ui,
+            )
+            test_failed = not test_success
+            events.append(
+                {
+                    "type": "tool_call",
+                    "name": "run_command",
+                    "args": {"command": nova_result.test_command},
+                    "result": test_result,
+                    "success": test_success,
+                    "node": "nova-declared-test",
+                    "evidence_id": evidence_id,
+                }
+            )
 
-        final_content = self._guard_completion_claims(nova_result.assistant_text)
+        final_text = nova_result.assistant_text
+        if proposal_failed:
+            final_text += "\n\nOne or more guarded file operations failed; completion is unverified."
+        if test_failed:
+            final_text += "\n\nThe model-declared acceptance test failed; completion is unverified."
+        final_content = self._guard_completion_claims(final_text)
         if emit_ui:
             ui.print_response_complete()
         self.messages.append({"role": "assistant", "content": final_content})
         self._auto_save()
-        self._finish_managed_run(final_content, events)
         return final_content, events
 
     # ── Subagent Integration ─────────────────────────────────────────────
@@ -2965,6 +3092,44 @@ class Agent:
             check_types = [CheckType(c) for c in checks if c in valid]
         report = self._record_verification_report(self.verifier.run_all(check_types))
         return report.format_report()
+
+    def _run_declared_test_command(
+        self,
+        command: str,
+        *,
+        source: str,
+        emit_ui: bool = False,
+    ) -> tuple[str, bool, str]:
+        """Execute a model-declared test through normal policy and persist test evidence."""
+        if emit_ui:
+            ui.print_info(f"Running {source}-declared acceptance test: {command}")
+        output, success = self._execute_tool_with_safety(
+            "run_command",
+            {"command": command, "cwd": self.working_dir},
+        )
+        exit_code = command_exit_code(output)
+        verified = bool(success and exit_code == 0)
+        record = self.evidence.append(
+            kind="verification_check",
+            claim=f"{source}-declared acceptance test",
+            status="verified" if verified else "failed",
+            tool="model_declared_test",
+            command=command,
+            exit_code=exit_code,
+            raw_output=output,
+            metadata={"check_type": "test", "source": source},
+        )
+        if self.run_ledger.turn_dir:
+            self.run_ledger.store_artifact(
+                "tests",
+                f"model-declared-{source}.txt",
+                (
+                    f"command: {command}\n"
+                    f"status: {'passed' if verified else 'failed'}\n"
+                    f"exit_code: {exit_code}\n\n{output}\n"
+                ),
+            )
+        return output, verified, record.id
 
     def _record_verification_report(self, report):
         """Mirror deterministic project checks into the evidence trail."""

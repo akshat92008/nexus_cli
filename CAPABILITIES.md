@@ -110,7 +110,7 @@ This report separates model generation ability from Nexus enforcement. “Guarde
 
 ## Current Claude Code parity boundary
 
-Nexus 3.0 covers the complete open runtime described in its product
+Nexus 3.1.1 covers the open runtime described in its product
 specification: guarded model orchestration, persistent repository
 intelligence, typed task contracts and tools, automatic workspaces, optional
 native sandboxing, bounded repair and review, behavioral verification,
@@ -127,7 +127,7 @@ cloud, mobile, IDE, and Remote Control services are not Nexus features.
 
 ## Raw verification record
 
-- Version 3.0 deterministic Python suite and release-gate totals are recorded
+- Version 3.1.1 deterministic Python suite and release-gate totals are recorded
   by the tagged CI run and benchmark JSON rather than hard-coded before CI.
 - The release gate also runs Ruff, byte-compilation, sdist/wheel builds, an
   isolated wheel-target install, packaged Nova and web backend imports,

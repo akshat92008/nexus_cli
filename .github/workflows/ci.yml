@@ -27,10 +27,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
-          cache: pip
 
-      - name: Install project and release tools
-        run: python -m pip install -e ".[dev]" "setuptools>=68.0" wheel
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install the locked project and release tools
+        run: uv sync --locked --extra dev --extra browser
 
       - name: Run release gate
-        run: python scripts/run_release_gate.py
+        run: uv run python scripts/run_release_gate.py

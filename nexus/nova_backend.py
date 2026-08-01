@@ -60,6 +60,7 @@ class NovaBackendResult:
     raw_output: str
     assistant_text: str
     guardrail_output: str
+    test_command: str = ""
     proposals: list[NovaToolProposal] = field(default_factory=list)
 
 
@@ -88,6 +89,7 @@ class NovaPipelineBackend:
             raw_parts: list[str] = []
             response_parts: list[str] = []
             proposals: list[NovaToolProposal] = []
+            test_command = ""
             logs: list[str] = []
             intern = InternNode(model=self.model)
             guardrail = TaskGuardrail(max_reroutes=1)
@@ -147,6 +149,7 @@ class NovaPipelineBackend:
                         "disk replay, and compiler checks passed"
                     ]
                 )
+                test_command = response.test_command
                 try:
                     for file_action in response.files:
                         proposals.extend(self._file_action_to_tool_calls(file_action, summary))
@@ -170,6 +173,7 @@ class NovaPipelineBackend:
                 raw_output="\n\n".join(raw_parts).strip(),
                 assistant_text=assistant_text,
                 guardrail_output="\n".join(logs).strip(),
+                test_command=test_command,
                 proposals=proposals,
             )
 

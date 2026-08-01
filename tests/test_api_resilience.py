@@ -39,7 +39,7 @@ def test_groq_model_resolution():
     """Verify model mapping to Groq models for tool calling compatibility."""
     client = NvidiaClient()
     assert client.resolve_groq_model("z-ai/glm-5.2") == "openai/gpt-oss-120b"
-    assert client.resolve_groq_model("meta/llama-3.3-70b-instruct") == "llama-3.3-70b-versatile"
+    assert client.resolve_groq_model("meta/llama-3.3-70b-instruct") == "openai/gpt-oss-120b"
     assert client.resolve_groq_model("deepseek-ai/deepseek-v4-pro") == "openai/gpt-oss-120b"
     assert client.resolve_groq_model("unknown-model") == DEFAULT_GROQ_MODEL
 

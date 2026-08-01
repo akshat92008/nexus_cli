@@ -6,6 +6,35 @@ All notable changes to NexusAI CLI are documented here.
 
 No changes yet.
 
+## [3.1.1] - 2026-08-01
+
+Launch-readiness reliability release.
+
+### Fixed
+
+- Direct Nova runs execute model-declared acceptance tests through the normal
+  policy sandbox and persist their exit code, raw output, and evidence.
+- Pipeline completion is derived from the durable run outcome; partial or
+  unverified work can no longer set `PipelineResult.success` to true.
+- Nova's generic provider adapter now exposes the common streaming and
+  non-streaming response contract instead of accessing a nonexistent field.
+- Benchmarks require both Nexus `VERIFIED` status and external checks, count
+  local model calls, and preserve internal/external outcomes separately.
+- Autonomous dangerous and networked commands fail closed when native OS
+  isolation is unavailable.
+- Repair attempts require new mutations followed by passing deterministic
+  verification; prior mutation evidence cannot make a repair look successful.
+- Groq fallback routing no longer selects the scheduled-for-retirement
+  `llama-3.3-70b-versatile` model.
+
+### Release engineering
+
+- Removed stale committed wheels, source archives, benchmark claims, and
+  historical local run artifacts.
+- Added a locked dependency graph, exact wheel-content validation, and a
+  tag-release workflow that requires a live provider E2E gate before artifacts
+  are published.
+
 ## [3.0.0] - 2026-07-29
 
 Single integrated Nexus software-engineering runtime.

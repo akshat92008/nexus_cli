@@ -10,6 +10,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+*.whl
+*.zip
 *.egg
 .eggs/
 
@@ -38,6 +40,12 @@ Thumbs.db
 .tox/
 coverage/
 htmlcov/
+verification_evidence/
+benchmarks/results/
+benchmarks/results.json
+tmp_run/
+nexus_cli_v*_release_bundle/
+nexus_cli_v*_release_bundle.zip
 
 # Node (if any)
 node_modules/

@@ -2,8 +2,14 @@
 
 import json
 
-from nexus.nova_backend import PROMPT_PATH, NovaPipelineBackend
+from nexus.nova_backend import (
+    PROMPT_PATH,
+    NovaBackendResult,
+    NovaPipelineBackend,
+    NovaToolProposal,
+)
 from nexus.nova_runtime import NovaOutputParser, extract_prompt_paths
+from nexus.providers.nova import NovaProvider
 from nexus.two_node_backend import TwoNodeBackend
 
 
@@ -161,3 +167,41 @@ def test_ceiling_nested_language_fence_is_recovered():
     assert parsed.is_valid
     assert parsed.files[0].path == "main.cpp"
     assert parsed.files[0].content == "int main() { return 0; }"
+
+
+def test_nova_provider_exposes_common_response_contract_and_stops_after_tools(tmp_path):
+    provider = NovaProvider("nova_codex", str(tmp_path))
+    backend_result = NovaBackendResult(
+        raw_output="raw",
+        assistant_text="prepared guarded edit",
+        guardrail_output="validated",
+        test_command="python verify.py",
+        proposals=[
+            NovaToolProposal(
+                name="write_file",
+                args={"path": "answer.py", "content": "ANSWER = 42\n"},
+                source_path="answer.py",
+                guardrail_summary="validated",
+            )
+        ],
+    )
+    provider._backend.run = lambda _prompt: backend_result
+
+    response = provider.chat_sync("local/nova", [{"role": "user", "content": "build"}])
+    assert response.choices[0].message.content == "prepared guarded edit"
+    calls = response.choices[0].message.tool_calls
+    assert [item.function.name for item in calls] == ["write_file", "run_command"]
+    assert json.loads(calls[1].function.arguments)["command"] == "python verify.py"
+
+    follow_up = provider.chat_sync(
+        "local/nova",
+        [
+            {"role": "user", "content": "build"},
+            {"role": "tool", "tool_call_id": "nova-call-0", "content": "ok"},
+        ],
+    )
+    assert follow_up.choices[0].message.tool_calls == []
+
+    chunk = next(provider.chat("local/nova", [{"role": "user", "content": "build"}], stream=True))
+    assert chunk.choices[0].delta.content == "prepared guarded edit"
+    assert chunk.choices[0].delta.tool_calls

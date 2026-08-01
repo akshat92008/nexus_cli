@@ -23,6 +23,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from nexus.run_state import RunStatus
+
 if TYPE_CHECKING:
     from nexus.agent import Agent
 
@@ -69,6 +71,8 @@ class PipelineResult:
     total_duration_ms: int = 0
     model_turns: int = 0
     recovered_from_error: bool = False
+    status: str = RunStatus.RUNNING.value
+    outcome: str = ""
 
     def failed_stages(self) -> list[StageResult]:
         """Return stages that did not succeed."""
@@ -81,6 +85,8 @@ class PipelineResult:
             "total_duration_ms": self.total_duration_ms,
             "model_turns": self.model_turns,
             "recovered_from_error": self.recovered_from_error,
+            "status": self.status,
+            "outcome": self.outcome,
             "stages": [
                 {
                     "stage": s.stage.value,
@@ -138,17 +144,8 @@ class ExecutionPipeline:
         stage_results.append(self._stage_repo_understanding())
 
         # ── Stage 2: Planning ─────────────────────────────────────────────────
-        analysis, plan = self._stage_planning(user_input)
-        stage_results.append(
-            StageResult(
-                stage=PipelineStage.PLANNING,
-                success=True,
-                metadata={
-                    "intent": str(analysis.get("intent", "")),
-                    "plan_type": str(analysis.get("plan_type", "")),
-                },
-            )
-        )
+        analysis, plan, planning_result = self._stage_planning(user_input)
+        stage_results.append(planning_result)
 
         # ── Stage 3: Context Selection ────────────────────────────────────────
         stage_results.append(self._stage_context_selection(user_input))
@@ -173,7 +170,13 @@ class ExecutionPipeline:
         if not exec_result["stage_result"].success:
             result.response = exec_result.get("response", "❌ Execution failed.")
             result.total_duration_ms = int((time.monotonic() - pipeline_start) * 1000)
-            self._agent._finish_managed_run(result.response, [])
+            report = self._agent._finish_managed_run(
+                result.response,
+                [],
+                status_override=RunStatus.FAILED,
+            )
+            result.status = report.get("status", RunStatus.FAILED.value)
+            result.outcome = report.get("outcome", "FAILED")
             return result
 
         response = exec_result["response"]
@@ -190,18 +193,29 @@ class ExecutionPipeline:
             stage_results.append(repair_result)
             if repair_result.success:
                 result.recovered_from_error = True
+                ver_result = self._stage_verification()
+                stage_results.append(ver_result)
 
         # ── Stage 8: Evidence ─────────────────────────────────────────────────
         stage_results.append(self._stage_evidence())
 
-        self._agent._finish_managed_run(response, events)
+        report = self._agent._finish_managed_run(response, events)
 
         # ── Stage 9: Completion ───────────────────────────────────────────────
         result.response = response
         result.events = events
-        result.success = True
+        result.status = report.get("status", RunStatus.UNVERIFIED.value)
+        result.outcome = report.get("outcome", result.status)
+        result.success = result.status == RunStatus.VERIFIED.value
         result.total_duration_ms = int((time.monotonic() - pipeline_start) * 1000)
-        stage_results.append(StageResult(stage=PipelineStage.COMPLETION, success=True))
+        stage_results.append(
+            StageResult(
+                stage=PipelineStage.COMPLETION,
+                success=result.success,
+                metadata={"status": result.status, "outcome": result.outcome},
+                error="" if result.success else f"Run finished as {result.outcome}",
+            )
+        )
 
         return result
 
@@ -227,13 +241,16 @@ class ExecutionPipeline:
             self._logger.debug("Repo understanding stage skipped: %s", exc)
             return StageResult(
                 stage=PipelineStage.REPO_UNDERSTANDING,
-                success=True,  # optional stage — always succeed
+                success=False,
                 duration_ms=int((time.monotonic() - t) * 1000),
                 metadata={"refreshed": False, "warning": str(exc)},
             )
 
-    def _stage_planning(self, user_input: str) -> tuple[dict[str, Any], Any]:
+    def _stage_planning(
+        self, user_input: str
+    ) -> tuple[dict[str, Any], Any, StageResult]:
         """Classify intent and generate or retrieve the execution plan."""
+        t = time.monotonic()
         try:
             analysis = self._agent.planner.analyze(user_input)
             plan = None
@@ -246,10 +263,32 @@ class ExecutionPipeline:
                 plan = self._agent.planner.create_plan(
                     user_input, analysis, repo_summary=repo_summary
                 )
-            return analysis, plan
+            return (
+                analysis,
+                plan,
+                StageResult(
+                    stage=PipelineStage.PLANNING,
+                    success=True,
+                    duration_ms=int((time.monotonic() - t) * 1000),
+                    metadata={
+                        "intent": str(analysis.get("intent", "")),
+                        "plan_type": str(analysis.get("plan_type", "")),
+                    },
+                ),
+            )
         except Exception as exc:
             self._logger.warning("Planning stage error (continuing): %s", exc)
-            return {"intent": "unknown", "plan_type": "direct"}, None
+            return (
+                {"intent": "unknown", "plan_type": "direct", "skills_needed": []},
+                None,
+                StageResult(
+                    stage=PipelineStage.PLANNING,
+                    success=False,
+                    duration_ms=int((time.monotonic() - t) * 1000),
+                    metadata={"degraded": True},
+                    error=str(exc),
+                ),
+            )
 
     def _stage_context_selection(self, user_input: str) -> StageResult:
         """Select minimal but sufficient context from the repository graph."""
@@ -266,7 +305,7 @@ class ExecutionPipeline:
             self._logger.debug("Context selection error (non-fatal): %s", exc)
             return StageResult(
                 stage=PipelineStage.CONTEXT_SELECTION,
-                success=True,  # optional
+                success=False,
                 duration_ms=int((time.monotonic() - t) * 1000),
                 metadata={"warning": str(exc)},
             )
@@ -331,9 +370,27 @@ class ExecutionPipeline:
         """Run post-execution verification checks."""
         t = time.monotonic()
         try:
-            evidence = self._agent.evidence.records(limit=20)
+            evidence = self._agent.evidence.records()[
+                getattr(self._agent, "_turn_evidence_start", 0) :
+            ]
             mutations = [e for e in evidence if e.get("kind") == "file_mutation"]
-            verified = all(e.get("status") == "verified" for e in mutations) if mutations else True
+            checks = [e for e in evidence if e.get("kind") == "verification_check"]
+            engine_checks = [item for item in checks if item.get("tool") == "verification_engine"]
+            if mutations and not engine_checks:
+                self._agent._record_verification_report(  # noqa: SLF001
+                    self._agent.verifier.run_all()
+                )
+                evidence = self._agent.evidence.records()[
+                    getattr(self._agent, "_turn_evidence_start", 0) :
+                ]
+                checks = [e for e in evidence if e.get("kind") == "verification_check"]
+            verified_mutations = all(
+                item.get("status") == "verified" for item in mutations
+            )
+            verified_checks = bool(checks) and all(
+                item.get("status") == "verified" for item in checks
+            )
+            verified = (verified_mutations and verified_checks) if mutations else True
             return StageResult(
                 stage=PipelineStage.VERIFICATION,
                 success=verified,
@@ -341,16 +398,24 @@ class ExecutionPipeline:
                 metadata={
                     "mutations": len(mutations),
                     "verified": sum(1 for e in mutations if e.get("status") == "verified"),
+                    "checks": len(checks),
+                    "checks_passed": sum(
+                        1 for e in checks if e.get("status") == "verified"
+                    ),
                 },
                 error=""
                 if verified
-                else f"{sum(1 for e in mutations if e.get('status') != 'verified')} mutations unverified",
+                else (
+                    f"{sum(1 for e in mutations if e.get('status') != 'verified')} "
+                    "mutations unverified; "
+                    f"{sum(1 for e in checks if e.get('status') != 'verified')} checks failed"
+                ),
             )
         except Exception as exc:
             self._logger.debug("Verification stage error: %s", exc)
             return StageResult(
                 stage=PipelineStage.VERIFICATION,
-                success=True,  # non-fatal
+                success=False,
                 duration_ms=int((time.monotonic() - t) * 1000),
                 metadata={"warning": str(exc)},
             )
@@ -401,7 +466,7 @@ class ExecutionPipeline:
         except Exception as exc:
             return StageResult(
                 stage=PipelineStage.EVIDENCE,
-                success=True,  # non-fatal
+                success=False,
                 duration_ms=int((time.monotonic() - t) * 1000),
                 metadata={"warning": str(exc)},
             )

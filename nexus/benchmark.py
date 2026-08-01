@@ -19,7 +19,7 @@ from nexus import __version__
 from nexus.sandbox import CommandSpec, SandboxRunner
 
 BENCHMARK_SCHEMA_VERSION = "nexus.benchmark.v1"
-RESULT_SCHEMA_VERSION = "nexus.benchmark-result.v1"
+RESULT_SCHEMA_VERSION = "nexus.benchmark-result.v2"
 SUPPORTED_CATEGORIES = {
     "single-file-edit",
     "bug-repair",
@@ -110,6 +110,13 @@ class BenchmarkTaskResult:
     environment_failure: bool = False
     stdout_tail: str = ""
     stderr_tail: str = ""
+    external_verification_passed: bool = False
+    internal_outcome: str = ""
+    tool_calls: int = 0
+    tests_executed: int = 0
+    criteria_satisfied: int = 0
+    criteria_unverified: int = 0
+    rollbacks: int = 0
 
     @property
     def passed(self) -> bool:
@@ -376,13 +383,13 @@ class BenchmarkRunner:
             run_report = payload.get("run", {}) if isinstance(payload, dict) else {}
             costs = run_report.get("costs", {})
             usage = costs.get("usage", costs) if isinstance(costs, dict) else {}
+            metadata = run_report.get("metadata", {})
             checks_pass = all(item.get("success") for item in checks)
+            external_passed = checks_pass and not unexpected and not missing_expected
             passed = (
-                process.returncode in {0, 2}
-                and checks_pass
-                and not unexpected
-                and not missing_expected
-                and run_report.get("status") in {"VERIFIED", "PARTIALLY_VERIFIED"}
+                process.returncode == 0
+                and external_passed
+                and run_report.get("status") == "VERIFIED"
             )
             details = []
             if process.returncode:
@@ -393,7 +400,7 @@ class BenchmarkRunner:
                 details.append(f"unexpected files: {unexpected}")
             if missing_expected:
                 details.append(f"expected files unchanged: {missing_expected}")
-            if run_report.get("status") not in {"VERIFIED", "PARTIALLY_VERIFIED"}:
+            if run_report.get("status") != "VERIFIED":
                 details.append(f"run status: {run_report.get('status', 'missing')}")
             failure_phase, failure_type, environment_failure = _classify_process_failure(
                 process.returncode,
@@ -411,7 +418,9 @@ class BenchmarkRunner:
                 verification=checks,
                 changed_files=changed,
                 unexpected_files=unexpected,
-                model_calls=int(usage.get("hosted_calls", 0) or 0),
+                model_calls=int(
+                    metadata.get("model_calls", usage.get("hosted_calls", 0)) or 0
+                ),
                 prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(usage.get("completion_tokens", 0) or 0),
                 estimated_cost_usd=(
@@ -419,7 +428,7 @@ class BenchmarkRunner:
                     if usage.get("estimated_cost_usd") is not None
                     else None
                 ),
-                retries=int(run_report.get("metadata", {}).get("retries", 0) or 0),
+                retries=int(metadata.get("retries", 0) or 0),
                 human_intervention=run_report.get("status") == "AWAITING_APPROVAL",
                 detail="; ".join(details) if details else "All acceptance checks passed",
                 failure_phase="" if passed else failure_phase,
@@ -427,6 +436,13 @@ class BenchmarkRunner:
                 environment_failure=False if passed else environment_failure,
                 stdout_tail=_redact_tail(process.stdout),
                 stderr_tail=_redact_tail(process.stderr),
+                external_verification_passed=external_passed,
+                internal_outcome=str(run_report.get("outcome", "")),
+                tool_calls=int(metadata.get("tool_calls", 0) or 0),
+                tests_executed=int(metadata.get("tests_executed", 0) or 0),
+                criteria_satisfied=int(metadata.get("criteria_satisfied", 0) or 0),
+                criteria_unverified=int(metadata.get("criteria_unverified", 0) or 0),
+                rollbacks=int(metadata.get("rollbacks", 0) or 0),
             )
         finally:
             shutil.rmtree(temporary_root, ignore_errors=True)
@@ -489,7 +505,7 @@ def _classify_process_failure(
     stderr: str,
     run_report: dict[str, Any],
 ) -> tuple[str, str, bool]:
-    if exit_code == 0 and run_report.get("status") in {"VERIFIED", "PARTIALLY_VERIFIED"}:
+    if exit_code == 0 and run_report.get("status") == "VERIFIED":
         return "", "", False
     haystack = (str(stdout) + "\n" + str(stderr)).lower()
     environment_signatures = {

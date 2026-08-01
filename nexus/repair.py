@@ -209,6 +209,7 @@ class RepairLoop:
             )
 
             # Run the targeted repair via the agent
+            evidence_start = len(self._agent.evidence.records())
             try:
                 response, events = self._agent._run_hosted_turn(  # noqa: SLF001
                     repair_prompt,
@@ -224,10 +225,23 @@ class RepairLoop:
 
             duration_ms = int((time.monotonic() - t_start) * 1000)
 
-            # Check if repair resolved the failure
-            evidence = self._agent.evidence.records(limit=10)
+            # A new mutation is necessary but not sufficient. A repair succeeds
+            # only when deterministic project checks run after that mutation and
+            # all of those checks pass.
+            evidence = self._agent.evidence.records()[evidence_start:]
             mutations = [e for e in evidence if e.get("kind") == "file_mutation"]
-            succeeded = bool(mutations) and all(e.get("status") == "verified" for e in mutations)
+            checks = []
+            verification_output = ""
+            if mutations and all(e.get("status") == "verified" for e in mutations):
+                verification_report = self._agent._record_verification_report(  # noqa: SLF001
+                    self._agent.verifier.run_all()
+                )
+                verification_output = verification_report.format_report()
+                evidence = self._agent.evidence.records()[evidence_start:]
+                checks = [e for e in evidence if e.get("kind") == "verification_check"]
+            succeeded = bool(mutations) and bool(checks) and all(
+                item.get("status") == "verified" for item in [*mutations, *checks]
+            )
 
             attempt = RepairAttempt(
                 iteration=iteration,
@@ -235,8 +249,8 @@ class RepairLoop:
                 repair_prompt=repair_prompt[:500],
                 success=succeeded,
                 duration_ms=duration_ms,
-                evidence_ids=[e.get("id", "") for e in mutations],
-                output=response[:1000],
+                evidence_ids=[e.get("id", "") for e in [*mutations, *checks]],
+                output=(response + "\n\n" + verification_output)[:2000],
             )
             report.attempts.append(attempt)
 

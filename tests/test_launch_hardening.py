@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,7 +13,10 @@ import pytest
 from nexus.agent import Agent
 from nexus.benchmark import BenchmarkRunner, BenchmarkSuite
 from nexus.budget import BudgetController, BudgetedClient, BudgetLimits
+from nexus.nova_backend import NovaBackendResult, NovaToolProposal
+from nexus.pipeline import ExecutionPipeline
 from nexus.planner import IntentType
+from nexus.policy import get_mode_policy
 from nexus.preflight import BackendProbe
 from nexus.tools import tool_web_fetch
 
@@ -175,3 +179,54 @@ def test_custom_endpoint_preflight_rejects_unsafe_scheme(monkeypatch):
     result = probe_hosted()
     assert result.ready is False
     assert result.code == "custom_url_invalid"
+
+
+def test_direct_nova_executes_declared_test_and_reaches_verified_status(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
+    (tmp_path / "verify.py").write_text(
+        "from answer import ANSWER\nassert ANSWER == 42\n",
+        encoding="utf-8",
+    )
+    result = NovaBackendResult(
+        raw_output="guarded model response",
+        assistant_text="Implemented answer.py and declared its acceptance test.",
+        guardrail_output="all deterministic gates passed",
+        test_command=f"{sys.executable} verify.py",
+        proposals=[
+            NovaToolProposal(
+                name="write_file",
+                args={
+                    "path": "answer.py",
+                    "content": "ANSWER = 42\n",
+                    "_nova_guardrail": {"passed": True, "summary": "validated"},
+                },
+                source_path="answer.py",
+                guardrail_summary="validated",
+            )
+        ],
+    )
+    monkeypatch.setattr("nexus.nova_backend.NovaPipelineBackend.run", lambda *_args: result)
+    agent = Agent(
+        model_key="nova3b",
+        working_dir=str(tmp_path),
+        permission_mode="acceptEdits",
+        mode_policy=get_mode_policy("autonomous"),
+        workspace_isolation=False,
+    )
+
+    pipeline_result = ExecutionPipeline(agent).run("Create answer.py with ANSWER = 42")
+    report = agent.run_ledger.resume_summary()["final_report"]
+    test_checks = [
+        item for item in agent.evidence.records() if item.get("tool") == "model_declared_test"
+    ]
+
+    assert (tmp_path / "answer.py").read_text(encoding="utf-8") == "ANSWER = 42\n"
+    assert test_checks[-1]["status"] == "verified"
+    assert test_checks[-1]["exit_code"] == 0
+    assert pipeline_result.success is True
+    assert report["status"] == "VERIFIED"
+    assert report["outcome"] == "COMPLETED_VERIFIED"
+    assert report["metadata"]["model_calls"] == 1
+    assert report["metadata"]["tests_executed"] >= 2

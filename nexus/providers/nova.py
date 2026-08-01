@@ -1,7 +1,7 @@
-"""
-Nova local model provider adapter.
-"""
+"""Nova local-model provider adapter with an OpenAI-compatible response shape."""
 
+import json
+from types import SimpleNamespace
 from typing import Any
 
 from nexus.nova_backend import NovaPipelineBackend
@@ -18,6 +18,7 @@ class NovaProvider(Provider):
             model=model_name,
             working_dir=working_dir,
         )
+        self._last_result = None
 
     # ── Provider protocol ────────────────────────────────────────────────────
 
@@ -53,31 +54,69 @@ class NovaProvider(Provider):
                 user_input = content if isinstance(content, str) else str(content)
                 break
 
-        result = self._backend.run(user_input)
+        # After the runtime has executed the proposals from the previous call,
+        # return a clean terminal response instead of generating and applying the
+        # same patch repeatedly until the turn budget is exhausted.
+        last_user_index = max(
+            (index for index, item in enumerate(messages) if item.get("role") == "user"),
+            default=-1,
+        )
+        has_tool_result = any(
+            item.get("role") == "tool" for item in messages[last_user_index + 1 :]
+        )
+        if has_tool_result and self._last_result is not None:
+            result = self._last_result
+            proposals = []
+            content = result.assistant_text or "Nova tool execution completed."
+        else:
+            result = self._backend.run(user_input)
+            self._last_result = result
+            proposals = list(result.proposals)
+            content = result.assistant_text or result.raw_output
+
+        tool_calls = [
+            SimpleNamespace(
+                index=index,
+                id=f"nova-call-{index}",
+                type="function",
+                function=SimpleNamespace(
+                    name=proposal.name,
+                    arguments=json.dumps(proposal.args, ensure_ascii=False),
+                ),
+            )
+            for index, proposal in enumerate(proposals)
+        ]
+        if proposals and result.test_command:
+            index = len(tool_calls)
+            tool_calls.append(
+                SimpleNamespace(
+                    index=index,
+                    id=f"nova-call-{index}",
+                    type="function",
+                    function=SimpleNamespace(
+                        name="run_command",
+                        arguments=json.dumps(
+                            {"command": result.test_command, "cwd": self.working_dir},
+                            ensure_ascii=False,
+                        ),
+                    ),
+                )
+            )
 
         if stream:
-            # Wrap in a minimal streaming-compatible generator so the engine
-            # does not need to branch on provider type.
             def _stream():
-                class DummyChunk:
-                    class _Choice:
-                        class _Delta:
-                            tool_calls = None
-
-                            def __init__(self, content: str):
-                                self.content = content
-
-                        def __init__(self, content: str):
-                            self.delta = self._Delta(content)
-
-                    def __init__(self, content: str):
-                        self.choices = [self._Choice(content)]
-
-                yield DummyChunk(result.output)
+                delta = SimpleNamespace(content=content, tool_calls=tool_calls)
+                yield SimpleNamespace(choices=[SimpleNamespace(delta=delta)], usage=None)
 
             return _stream()
 
-        return result
+        message = SimpleNamespace(content=content, tool_calls=tool_calls)
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage=None,
+            nexus_result=result,
+        )
+        return response
 
     def chat_sync(
         self,

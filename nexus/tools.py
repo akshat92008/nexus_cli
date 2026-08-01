@@ -436,6 +436,11 @@ TOOL_DEFINITIONS = [
                         ),
                         "default": False,
                     },
+                    "require_os_isolation": {
+                        "type": "boolean",
+                        "description": "Fail closed unless a native OS sandbox is available.",
+                        "default": False,
+                    },
                 },
                 "required": ["command"],
             },
@@ -1440,6 +1445,7 @@ def tool_process_run(
     command: str,
     cwd: str | None = None,
     network: bool = False,
+    require_os_isolation: bool = False,
 ) -> str:
     """Start a shell-free background process with a filtered environment."""
     try:
@@ -1487,8 +1493,22 @@ def tool_process_run(
         from nexus.sandbox import CommandSpec, SandboxBackend, SandboxRunner
 
         sandbox = SandboxRunner(Path(work_dir))
-        spec = CommandSpec.create(argv, work_dir, timeout_seconds=0, network=network)
+        spec = CommandSpec.create(
+            argv,
+            work_dir,
+            timeout_seconds=86_400,
+            network=network,
+            require_os_isolation=require_os_isolation,
+        )
         backend = sandbox.backend()
+        if require_os_isolation and backend == SandboxBackend.RESTRICTED:
+            stdout_f.close()
+            stderr_f.close()
+            return (
+                "❌ BLOCKED: No supported OS sandbox is available for this "
+                "background process. Install bubblewrap on Linux or use "
+                "sandbox-exec on macOS."
+            )
         if backend == SandboxBackend.BUBBLEWRAP:
             argv = sandbox._bubblewrap_command(spec, Path(work_dir))
         elif backend == SandboxBackend.MACOS:
