@@ -6,7 +6,7 @@ work; local Nova V11 executes suitable atomic changes through Ollama. Nexus
 owns repository understanding, permissions, workspaces, tools, tests, repair,
 evidence, budgets, rollback, and recovery.
 
-Version 3.1.1 is the launch-hardening runtime described by the product
+Version 3.1.2 is the launch-hardening runtime described by the product
 specification:
 
 - requests become acceptance criteria and dependency-aware execution
@@ -86,6 +86,10 @@ export OPENROUTER_API_KEY="sk-or-your-key"
 Nexus also reads `.env` from the current project, the Nexus checkout,
 `~/.config/nexus/.env`, or `~/.nexusai/.env`. An existing process environment
 value always wins. Avoid passing secrets on the command line.
+
+Set `NEXUS_DISABLE_NETWORK=1` to fail closed before hosted-provider, web-fetch,
+or web-search transports are opened. The deterministic release and stress
+gates enable this kill switch and remove provider credentials automatically.
 
 For local Nova 3B v11, install [Ollama](https://ollama.com), obtain the Nova v11
 model artifact from the
@@ -227,7 +231,7 @@ The public benchmark manifest is versioned and shell-free:
 ```bash
 nexus benchmark --manifest benchmarks/core.json --dry-run
 nexus benchmark --manifest benchmarks/core.json \
-  --output benchmarks/results/nexus-3.1.1.json
+  --output benchmarks/results/nexus-3.1.2.json
 
 # Validate the large single-prompt product contract without spending credits
 nexus benchmark --manifest benchmarks/long_horizon.json --dry-run

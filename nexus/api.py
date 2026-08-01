@@ -357,11 +357,23 @@ class NvidiaClient:
         temperature: float = 0.2,
         max_tokens: int = 16384,
         stream: bool = True,
+        parallel_tool_calls: bool | None = None,
+        response_format: dict[str, Any] | None = None,
+        seed: int | None = None,
+        stop: str | list[str] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        top_p: float | None = None,
     ):
         """
         Send a chat completion request with automatic multi-key and multi-provider failover.
         Tries NVIDIA keys, alternative NVIDIA models, Groq, then OpenRouter.
         """
+        from nexus.network_policy import network_globally_disabled
+
+        if network_globally_disabled():
+            raise RuntimeError(
+                "Outbound provider requests are disabled by NEXUS_DISABLE_NETWORK."
+            )
         kwargs = {
             "messages": messages,
             "temperature": temperature,
@@ -372,7 +384,17 @@ class NvidiaClient:
             kwargs["stream_options"] = {"include_usage": True}
         if tools:
             kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+            kwargs["tool_choice"] = tool_choice or "auto"
+            if parallel_tool_calls is not None:
+                kwargs["parallel_tool_calls"] = bool(parallel_tool_calls)
+        if response_format is not None:
+            kwargs["response_format"] = response_format
+        if seed is not None:
+            kwargs["seed"] = int(seed)
+        if stop is not None:
+            kwargs["stop"] = stop
+        if top_p is not None:
+            kwargs["top_p"] = float(top_p)
 
         errors = []
         connection_timed_out = False
@@ -576,6 +598,12 @@ class NvidiaClient:
         tools: list[dict] | None = None,
         temperature: float = 0.2,
         max_tokens: int = 16384,
+        parallel_tool_calls: bool | None = None,
+        response_format: dict[str, Any] | None = None,
+        seed: int | None = None,
+        stop: str | list[str] | None = None,
+        tool_choice: str | dict[str, Any] | None = None,
+        top_p: float | None = None,
     ):
         """Non-streaming chat completion with full multi-provider failover."""
         return self.chat(
@@ -585,4 +613,10 @@ class NvidiaClient:
             temperature=temperature,
             max_tokens=max_tokens,
             stream=False,
+            parallel_tool_calls=parallel_tool_calls,
+            response_format=response_format,
+            seed=seed,
+            stop=stop,
+            tool_choice=tool_choice,
+            top_p=top_p,
         )

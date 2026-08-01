@@ -474,7 +474,9 @@ def _handle_benchmark() -> bool:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text(rendered + "\n", encoding="utf-8")
     print(rendered)
-    if not benchmark_args.dry_run and payload["summary"]["failed"]:
+    # A dry-run is a release gate, not a best-effort preview. Missing fixture
+    # repositories and other blocked tasks must fail with a non-zero status.
+    if payload["summary"]["failed"]:
         raise SystemExit(2)
     return True
 

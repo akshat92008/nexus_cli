@@ -68,6 +68,9 @@ This report separates model generation ability from Nexus enforcement. “Guarde
 - Content-addressed trust for project instructions, MCP definitions, hooks, and plugin manifests. Any byte change invalidates approval and displays a diff.
 - Anti-slopsquatting checks against live PyPI, npm, crates.io, and Go registries before dependency writes or install commands. Confirmed-missing packages are blocked; registry outages are labelled unverified and require explicit approval; new/low-download packages warn.
 - Web file APIs are workspace-confined and localhost CORS-scoped.
+- `NEXUS_DISABLE_NETWORK=1` blocks hosted inference, web fetch, and web search
+  before a transport is opened; web search also uses the same pinned-address
+  SSRF policy as web fetch.
 
 ### Verified completion and recovery
 
@@ -111,7 +114,7 @@ This report separates model generation ability from Nexus enforcement. “Guarde
 
 ## Current Claude Code parity boundary
 
-Nexus 3.1.1 covers the open runtime described in its product
+Nexus 3.1.2 covers the open runtime described in its product
 specification: guarded model orchestration, persistent repository
 intelligence, typed task contracts and tools, automatic workspaces, optional
 native sandboxing, bounded repair and review, behavioral verification,
@@ -128,7 +131,7 @@ cloud, mobile, IDE, and Remote Control services are not Nexus features.
 
 ## Raw verification record
 
-- Version 3.1.1 deterministic Python suite and release-gate totals are recorded
+- Version 3.1.2 deterministic Python suite and release-gate totals are recorded
   by the tagged CI run and benchmark JSON rather than hard-coded before CI.
 - The release gate also runs Ruff, byte-compilation, sdist/wheel builds, an
   isolated wheel-target install, packaged Nova and web backend imports,

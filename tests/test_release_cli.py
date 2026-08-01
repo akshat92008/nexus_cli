@@ -8,6 +8,8 @@ import sys
 import urllib.error
 from pathlib import Path
 
+import pytest
+
 from nexus.cli import _configure_output_streams, non_interactive_exit_code
 from nexus.doctor import run_doctor
 from nexus.nova_runtime import OllamaClient
@@ -63,7 +65,7 @@ def test_module_entrypoint_exposes_version():
         timeout=10,
     )
     assert result.returncode == 0
-    assert result.stdout.strip() == "NexusAI 3.1.1"
+    assert result.stdout.strip() == "NexusAI 3.1.2"
 
 
 def test_ollama_host_without_scheme_is_normalized(monkeypatch):
@@ -108,6 +110,30 @@ def test_release_gate_uses_uv_when_managed_venv_has_no_pip(monkeypatch):
         str(Path("/target")),
         str(Path("/dist/nexus.whl")),
     ]
+
+
+def test_release_gate_rejects_dependency_mirror_drift(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["httpx[socks]>=0.27", "rich>=13"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "requirements.txt").write_text("rich>=13\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=r"missing=\['httpx'\]"):
+        run_release_gate.assert_dependency_mirror(tmp_path)
+
+
+def test_release_gate_accepts_dependency_mirror(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["httpx[socks]>=0.27", "rich>=13"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "requirements.txt").write_text(
+        "rich>=13\nhttpx[socks]>=0.27\n",
+        encoding="utf-8",
+    )
+
+    run_release_gate.assert_dependency_mirror(tmp_path)
 
 
 def test_release_gate_prefers_pip_when_available(monkeypatch):

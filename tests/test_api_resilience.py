@@ -16,6 +16,8 @@ from nexus.two_node_backend import CeilingCallTimeout, _run_ceiling_call
 @pytest.fixture(autouse=True)
 def provider_keys(monkeypatch):
     """Keep resilience tests independent of a developer's local .env file."""
+    # These tests replace every transport with an in-memory fake.
+    monkeypatch.delenv("NEXUS_DISABLE_NETWORK", raising=False)
     monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
     monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
 
