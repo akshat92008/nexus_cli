@@ -3,6 +3,7 @@ Tests for CLI Responsiveness, Real-Time Action Streaming, and Non-Interactive To
 """
 
 import json
+import os
 from unittest.mock import patch
 
 from nexus.agent import Agent
@@ -31,7 +32,12 @@ def test_tool_call_formatting():
 
 def test_non_interactive_command_env():
     """Verify execute_tool('run_command') passes non-interactive environment variables."""
-    res = execute_tool("run_command", {"command": "echo $CI $PAGER $DEBIAN_FRONTEND $TERM"})
+    variables = (
+        "%CI% %PAGER% %DEBIAN_FRONTEND% %TERM%"
+        if os.name == "nt"
+        else "$CI $PAGER $DEBIAN_FRONTEND $TERM"
+    )
+    res = execute_tool("run_command", {"command": f"echo {variables}"})
     assert "true" in res
     assert "cat" in res
     assert "noninteractive" in res

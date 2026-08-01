@@ -161,6 +161,12 @@ _DEFAULT_COMMANDS: dict[str, dict[str, str]] = {
 }
 
 
+def _shell_executable(value: str, platform: str | None = None) -> str:
+    """Quote an executable for the platform shell used by ``SandboxRunner``."""
+
+    return subprocess.list2cmdline([value]) if (platform or os.name) == "nt" else shlex.quote(value)
+
+
 class VerificationEngine:
     """
     Auto-detects project type and runs appropriate verification checks.
@@ -475,7 +481,7 @@ class VerificationEngine:
                 resolved[resolved_key] = cmd
 
         if self.project_type == "python":
-            interpreter = shlex.quote(os.environ.get("PYTHON") or sys.executable)
+            interpreter = _shell_executable(os.environ.get("PYTHON") or sys.executable)
             resolved = {
                 key: (
                     interpreter + command[len("python") :]

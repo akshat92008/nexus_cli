@@ -27,7 +27,7 @@ from nexus.runtime.kernel import ExecutionKernel
 from nexus.subagents.orchestrator import SubagentOrchestrator
 from nexus.subagents.templates import SecurityAuditor
 from nexus.tools import tool_context, tool_process_run, tool_process_status
-from nexus.verification import CheckStatus, VerificationEngine
+from nexus.verification import CheckStatus, VerificationEngine, _shell_executable
 from nexus.workspace import GitWorktreeSession, WorkspaceManager
 
 
@@ -75,6 +75,12 @@ def test_verification_is_not_applicable_without_python_sources(tmp_path):
     engine = VerificationEngine(str(tmp_path))
     assert engine.verify_syntax().status == CheckStatus.NOT_APPLICABLE
     assert engine.verify_imports().status == CheckStatus.NOT_APPLICABLE
+
+
+def test_windows_verification_uses_cmd_compatible_executable_quoting():
+    quoted = _shell_executable(r"C:\Program Files\Python\python.exe", platform="nt")
+    assert quoted == r'"C:\Program Files\Python\python.exe"'
+    assert "'" not in quoted
 
 
 def test_evidence_recovers_valid_prefix_and_quarantines_corrupt_suffix(tmp_path):

@@ -104,8 +104,8 @@ def test_release_gate_uses_uv_when_managed_venv_has_no_pip(monkeypatch):
         "/venv/python",
         "--no-deps",
         "--target",
-        "/target",
-        "/dist/nexus.whl",
+        str(Path("/target")),
+        str(Path("/dist/nexus.whl")),
     ]
 
 
