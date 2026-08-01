@@ -59,6 +59,13 @@ class StageResult:
     duration_ms: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    applicable: bool = True
+
+    @property
+    def status(self) -> str:
+        if not self.applicable:
+            return "not_applicable"
+        return "passed" if self.success else "failed"
 
 
 @dataclass
@@ -93,6 +100,8 @@ class PipelineResult:
                 {
                     "stage": s.stage.value,
                     "success": s.success,
+                    "status": s.status,
+                    "applicable": s.applicable,
                     "duration_ms": s.duration_ms,
                     "error": s.error,
                 }
@@ -541,7 +550,23 @@ class ExecutionPipeline:
             verified_checks = bool(checks) and all(
                 item.get("status") == "verified" for item in checks
             )
-            verified = (verified_mutations and verified_checks) if mutations else True
+            if not mutations:
+                return StageResult(
+                    stage=PipelineStage.VERIFICATION,
+                    success=True,
+                    applicable=False,
+                    duration_ms=int((time.monotonic() - t) * 1000),
+                    metadata={
+                        "status": "not_applicable",
+                        "mutations": 0,
+                        "verified": 0,
+                        "checks": len(checks),
+                        "checks_passed": sum(
+                            1 for item in checks if item.get("status") == "verified"
+                        ),
+                    },
+                )
+            verified = verified_mutations and verified_checks
             return StageResult(
                 stage=PipelineStage.VERIFICATION,
                 success=verified,

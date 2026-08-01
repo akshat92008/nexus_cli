@@ -5,8 +5,8 @@ from __future__ import annotations
 import time
 import urllib.request
 
-from nexus.network_policy import NetworkPolicy
-from nexus.tools import _safe_urlopen
+from nexus.network_policy import NetworkPolicy, network_globally_disabled
+from nexus.tools import _safe_urlopen, tool_web_fetch, tool_web_search
 
 
 def _address_info(address: str):
@@ -105,3 +105,11 @@ def test_safe_urlopen_connects_to_the_validated_address(monkeypatch):
     assert observed["address"] == "93.184.216.34"
     assert observed["path"] == "/health?deep=1"
     assert observed["headers"]["Host"] == "example.test"
+
+
+def test_global_network_kill_switch_blocks_web_tools(monkeypatch):
+    monkeypatch.setenv("NEXUS_DISABLE_NETWORK", "true")
+
+    assert network_globally_disabled() is True
+    assert "network_disabled" in tool_web_fetch("https://example.com")
+    assert "network_disabled" in tool_web_search("nexus coding agent")

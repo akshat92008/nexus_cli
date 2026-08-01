@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nexusai-cli"
-version = "3.1.1"
+version = "3.1.2"
 description = "NexusAI — a model-agnostic, verification-driven software-engineering runtime"
 readme = "README.md"
 requires-python = ">=3.10"

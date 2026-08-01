@@ -6,6 +6,50 @@ All notable changes to NexusAI CLI are documented here.
 
 No changes yet.
 
+## [3.1.2] - 2026-08-01
+
+Provider-contract and release-qualification hardening.
+
+### Added
+
+- A normalized chat-request contract and machine-readable capability matrix
+  for hosted providers and fallback routers.
+- Offline provider-chaos coverage for unsupported options, synchronous
+  failover, pre-stream failover, and mid-stream replay prevention.
+- A configurable concurrent stress matrix that strips provider credentials,
+  activates the hosted/web network kill switch, and runs each check from an
+  isolated repository copy.
+
+### Fixed
+
+- Hosted provider options are validated before transport and forwarded through
+  explicit `NvidiaClient` parameters instead of incompatible arbitrary kwargs.
+- The default hosted agent no longer wraps `NvidiaClient`'s built-in failover
+  in a redundant one-provider router.
+- Fallback routes use their own model ID, retry streams only before the first
+  emitted chunk, and expose the capability intersection across routes.
+- Benchmark dry-runs now exit nonzero for missing fixtures or blocked tasks,
+  and the stale root benchmark manifest points at a shipped fixture.
+- No-mutation verification stages report `not_applicable` instead of a
+  misleading successful-verification state.
+- The release gate uses a writable temporary `uv` cache in restricted CI
+  environments and validates every shipped benchmark manifest.
+- Hosted inference and both web tools honor `NEXUS_DISABLE_NETWORK` before
+  opening a transport; web search now uses DNS pinning and the SSRF policy.
+- `requirements.txt` drift from canonical `pyproject.toml` dependencies now
+  blocks the release gate.
+- Optional prompt, context, MCP, graph, verification, and persistence failures
+  in the agent emit structured debug/warning logs instead of being silently
+  swallowed.
+- Removed the unrelated Pygame Snake application from the production CLI
+  repository.
+
+### Validation
+
+- 313 deterministic tests pass offline.
+- Ruff, byte-compilation, sdist/wheel build, isolated wheel install, CLI smoke
+  checks, benchmark validation, and the concurrent stress matrix pass.
+
 ## [3.1.1] - 2026-08-01
 
 Launch-readiness reliability release.

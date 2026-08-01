@@ -1,22 +1,28 @@
 {
-  "schema_version": "nexus.benchmark.v1",
-  "name": "Nexus Core Performance",
+  "schema_version": "nexus.benchmark.v2",
+  "name": "nexus-root-release-smoke",
+  "profile": "release-smoke",
   "tasks": [
     {
-      "id": "core-01",
-      "category": "single-file-edit",
-      "prompt": "Implement a simple Hello World in hello.py",
-      "repository": "./tests/fixtures/hello_world",
+      "id": "python-calculator-regression",
+      "category": "bug-repair",
+      "prompt": "Fix the multiplication regression in this calculator. Preserve add and subtract behavior, add no dependencies, and verify the supplied acceptance script.",
+      "repository": "./benchmarks/fixtures/calculator",
       "verification": [
-        ["python3", "-c", "import hello; assert hello.say_hello() == 'Hello World'"]
+        ["python", "verify.py"]
       ],
       "timeout_seconds": 300,
       "allowed_paths": [
-        "hello.py"
+        "calculator.py",
+        "verify.py"
       ],
       "expected_changed_files": [
-        "hello.py"
-      ]
+        "calculator.py"
+      ],
+      "max_attempts": 2,
+      "max_turns_per_attempt": 20,
+      "max_hosted_calls_per_attempt": 12,
+      "max_provider_attempts_per_attempt": 24
     }
   ]
 }

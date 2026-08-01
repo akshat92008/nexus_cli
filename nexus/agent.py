@@ -44,7 +44,6 @@ from nexus.policy import ModePolicy, PermissionDecision, PolicyLoader, get_mode_
 from nexus.project_memory import ProjectMemory
 from nexus.providers.hosted import HostedProvider
 from nexus.providers.nova import NovaProvider
-from nexus.providers.router import FallbackRouter
 from nexus.reflection import ReflectionEngine, ReflectionVerdict
 from nexus.repo_graph import RepoGraph
 from nexus.run_catalog import RunCatalog
@@ -62,6 +61,8 @@ from nexus.trust import TrustStore
 from nexus.user_memory import UserMemory
 from nexus.verification import CheckStatus, CheckType, VerificationEngine
 from nexus.workspace import GitWorktreeSession, WorktreeError
+
+logger = logging.getLogger(__name__)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -307,11 +308,10 @@ class Agent:
                 attempt_controller=self.budget,
                 attempt_observer=self._record_provider_attempt,
             )
-            router = FallbackRouter(primary)
             from nexus.budget import BudgetedClient
 
             # BudgetedClient duck-types the provider to add budget enforcement
-            hosted_client = BudgetedClient(router, self.budget)
+            hosted_client = BudgetedClient(primary, self.budget)
 
         # Validate provider configuration and budgets before allocating a
         # persistent worktree so constructor failures cannot leak workspaces.
@@ -500,24 +500,24 @@ class Agent:
             )
             if addon:
                 prompt += "\n" + addon
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Project-memory prompt context unavailable: %s", exc)
 
         # User memory (persistent preferences)
         try:
             addon = self.user_mem.get_prompt_addon()
             if addon:
                 prompt += "\n" + addon
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("User-memory prompt context unavailable: %s", exc)
 
         # Active skills
         try:
             addon = self.skills.get_combined_prompt()
             if addon:
                 prompt += "\n" + addon
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Skill prompt context unavailable: %s", exc)
 
         # MCP tools description
         try:
@@ -527,8 +527,8 @@ class Agent:
                 for t in mcp_tools:
                     prompt += f"  • {t.server_name}/{t.name} — {t.description}\n"
                 prompt += "[END MCP TOOLS]"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("MCP prompt context unavailable: %s", exc)
 
         # Repository Context
         try:
@@ -539,8 +539,8 @@ class Agent:
                 prompt += "\n\n[REPOSITORY CONTEXT]\n"
                 prompt += json.dumps(summary, indent=2)
                 prompt += "\n[END REPOSITORY CONTEXT]"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Repository prompt context unavailable: %s", exc)
 
         self.system_prompt = prompt
 
@@ -561,8 +561,7 @@ class Agent:
                     attempt_controller=self.budget,
                     attempt_observer=self._record_provider_attempt,
                 )
-                router = FallbackRouter(primary)
-                self.client = BudgetedClient(router, self.budget)
+                self.client = BudgetedClient(primary, self.budget)
             except ValueError:
                 return False
         self.model_key = resolved_key
@@ -630,8 +629,8 @@ class Agent:
         turn_dir: Path | None = None
         try:
             turn_dir = self.run_ledger._require_turn()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("No active run turn while loading final report: %s", exc)
 
         # 2. Fall back to scanning session_dir for the most recently modified turn dir
         if turn_dir is None:
@@ -644,8 +643,8 @@ class Agent:
                 )
                 if turn_dirs:
                     turn_dir = turn_dirs[0]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Historical run discovery failed: %s", exc)
 
         if turn_dir is None:
             return {
@@ -1505,8 +1504,8 @@ class Agent:
             self.run_ledger.mark_rolled_back(detail)
             try:
                 self.repo_graph.build()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Repository graph refresh after rollback failed: %s", exc)
         return success, detail
 
     def _refresh_final_report_after_approval(self) -> None:
@@ -1538,8 +1537,8 @@ class Agent:
                 f"incremental_reused={stats.reused}"
             )
             return context + graph_context + "\n\n---\n\n"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Primary repository context initialization failed: %s", exc)
 
         # Fallback to legacy context gathering
         parts = []
@@ -1547,15 +1546,15 @@ class Agent:
             tree = tool_get_project_structure(self.working_dir, max_depth=3)
             if tree and len(tree) > 50:
                 parts.append(f"[AUTO-CONTEXT: Project Structure]\n{tree}")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Project tree fallback context unavailable: %s", exc)
 
         try:
             git_info = tool_git_status(self.working_dir)
             if git_info and "Not a git" not in git_info:
                 parts.append(f"[AUTO-CONTEXT: Git Status]\n{git_info}")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Git fallback context unavailable: %s", exc)
 
         config_files = [
             "package.json",
@@ -1652,8 +1651,8 @@ class Agent:
         # MCP tools
         try:
             tools.extend(self.mcp.get_all_tool_definitions())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("MCP tool definitions unavailable: %s", exc)
 
         configured_allowlist = set(self.allowed_tools)
         step_allowlist: set[str] = set()
@@ -1811,8 +1810,8 @@ class Agent:
                 )
                 try:
                     self.repo_graph.update_paths(path for path in raw_paths if path)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Repository graph incremental refresh failed: %s", exc)
                 self.run_ledger.checkpoint(
                     f"verified-{name}",
                     plan=self._active_plan,
@@ -2992,8 +2991,8 @@ class Agent:
                 else str(analysis.get("intent", "unknown")),
             )
             self._update_system_prompt()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Automatic skill activation failed: %s", exc)
 
         self.messages.append({"role": "user", "content": user_input})
         events = engine.run_interactive(self._build_messages(), tools=self._get_tools())
@@ -3169,8 +3168,8 @@ class Agent:
                     self.hooks.fire(
                         HookEvent.ON_TEST_FAIL, HookContext(event=HookEvent.ON_TEST_FAIL)
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Plan-completion verification failed: %s", exc)
 
         return content or "", accumulated_events
 
@@ -3836,8 +3835,8 @@ class Agent:
                     self.working_dir,
                     self.conversation_id,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Conversation autosave failed: %s", exc)
 
     def save_conversation(self, filepath: str):
         """Save the conversation to a JSON file."""
