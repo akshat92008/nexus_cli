@@ -2,7 +2,9 @@
 Nexus Runtime Architecture
 """
 
-from nexus.runtime.kernel import ExecutionKernel
+from nexus.runtime.kernel import ExecutionKernel, TaskDagKernel
+from nexus.runtime.engine import ExecutionEngine
+from nexus.runtime.session import ExecutionSession
 from nexus.runtime.events import (
     BaseEvent,
     ErrorEvent,
@@ -24,6 +26,9 @@ from nexus.runtime.state_machine import RunState, StateMachine
 
 __all__ = [
     "ExecutionKernel",
+    "ExecutionEngine",
+    "ExecutionSession",
+    "TaskDagKernel",
     "StateMachine",
     "RunState",
     "EventType",

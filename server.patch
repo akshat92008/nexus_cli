@@ -1,0 +1,122 @@
+--- ./nexus/webapp/server.py	2026-07-31 19:32:26
++++ /tmp/nexus_cli_v3.1_launch_hardened_source/nexus_cli_v3.1_launch_hardened/nexus/webapp/server.py	2026-07-31 17:23:36
+@@ -14,6 +14,7 @@
+ import json
+ import os
+ import secrets
++import threading
+ from pathlib import Path
+ from urllib.parse import urlparse
+ 
+@@ -31,10 +32,18 @@
+ 
+ # Global state
+ _agents: dict[str, Agent] = {}  # session_id -> Agent
++_agent_locks: dict[str, threading.RLock] = {}
+ _api_key: str = ""
+ _default_model: str = DEFAULT_MODEL
+ _working_dir: str = ""
+ _web_token: str = secrets.token_hex(16)
++_agent_options: dict[str, object] = {
++    "model_id_override": None,
++    "local_intern_mode": "off",
++    "enable_nova_fallback": False,
++    "plugins_enabled": False,
++    "tools_enabled": True,
++}
+ MAX_AGENTS = 50  # Evict oldest agents when exceeded
+ SENSITIVE_FILENAMES = {
+     ".netrc",
+@@ -90,15 +99,29 @@
+         if len(_agents) >= MAX_AGENTS:
+             oldest_key = next(iter(_agents))
+             del _agents[oldest_key]
++            _agent_locks.pop(oldest_key, None)
+         _agents[session_id] = Agent(
+             api_key=_api_key,
+             model_key=_default_model,
+             working_dir=_working_dir,
+             workspace_isolation=True,
++            model_id_override=_agent_options["model_id_override"],
++            local_intern_mode=str(_agent_options["local_intern_mode"]),
++            enable_nova_fallback=bool(_agent_options["enable_nova_fallback"]),
++            plugins_enabled=bool(_agent_options["plugins_enabled"]),
++            tools_enabled=bool(_agent_options["tools_enabled"]),
+         )
++    _agent_locks.setdefault(session_id, threading.RLock())
+     return _agents[session_id]
+ 
+ 
++def _run_agent_locked(session_id: str, agent: Agent, message: str):
++    """Serialize mutations for a web session while allowing other sessions to run."""
++    lock = _agent_locks.setdefault(session_id, threading.RLock())
++    with lock:
++        return agent.run_non_interactive(message)
++
++
+ # ─── HTTP Endpoints ──────────────────────────────────────────────────────────
+ 
+ async def index(request):
+@@ -221,7 +244,7 @@
+     # Run synchronously in a thread
+     loop = asyncio.get_event_loop()
+     content, events = await loop.run_in_executor(
+-        None, agent.run_non_interactive, message
++        None, _run_agent_locked, session_id, agent, message
+     )
+ 
+     return JSONResponse({
+@@ -340,6 +363,7 @@
+                 # Create a fresh session
+                 if session_id in _agents:
+                     del _agents[session_id]
++                    _agent_locks.pop(session_id, None)
+                 import time
+                 session_id = f"ws_{int(time.time())}"
+                 await websocket.send_json({"type": "new_session", "session_id": session_id})
+@@ -358,7 +382,7 @@
+                 # Run in executor (blocking agent loop)
+                 loop = asyncio.get_event_loop()
+                 content, events = await loop.run_in_executor(
+-                    None, agent.run_non_interactive, message
++                    None, _run_agent_locked, session_id, agent, message
+                 )
+ 
+                 # Send tool events
+@@ -392,13 +416,33 @@
+ 
+ # ─── App Factory ─────────────────────────────────────────────────────────────
+ 
+-def create_app(api_key: str, model: str = DEFAULT_MODEL, working_dir: str | None = None):
+-    """Create the Starlette application."""
+-    global _api_key, _default_model, _working_dir
++def create_app(
++    api_key: str,
++    model: str = DEFAULT_MODEL,
++    working_dir: str | None = None,
++    *,
++    model_id_override: str | None = None,
++    local_intern_mode: str = "off",
++    enable_nova_fallback: bool = False,
++    plugins_enabled: bool = False,
++    tools_enabled: bool = True,
++):
++    """Create the Starlette application with isolated per-session agents."""
++    global _api_key, _default_model, _working_dir, _web_token, _agent_options
+ 
++    _agents.clear()
++    _agent_locks.clear()
++    _web_token = secrets.token_hex(16)
+     _api_key = api_key
+     _default_model = model
+     _working_dir = working_dir or os.getcwd()
++    _agent_options = {
++        "model_id_override": model_id_override,
++        "local_intern_mode": local_intern_mode,
++        "enable_nova_fallback": enable_nova_fallback,
++        "plugins_enabled": plugins_enabled,
++        "tools_enabled": tools_enabled,
++    }
+ 
+     static_dir = Path(__file__).parent / "static"
+ 

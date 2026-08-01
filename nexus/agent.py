@@ -40,7 +40,7 @@ from nexus.paths import nexus_home
 # Phase 1: Core Engine Imports
 from nexus.planner import IntentType, PlanningEngine, PlanType, TaskStatus, TaskType, get_task_type
 from nexus.plugins.loader import PluginLoader
-from nexus.policy import ModePolicy, PermissionDecision, PolicyLoader
+from nexus.policy import ModePolicy, PermissionDecision, PolicyLoader, get_mode_policy
 from nexus.project_memory import ProjectMemory
 from nexus.providers.hosted import HostedProvider
 from nexus.providers.nova import NovaProvider
@@ -49,7 +49,7 @@ from nexus.reflection import ReflectionEngine, ReflectionVerdict
 from nexus.repo_graph import RepoGraph
 from nexus.run_catalog import RunCatalog
 from nexus.run_state import CriterionResult, CriterionStatus, RunLedger, RunStatus
-from nexus.runtime.kernel import ExecutionKernel
+from nexus.runtime.session import ExecutionSession
 from nexus.runtime.events import EventType
 from nexus.safety import SafetyCheck, SafetyLayer, SafetyLevel
 
@@ -238,7 +238,7 @@ class Agent:
         else:
             self.working_dir = self.source_working_dir
         # P0-3 FIX: Remove os.chdir(self.working_dir) to prevent global process state pollution
-        self.mode_policy = mode_policy or ModePolicy()
+        self.mode_policy = mode_policy or get_mode_policy(permission_mode)
 
         # Model and backend selection
         resolved_key = resolve_model_key(model_key) or DEFAULT_MODEL
@@ -688,6 +688,238 @@ class Agent:
             if current_step:
                 self.planner.advance_step(current_step.id, TaskStatus.IN_PROGRESS)
 
+    def _evaluate_unrelated_files(self, criterion: str, plan: Any, changes: list) -> CriterionResult:
+        permitted = list(getattr(plan, "permitted_files", []) or [])
+        outside = []
+        for item in changes:
+            changed_path = Path(item["filepath"]).resolve()
+            if not _is_relative_to(changed_path, Path(self.working_dir)):
+                outside.append(item["filepath"])
+                continue
+            relative = changed_path.relative_to(
+                Path(self.working_dir).resolve()
+            ).as_posix()
+            if permitted and not any(
+                fnmatch(relative, pattern) or relative == pattern
+                for pattern in permitted
+            ):
+                outside.append(relative)
+        return CriterionResult(
+            criterion,
+            CriterionStatus.UNSATISFIED if outside else CriterionStatus.SATISFIED,
+            detail=(
+                "Out-of-scope changes: " + ", ".join(outside)
+                if outside
+                else (
+                    "All recorded changes matched the plan's permitted files."
+                    if permitted
+                    else "All recorded changes remained inside the authorized workspace."
+                )
+            ),
+        )
+
+    def _evaluate_fingerprinted_mutations(self, criterion: str, evidence: list) -> CriterionResult:
+        mutation_records = [
+            item for item in evidence if item.get("kind") == "file_mutation"
+        ]
+        satisfied = bool(mutation_records) and all(
+            item.get("status") == "verified" for item in mutation_records
+        )
+        return CriterionResult(
+            criterion,
+            CriterionStatus.SATISFIED if satisfied else CriterionStatus.UNVERIFIED,
+            evidence_ids=[item["id"] for item in mutation_records],
+            detail=(
+                "Every recorded mutation passed disk verification."
+                if satisfied
+                else "No complete verified mutation set was recorded."
+            ),
+        )
+
+    def _evaluate_objective_implementation(
+        self,
+        criterion: str,
+        verified_mutations: list,
+        passing_checks: list,
+        passing_behavioral: list,
+        approved_reviews: list,
+        successful_command_text: set,
+    ) -> CriterionResult:
+        objective_evidence = [
+            *verified_mutations,
+            *passing_checks,
+            *passing_behavioral,
+            *approved_reviews,
+        ]
+        task_type = get_task_type(self._active_analysis.get("intent", IntentType.UNKNOWN))
+        
+        if task_type == TaskType.READ_ONLY:
+            objective_satisfied = True
+        elif task_type == TaskType.OPERATIONAL:
+            objective_satisfied = bool(passing_checks or passing_behavioral or successful_command_text)
+        else:
+            objective_satisfied = bool(verified_mutations) and bool(
+                passing_checks or passing_behavioral
+            ) and bool(approved_reviews or self._is_nova_model())
+
+        return CriterionResult(
+            criterion,
+            CriterionStatus.SATISFIED if objective_satisfied else CriterionStatus.UNVERIFIED,
+            evidence_ids=[item["id"] for item in objective_evidence],
+            detail=(
+                "Verified mutations, deterministic checks, and worker review "
+                "support the requested objective."
+                if objective_satisfied
+                else "A mutation alone is insufficient; deterministic checks "
+                "and review evidence are required."
+            ),
+        )
+
+    def _evaluate_verification_checks(self, criterion: str, matched_checks: list) -> CriterionResult:
+        return CriterionResult(
+            criterion,
+            CriterionStatus.SATISFIED if matched_checks else CriterionStatus.UNVERIFIED,
+            evidence_ids=[item["id"] for item in matched_checks],
+            detail=(
+                "A matching passing project check exists."
+                if matched_checks
+                else "No matching passing project check was recorded."
+            ),
+        )
+
+    def _evaluate_security_constraints(self, criterion: str, passing_behavioral: list, matched_checks: list) -> CriterionResult:
+        security_evidence = [
+            item
+            for item in passing_behavioral
+            if item.get("tool") == "security_scan"
+        ] + matched_checks
+        return CriterionResult(
+            criterion,
+            CriterionStatus.SATISFIED if security_evidence else CriterionStatus.UNVERIFIED,
+            evidence_ids=[item["id"] for item in security_evidence],
+            detail=(
+                "A passing bounded security check was recorded."
+                if security_evidence
+                else "No passing security check was recorded."
+            ),
+        )
+
+    def _evaluate_unrelated_files(self, criterion: str, plan: Any, changes: list) -> CriterionResult:
+        permitted = list(getattr(plan, "permitted_files", []) or [])
+        outside = []
+        for item in changes:
+            changed_path = Path(item["filepath"]).resolve()
+            if not _is_relative_to(changed_path, Path(self.working_dir)):
+                outside.append(item["filepath"])
+                continue
+            relative = changed_path.relative_to(
+                Path(self.working_dir).resolve()
+            ).as_posix()
+            if permitted and not any(
+                fnmatch(relative, pattern) or relative == pattern
+                for pattern in permitted
+            ):
+                outside.append(relative)
+        return CriterionResult(
+            criterion,
+            CriterionStatus.UNSATISFIED if outside else CriterionStatus.SATISFIED,
+            detail=(
+                "Out-of-scope changes: " + ", ".join(outside)
+                if outside
+                else (
+                    "All recorded changes matched the plan's permitted files."
+                    if permitted
+                    else "All recorded changes remained inside the authorized workspace."
+                )
+            ),
+        )
+
+    def _evaluate_fingerprinted_mutations(self, criterion: str, evidence: list) -> CriterionResult:
+        mutation_records = [
+            item for item in evidence if item.get("kind") == "file_mutation"
+        ]
+        satisfied = bool(mutation_records) and all(
+            item.get("status") == "verified" for item in mutation_records
+        )
+        return CriterionResult(
+            criterion,
+            CriterionStatus.SATISFIED if satisfied else CriterionStatus.UNVERIFIED,
+            evidence_ids=[item["id"] for item in mutation_records],
+            detail=(
+                "Every recorded mutation passed disk verification."
+                if satisfied
+                else "No complete verified mutation set was recorded."
+            ),
+        )
+
+    def _evaluate_objective_implementation(
+        self,
+        criterion: str,
+        verified_mutations: list,
+        passing_checks: list,
+        passing_behavioral: list,
+        approved_reviews: list,
+        successful_command_text: set,
+    ) -> CriterionResult:
+        objective_evidence = [
+            *verified_mutations,
+            *passing_checks,
+            *passing_behavioral,
+            *approved_reviews,
+        ]
+        task_type = get_task_type(self._active_analysis.get("intent", IntentType.UNKNOWN))
+        
+        if task_type == TaskType.READ_ONLY:
+            objective_satisfied = True
+        elif task_type == TaskType.OPERATIONAL:
+            objective_satisfied = bool(passing_checks or passing_behavioral or successful_command_text)
+        else:
+            objective_satisfied = bool(verified_mutations) and bool(
+                passing_checks or passing_behavioral
+            ) and bool(approved_reviews or self._is_nova_model())
+
+        return CriterionResult(
+            criterion,
+            CriterionStatus.SATISFIED if objective_satisfied else CriterionStatus.UNVERIFIED,
+            evidence_ids=[item["id"] for item in objective_evidence],
+            detail=(
+                "Verified mutations, deterministic checks, and worker review "
+                "support the requested objective."
+                if objective_satisfied
+                else "A mutation alone is insufficient; deterministic checks "
+                "and review evidence are required."
+            ),
+        )
+
+    def _evaluate_verification_checks(self, criterion: str, matched_checks: list) -> CriterionResult:
+        return CriterionResult(
+            criterion,
+            CriterionStatus.SATISFIED if matched_checks else CriterionStatus.UNVERIFIED,
+            evidence_ids=[item["id"] for item in matched_checks],
+            detail=(
+                "A matching passing project check exists."
+                if matched_checks
+                else "No matching passing project check was recorded."
+            ),
+        )
+
+    def _evaluate_security_constraints(self, criterion: str, passing_behavioral: list, matched_checks: list) -> CriterionResult:
+        security_evidence = [
+            item
+            for item in passing_behavioral
+            if item.get("tool") == "security_scan"
+        ] + matched_checks
+        return CriterionResult(
+            criterion,
+            CriterionStatus.SATISFIED if security_evidence else CriterionStatus.UNVERIFIED,
+            evidence_ids=[item["id"] for item in security_evidence],
+            detail=(
+                "A passing bounded security check was recorded."
+                if security_evidence
+                else "No passing security check was recorded."
+            ),
+        )
+
     def _finish_managed_run(
         self,
         content: str,
@@ -786,137 +1018,19 @@ class Agent:
         for criterion in criteria_text:
             lowered = criterion.lower()
             if "unrelated files" in lowered:
-                permitted = list(getattr(plan, "permitted_files", []) or [])
-                outside = []
-                for item in changes:
-                    changed_path = Path(item["filepath"]).resolve()
-                    if not _is_relative_to(changed_path, Path(self.working_dir)):
-                        outside.append(item["filepath"])
-                        continue
-                    relative = changed_path.relative_to(
-                        Path(self.working_dir).resolve()
-                    ).as_posix()
-                    if permitted and not any(
-                        fnmatch(relative, pattern) or relative == pattern
-                        for pattern in permitted
-                    ):
-                        outside.append(relative)
-                results.append(
-                    CriterionResult(
-                        criterion,
-                        CriterionStatus.UNSATISFIED if outside else CriterionStatus.SATISFIED,
-                        detail=(
-                            "Out-of-scope changes: " + ", ".join(outside)
-                            if outside
-                            else (
-                                "All recorded changes matched the plan's permitted files."
-                                if permitted
-                                else "All recorded changes remained inside the authorized workspace."
-                            )
-                        ),
-                    )
-                )
+                results.append(self._evaluate_unrelated_files(criterion, plan, changes))
             elif "fingerprinted" in lowered:
-                mutation_records = [
-                    item for item in evidence if item.get("kind") == "file_mutation"
-                ]
-                satisfied = bool(mutation_records) and all(
-                    item.get("status") == "verified" for item in mutation_records
-                )
-                results.append(
-                    CriterionResult(
-                        criterion,
-                        (
-                            CriterionStatus.SATISFIED
-                            if satisfied
-                            else CriterionStatus.UNVERIFIED
-                        ),
-                        evidence_ids=[item["id"] for item in mutation_records],
-                        detail=(
-                            "Every recorded mutation passed disk verification."
-                            if satisfied
-                            else "No complete verified mutation set was recorded."
-                        ),
-                    )
-                )
+                results.append(self._evaluate_fingerprinted_mutations(criterion, evidence))
             elif "requested objective is implemented" in lowered:
-                objective_evidence = [
-                    *verified_mutations,
-                    *passing_checks,
-                    *passing_behavioral,
-                    *approved_reviews,
-                ]
-                task_type = get_task_type(self._active_analysis.get("intent", IntentType.UNKNOWN))
-                
-                if task_type == TaskType.READ_ONLY:
-                    objective_satisfied = True
-                elif task_type == TaskType.OPERATIONAL:
-                    objective_satisfied = bool(passing_checks or passing_behavioral or successful_command_text)
-                else:
-                    objective_satisfied = bool(verified_mutations) and bool(
-                        passing_checks or passing_behavioral
-                    ) and bool(approved_reviews or self._is_nova_model())
-
-                results.append(
-                    CriterionResult(
-                        criterion,
-                        (
-                            CriterionStatus.SATISFIED
-                            if objective_satisfied
-                            else CriterionStatus.UNVERIFIED
-                        ),
-                        evidence_ids=[item["id"] for item in objective_evidence],
-                        detail=(
-                            "Verified mutations, deterministic checks, and worker review "
-                            "support the requested objective."
-                            if objective_satisfied
-                            else "A mutation alone is insufficient; deterministic checks "
-                            "and review evidence are required."
-                        ),
-                    )
-                )
+                results.append(self._evaluate_objective_implementation(
+                    criterion, verified_mutations, passing_checks, passing_behavioral, approved_reviews, successful_command_text
+                ))
             elif "security" in lowered or "vulnerab" in lowered:
-                security_evidence = [
-                    item
-                    for item in passing_behavioral
-                    if item.get("tool") == "security_scan"
-                ] + matching_checks(criterion)
-                results.append(
-                    CriterionResult(
-                        criterion,
-                        (
-                            CriterionStatus.SATISFIED
-                            if security_evidence
-                            else CriterionStatus.UNVERIFIED
-                        ),
-                        evidence_ids=[item["id"] for item in security_evidence],
-                        detail=(
-                            "A passing bounded security check was recorded."
-                            if security_evidence
-                            else "No passing security check was recorded."
-                        ),
-                    )
-                )
+                results.append(self._evaluate_security_constraints(criterion, passing_behavioral, matching_checks(criterion)))
             elif "verification completed" in lowered or any(
                 term in lowered for term in ("test", "build", "lint", "smoke check")
             ):
-                matched_checks = matching_checks(criterion)
-                results.append(
-                    CriterionResult(
-                        criterion,
-                        (
-                            CriterionStatus.SATISFIED
-                            if matched_checks
-                            else CriterionStatus.UNVERIFIED
-                        ),
-                        evidence_ids=[item["id"] for item in matched_checks],
-                        detail=(
-                            "A matching passing project check exists."
-                            if matched_checks
-                            else "No matching passing project check was recorded."
-                        ),
-                    )
-                )
+                results.append(self._evaluate_verification_checks(criterion, matching_checks(criterion)))
             elif failed_evidence:
                 results.append(
                     CriterionResult(
@@ -1306,92 +1420,28 @@ class Agent:
                 )
         return result, success
 
-    def _execute_tool_with_safety_impl(
+    def _enforce_tool_policy(
         self,
         name: str,
         args: dict,
-        *,
-        _user_confirmed: bool = False,
-        _edit_confirmed: bool = False,
-    ) -> tuple[str, bool]:
-        """
-        Execute a tool with full safety checks, hooks, and context tracking.
-
-        Pipeline: Before Hooks → Safety Check → Execute → Context Track → After Hooks → Reflection
-        """
-        from nexus.tools import normalize_tool_arguments
-        args = normalize_tool_arguments(name, args)
-        pending_args = dict(args)
-        nova_guardrail = args.pop("_nova_guardrail", None)
-        file_path = args.get("path", "") or args.get("file_path", "")
-        command = args.get("command", "")
-        if name == "run_process":
-            raw_argv = args.get("argv", [])
-            command = shlex.join(str(item) for item in raw_argv) if raw_argv else ""
-        if name in {"run_command", "run_process", "process_run"} and re.search(
-            r"\b(?:curl|wget|ssh|scp|sftp|ftp|rsync|gh)\b"
-            r"|\bgit\s+(?:clone|fetch|pull|push)\b"
-            r"|\b(?:pip|pip3|uv)\s+(?:pip\s+)?install\b"
-            r"|\b(?:npm|pnpm|yarn)\s+(?:add|install|publish)\b"
-            r"|\b(?:docker|podman)\s+(?:pull|push)\b"
-            r"|\bcargo\s+(?:add|install)\b|\bgo\s+get\b",
-            command.lower(),
-        ) or name == "github_create_pr":
-            args["network"] = True
-            pending_args["network"] = True
-        mutation_tools = ("write_file", "edit_file", "patch_file", "multi_edit")
-        read_tools = {
-            "read_file",
-            "file_info",
-            "diff_files",
-            "search_code",
-            "list_directory",
-            "find_files",
-            "get_project_structure",
-            "repo_index",
-            "repo_symbols",
-            "repo_impact",
-            "repo_context",
-            "repo_routes",
-            "repo_models",
-            "repo_navigate",
-            "database_check",
-            "security_scan",
-        }
-
-        scope_paths = []
-        if name == "multi_edit":
-            scope_paths.extend(
-                str(item.get("path", "")) for item in args.get("edits", [])
-            )
-        elif file_path:
-            scope_paths.append(str(file_path))
-        if name == "diff_files":
-            scope_paths.extend(
-                str(args.get(key, "")) for key in ("file_a", "file_b")
-            )
-        elif name in {"search_code", "find_files"}:
-            scope_paths.append(str(args.get("directory", "")))
-        elif name in {"run_command", "run_process", "process_run"}:
-            scope_paths.append(str(args.get("cwd", "")))
-        elif name == "repo_impact":
-            scope_paths.extend(str(item) for item in args.get("paths", []))
-        elif name == "security_scan":
-            scope_paths.extend(str(item) for item in args.get("paths", []) or [])
-        elif name == "browser_check":
-            scope_paths.append(str(args.get("screenshot_path", "")))
-        scope_paths = list(dict.fromkeys(item for item in scope_paths if item))
-
+        command: str,
+        scope_paths: list[str],
+        pending_args: dict,
+        _user_confirmed: bool,
+        _edit_confirmed: bool,
+        mutation_tools: tuple,
+        read_tools: set,
+    ) -> tuple[bool, str, tuple[str, bool]]:
         if name in self.disallowed_tools:
-            return f"❌ BLOCKED: {name} is denied by the active permission rules.", False
+            return False, "", (f"❌ BLOCKED: {name} is denied by the active permission rules.", False)
         if self.allowed_tools and name not in self.allowed_tools:
-            return f"❌ BLOCKED: {name} is not in the active tool allowlist.", False
+            return False, "", (f"❌ BLOCKED: {name} is not in the active tool allowlist.", False)
         if not self.mode_policy.may_edit and (
             name in mutation_tools
             or name in ("run_command", "run_process", "process_run")
             or name.startswith("git_")
         ):
-            return "❌ BLOCKED: Current mode is read-only. Switch mode before executing changes.", False
+            return False, "", ("❌ BLOCKED: Current mode is read-only. Switch mode before executing changes.", False)
 
         policy_capability = ""
         policy_targets: list[str] = []
@@ -1455,7 +1505,7 @@ class Agent:
                         policy_decision = PermissionDecision.ASK
                         extension_asked = True
                 if policy_decision == PermissionDecision.DENY:
-                    return (
+                    return False, "", (
                         f"❌ BLOCKED: repository policy denies {policy_capability} "
                         f"for {policy_target or name}.",
                         False,
@@ -1482,13 +1532,23 @@ class Agent:
                     safety_check=policy_check,
                     edit_confirmed=_edit_confirmed,
                 )
-                return (
+                return False, "", (
                     "⏸️ PENDING_CONFIRMATION "
                     f"[{confirmation_id}]: {policy_check.reason}. "
                     f"Enter /confirm {confirmation_id} or /cancel {confirmation_id}.",
                     False,
                 )
+        return True, policy_capability, ("", False)
 
+    def _enforce_network_safety(
+        self,
+        name: str,
+        args: dict,
+        command: str,
+        pending_args: dict,
+        _user_confirmed: bool,
+        _edit_confirmed: bool,
+    ) -> tuple[bool, tuple[str, bool]]:
         requests_network = bool(args.get("network")) or bool(args.get("allow_external"))
         if requests_network and not _user_confirmed:
             network_check = SafetyCheck(
@@ -1504,13 +1564,532 @@ class Agent:
                 safety_check=network_check,
                 edit_confirmed=_edit_confirmed,
             )
-            return (
+            return False, (
                 "⏸️ PENDING_CONFIRMATION "
                 f"[{confirmation_id}]: {network_check.reason}. "
                 f"Enter /confirm {confirmation_id} or /cancel {confirmation_id}.",
                 False,
             )
+        return True, ("", False)
 
+    def _enforce_package_safety(
+        self,
+        name: str,
+        args: dict,
+        command: str,
+        pending_args: dict,
+        _user_confirmed: bool,
+        _edit_confirmed: bool,
+        mutation_tools: tuple,
+    ) -> tuple[bool, str, tuple[str, bool]]:
+        package_checks = []
+        package_warning_text = ""
+        if name in mutation_tools:
+            for package_path, proposed_content in self._dependency_candidates(name, args):
+                package_checks.extend(self.package_guard.check_file_change(package_path, proposed_content))
+        elif name in ("run_command", "run_process", "process_run") and command:
+            package_checks = self.package_guard.check_command(command)
+        if package_checks:
+            for check in package_checks:
+                self.evidence.append(
+                    kind="package_registry",
+                    claim=f"registry check for {check.registry}:{check.name}",
+                    status=check.status,
+                    tool=name,
+                    raw_output=check.reason,
+                    metadata={
+                        "registry": check.registry,
+                        "name": check.name,
+                        "registry_url": check.url,
+                    },
+                )
+            blocked = [check for check in package_checks if check.blocked]
+            if blocked:
+                details = "\n".join(
+                    f"  {check.registry}:{check.name} — {check.reason}" for check in blocked
+                )
+                return False, "", (f"❌ BLOCKED by anti-slopsquatting guard:\n{details}", False)
+            unverified = [
+                check for check in package_checks if check.requires_confirmation
+            ]
+            if unverified and not _user_confirmed:
+                details = "\n".join(
+                    f"  {check.registry}:{check.name} — {check.reason}"
+                    for check in unverified
+                )
+                uncertainty_check = SafetyCheck(
+                    level=SafetyLevel.DANGEROUS,
+                    operation=f"{name} with unverified package metadata",
+                    reason=(
+                        "The package registry could not be verified. This is not "
+                        "treated as proof of a malicious package, but continuing "
+                        "requires explicit approval"
+                    ),
+                    details=details,
+                    requires_confirmation=True,
+                )
+                confirmation_id = self._queue_confirmation(
+                    name=name,
+                    args=pending_args,
+                    safety_check=uncertainty_check,
+                    edit_confirmed=_edit_confirmed,
+                )
+                return False, "", (
+                    "⏸️ PENDING_CONFIRMATION "
+                    f"[{confirmation_id}]: {uncertainty_check.reason}. "
+                    "This operation was not executed. Review the exact operation, then "
+                    f"enter /confirm {confirmation_id} or /cancel {confirmation_id}.\n"
+                    f"{details}",
+                    False,
+                )
+            warnings = [check for check in package_checks if check.status == "warn"]
+            if warnings:
+                package_warning_text = "⚠️ PACKAGE RISK WARNING:\n" + "\n".join(
+                    f"  {check.registry}:{check.name} — {check.reason}" for check in warnings
+                )
+        return True, package_warning_text, ("", False)
+
+    def _prepare_mutation_diff(
+        self,
+        name: str,
+        args: dict,
+        pending_args: dict,
+        _user_confirmed: bool,
+        _edit_confirmed: bool,
+        mutation_tools: tuple,
+    ) -> tuple[bool, str, tuple[str, bool]]:
+        mutation_diff = ""
+        if name in mutation_tools:
+            ok, mutation_diff = preview_mutation(name, args, self.working_dir)
+            if not ok:
+                return False, "", (f"❌ Cannot create a safe diff preview: {mutation_diff}", False)
+            if self.mode_policy.require_review and not _edit_confirmed:
+                confirmation_id = self._queue_edit(name, pending_args, mutation_diff)
+                return False, "", (
+                    "⏸️ PENDING_EDIT_CONFIRMATION "
+                    f"[{confirmation_id}]: The file edit has been queued for review.\n"
+                    f"Enter `/apply {confirmation_id}` or `/reject {confirmation_id}`.\n"
+                    f"Diff preview:\n```diff\n{mutation_diff}\n```",
+                    False,
+                )
+        return True, mutation_diff, ("", False)
+
+    def _dispatch_tool_execution(
+        self,
+        name: str,
+        args: dict,
+    ) -> str:
+        # Check plugin tool dispatch first
+        plugin_handled = False
+        for plugin in self.plugin_loader.plugins.values():
+            dispatch = plugin.get_tool_dispatch()
+            if name in dispatch:
+                try:
+                    return dispatch[name](**args)
+                except Exception as e:
+                    return f"❌ Plugin tool error: {e}"
+
+        for extension_tool in self.extensions.loaded("tools"):
+            if extension_tool.name != name:
+                continue
+            try:
+                extension_result = extension_tool.invoke(
+                    args,
+                    ToolContext(
+                        working_dir=self.working_dir,
+                        session_id=self.conversation_id,
+                        task_id=(
+                            str(self._active_plan.current_step)
+                            if self._active_plan is not None
+                            else ""
+                        ),
+                        permission_mode=self.permission_mode,
+                    ),
+                )
+                return (
+                    extension_result
+                    if isinstance(extension_result, str)
+                    else json.dumps(extension_result, ensure_ascii=False)
+                )
+            except Exception as exc:
+                return f"❌ Extension tool error: {exc}"
+
+        if self.mcp.is_mcp_tool(name):
+            return self.mcp.call_tool(name, args)
+        else:
+            return execute_tool(name, args)
+
+    def _enforce_tool_policy(
+        self,
+        name: str,
+        args: dict,
+        command: str,
+        scope_paths: list[str],
+        pending_args: dict,
+        _user_confirmed: bool,
+        _edit_confirmed: bool,
+        mutation_tools: tuple,
+        read_tools: set,
+    ) -> tuple[bool, str, tuple[str, bool]]:
+        if name in self.disallowed_tools:
+            return False, "", (f"❌ BLOCKED: {name} is denied by the active permission rules.", False)
+        if self.allowed_tools and name not in self.allowed_tools:
+            return False, "", (f"❌ BLOCKED: {name} is not in the active tool allowlist.", False)
+        if not self.mode_policy.may_edit and (
+            name in mutation_tools
+            or name in ("run_command", "run_process", "process_run")
+            or name.startswith("git_")
+        ):
+            return False, "", ("❌ BLOCKED: Current mode is read-only. Switch mode before executing changes.", False)
+
+        policy_capability = ""
+        policy_targets: list[str] = []
+        if name in mutation_tools:
+            policy_capability = "write"
+            policy_targets = scope_paths
+        elif name in ("run_command", "run_process", "process_run"):
+            normalized_command = command.lower()
+            if re.search(r"\bgit\s+push\b", normalized_command):
+                policy_capability = "git_push"
+            elif re.search(
+                r"\b(?:pip|pip3|uv)\s+(?:pip\s+)?install\b"
+                r"|\b(?:npm|pnpm|yarn)\s+(?:add|install)\b"
+                r"|\bcargo\s+add\b|\bgo\s+get\b",
+                normalized_command,
+            ):
+                policy_capability = "package_install"
+            elif re.search(
+                r"\b(?:kubectl\s+(?:apply|delete)|helm\s+(?:install|upgrade)|"
+                r"terraform\s+apply|vercel\s+deploy)\b",
+                normalized_command,
+            ):
+                policy_capability = "deployment"
+            else:
+                policy_capability = "command"
+            policy_targets = [command]
+        elif name.startswith("git_"):
+            policy_capability = "command"
+            policy_targets = [name]
+        elif name in read_tools:
+            policy_capability = "read"
+            policy_targets = scope_paths or [name]
+        elif name in ("web_fetch", "web_search", "api_check", "browser_check"):
+            policy_capability = "network_access"
+            policy_targets = [str(args.get("url") or args.get("query") or "")]
+
+        if policy_capability:
+            approval_targets = []
+            for policy_target in policy_targets or [name]:
+                policy_decision = self.policy.decide(
+                    policy_capability,
+                    policy_target,
+                )
+                extension_asked = False
+                for provider in self.extensions.loaded("policies"):
+                    external = str(
+                        provider.decide(
+                            policy_capability,
+                            policy_target,
+                            ToolContext(
+                                working_dir=self.working_dir,
+                                session_id=self.conversation_id,
+                                permission_mode=self.permission_mode,
+                            ),
+                        )
+                    ).lower()
+                    if external == PermissionDecision.DENY.value:
+                        policy_decision = PermissionDecision.DENY
+                        break
+                    if external == PermissionDecision.ASK.value:
+                        policy_decision = PermissionDecision.ASK
+                        extension_asked = True
+                if policy_decision == PermissionDecision.DENY:
+                    return False, "", (
+                        f"❌ BLOCKED: repository policy denies {policy_capability} "
+                        f"for {policy_target or name}.",
+                        False,
+                    )
+                if policy_decision == PermissionDecision.ASK and (
+                    self.policy.source or extension_asked
+                ):
+                    approval_targets.append(policy_target or name)
+            policy_requires_approval = (
+                approval_targets and not _user_confirmed
+            )
+            if policy_requires_approval:
+                policy_target = ", ".join(approval_targets)
+                policy_check = SafetyCheck(
+                    level=SafetyLevel.DANGEROUS,
+                    operation=f"{policy_capability}: {policy_target or name}",
+                    reason=f"Repository policy requires approval for {policy_capability}",
+                    details=policy_target or name,
+                    requires_confirmation=True,
+                )
+                confirmation_id = self._queue_confirmation(
+                    name=name,
+                    args=pending_args,
+                    safety_check=policy_check,
+                    edit_confirmed=_edit_confirmed,
+                )
+                return False, "", (
+                    "⏸️ PENDING_CONFIRMATION "
+                    f"[{confirmation_id}]: {policy_check.reason}. "
+                    f"Enter /confirm {confirmation_id} or /cancel {confirmation_id}.",
+                    False,
+                )
+        return True, policy_capability, ("", False)
+
+    def _enforce_network_safety(
+        self,
+        name: str,
+        args: dict,
+        command: str,
+        pending_args: dict,
+        _user_confirmed: bool,
+        _edit_confirmed: bool,
+    ) -> tuple[bool, tuple[str, bool]]:
+        requests_network = bool(args.get("network")) or bool(args.get("allow_external"))
+        if requests_network and not _user_confirmed:
+            network_check = SafetyCheck(
+                level=SafetyLevel.DANGEROUS,
+                operation=f"{name} network access",
+                reason="Network access is disabled by default",
+                details=command or str(args.get("url", "")),
+                requires_confirmation=True,
+            )
+            confirmation_id = self._queue_confirmation(
+                name=name,
+                args=pending_args,
+                safety_check=network_check,
+                edit_confirmed=_edit_confirmed,
+            )
+            return False, (
+                "⏸️ PENDING_CONFIRMATION "
+                f"[{confirmation_id}]: {network_check.reason}. "
+                f"Enter /confirm {confirmation_id} or /cancel {confirmation_id}.",
+                False,
+            )
+        return True, ("", False)
+
+    def _enforce_package_safety(
+        self,
+        name: str,
+        args: dict,
+        command: str,
+        pending_args: dict,
+        _user_confirmed: bool,
+        _edit_confirmed: bool,
+        mutation_tools: tuple,
+    ) -> tuple[bool, str, tuple[str, bool]]:
+        package_checks = []
+        package_warning_text = ""
+        if name in mutation_tools:
+            for package_path, proposed_content in self._dependency_candidates(name, args):
+                package_checks.extend(self.package_guard.check_file_change(package_path, proposed_content))
+        elif name in ("run_command", "run_process", "process_run") and command:
+            package_checks = self.package_guard.check_command(command)
+        if package_checks:
+            for check in package_checks:
+                self.evidence.append(
+                    kind="package_registry",
+                    claim=f"registry check for {check.registry}:{check.name}",
+                    status=check.status,
+                    tool=name,
+                    raw_output=check.reason,
+                    metadata={
+                        "registry": check.registry,
+                        "name": check.name,
+                        "registry_url": check.url,
+                    },
+                )
+            blocked = [check for check in package_checks if check.blocked]
+            if blocked:
+                details = "\n".join(
+                    f"  {check.registry}:{check.name} — {check.reason}" for check in blocked
+                )
+                return False, "", (f"❌ BLOCKED by anti-slopsquatting guard:\n{details}", False)
+            unverified = [
+                check for check in package_checks if check.requires_confirmation
+            ]
+            if unverified and not _user_confirmed:
+                details = "\n".join(
+                    f"  {check.registry}:{check.name} — {check.reason}"
+                    for check in unverified
+                )
+                uncertainty_check = SafetyCheck(
+                    level=SafetyLevel.DANGEROUS,
+                    operation=f"{name} with unverified package metadata",
+                    reason=(
+                        "The package registry could not be verified. This is not "
+                        "treated as proof of a malicious package, but continuing "
+                        "requires explicit approval"
+                    ),
+                    details=details,
+                    requires_confirmation=True,
+                )
+                confirmation_id = self._queue_confirmation(
+                    name=name,
+                    args=pending_args,
+                    safety_check=uncertainty_check,
+                    edit_confirmed=_edit_confirmed,
+                )
+                return False, "", (
+                    "⏸️ PENDING_CONFIRMATION "
+                    f"[{confirmation_id}]: {uncertainty_check.reason}. "
+                    "This operation was not executed. Review the exact operation, then "
+                    f"enter /confirm {confirmation_id} or /cancel {confirmation_id}.\n"
+                    f"{details}",
+                    False,
+                )
+            warnings = [check for check in package_checks if check.status == "warn"]
+            if warnings:
+                package_warning_text = "⚠️ PACKAGE RISK WARNING:\n" + "\n".join(
+                    f"  {check.registry}:{check.name} — {check.reason}" for check in warnings
+                )
+        return True, package_warning_text, ("", False)
+
+    def _prepare_mutation_diff(
+        self,
+        name: str,
+        args: dict,
+        pending_args: dict,
+        _user_confirmed: bool,
+        _edit_confirmed: bool,
+        mutation_tools: tuple,
+    ) -> tuple[bool, str, tuple[str, bool]]:
+        mutation_diff = ""
+        if name in mutation_tools:
+            ok, mutation_diff = preview_mutation(name, args, self.working_dir)
+            if not ok:
+                return False, "", (f"❌ Cannot create a safe diff preview: {mutation_diff}", False)
+            if self.mode_policy.require_review and not _edit_confirmed:
+                confirmation_id = self._queue_edit(name, pending_args, mutation_diff)
+                return False, "", (
+                    "⏸️ PENDING_EDIT_CONFIRMATION "
+                    f"[{confirmation_id}]: The file edit has been queued for review.\n"
+                    f"Enter `/apply {confirmation_id}` or `/reject {confirmation_id}`.\n"
+                    f"Diff preview:\n```diff\n{mutation_diff}\n```",
+                    False,
+                )
+        return True, mutation_diff, ("", False)
+
+    def _dispatch_tool_execution(
+        self,
+        name: str,
+        args: dict,
+    ) -> str:
+        # Check plugin tool dispatch first
+        plugin_handled = False
+        for plugin in self.plugin_loader.plugins.values():
+            dispatch = plugin.get_tool_dispatch()
+            if name in dispatch:
+                try:
+                    return dispatch[name](**args)
+                except Exception as e:
+                    return f"❌ Plugin tool error: {e}"
+
+        for extension_tool in self.extensions.loaded("tools"):
+            if extension_tool.name != name:
+                continue
+            try:
+                extension_result = extension_tool.invoke(
+                    args,
+                    ToolContext(
+                        working_dir=self.working_dir,
+                        session_id=self.conversation_id,
+                        task_id=(
+                            str(self._active_plan.current_step)
+                            if self._active_plan is not None
+                            else ""
+                        ),
+                        permission_mode=self.permission_mode,
+                    ),
+                )
+                return (
+                    extension_result
+                    if isinstance(extension_result, str)
+                    else json.dumps(extension_result, ensure_ascii=False)
+                )
+            except Exception as exc:
+                return f"❌ Extension tool error: {exc}"
+
+        if self.mcp.is_mcp_tool(name):
+            return self.mcp.call_tool(name, args)
+        else:
+            return execute_tool(name, args)
+
+    def _execute_tool_with_safety_impl(
+        self,
+        name: str,
+        args: dict,
+        *,
+        _user_confirmed: bool = False,
+        _edit_confirmed: bool = False,
+    ) -> tuple[str, bool]:
+        """
+        Execute a tool with full safety checks, hooks, and context tracking.
+
+        Pipeline: Before Hooks → Safety Check → Execute → Context Track → After Hooks → Reflection
+        """
+        from nexus.tools import normalize_tool_arguments
+        args = normalize_tool_arguments(name, args)
+        pending_args = dict(args)
+        nova_guardrail = args.pop("_nova_guardrail", None)
+        file_path = args.get("path", "") or args.get("file_path", "")
+        command = args.get("command", "")
+        if name == "run_process":
+            raw_argv = args.get("argv", [])
+            command = shlex.join(str(item) for item in raw_argv) if raw_argv else ""
+        if name in {"run_command", "run_process", "process_run"} and re.search(
+            r"\b(?:curl|wget|ssh|scp|sftp|ftp|rsync|gh)\b"
+            r"|\bgit\s+(?:clone|fetch|pull|push)\b"
+            r"|\b(?:pip|pip3|uv)\s+(?:pip\s+)?install\b"
+            r"|\b(?:npm|pnpm|yarn)\s+(?:add|install|publish)\b"
+            r"|\b(?:docker|podman)\s+(?:pull|push)\b"
+            r"|\bcargo\s+(?:add|install)\b|\bgo\s+get\b",
+            command.lower(),
+        ) or name == "github_create_pr":
+            args["network"] = True
+            pending_args["network"] = True
+        mutation_tools = ("write_file", "edit_file", "patch_file", "multi_edit")
+        read_tools = {
+            "read_file", "file_info", "diff_files", "search_code",
+            "list_directory", "find_files", "get_project_structure",
+            "repo_index", "repo_symbols", "repo_impact", "repo_context",
+            "repo_routes", "repo_models", "repo_navigate",
+            "database_check", "security_scan",
+        }
+
+        scope_paths = []
+        if name == "multi_edit":
+            scope_paths.extend(str(item.get("path", "")) for item in args.get("edits", []))
+        elif file_path:
+            scope_paths.append(str(file_path))
+        if name == "diff_files":
+            scope_paths.extend(str(args.get(key, "")) for key in ("file_a", "file_b"))
+        elif name in {"search_code", "find_files"}:
+            scope_paths.append(str(args.get("directory", "")))
+        elif name in {"run_command", "run_process", "process_run"}:
+            scope_paths.append(str(args.get("cwd", "")))
+        elif name == "repo_impact":
+            scope_paths.extend(str(item) for item in args.get("paths", []))
+        elif name == "security_scan":
+            scope_paths.extend(str(item) for item in args.get("paths", []) or [])
+        elif name == "browser_check":
+            scope_paths.append(str(args.get("screenshot_path", "")))
+        scope_paths = list(dict.fromkeys(item for item in scope_paths if item))
+
+        # ── 1. Enforce Tool Policy
+        ok, policy_capability, err_res = self._enforce_tool_policy(
+            name, args, command, scope_paths, pending_args, _user_confirmed, _edit_confirmed, mutation_tools, read_tools
+        )
+        if not ok: return err_res
+
+        # ── 2. Enforce Network Safety
+        ok, err_res = self._enforce_network_safety(name, args, command, pending_args, _user_confirmed, _edit_confirmed)
+        if not ok: return err_res
+
+        # Nova Guardrail checks for mutations
         if name in mutation_tools:
             if nova_guardrail is not None and not nova_guardrail.get("passed"):
                 return "❌ BLOCKED: Nova guardrail metadata was present but did not pass.", False
@@ -1520,7 +2099,6 @@ class Agent:
                     "guardrail verdict (path validation, constraint verification, and disk gate).",
                     False,
                 )
-
             early_edits = args.get("edits", []) if name == "multi_edit" else [args]
             for early_edit in early_edits:
                 early_path = early_edit.get("path", "")
@@ -1533,9 +2111,7 @@ class Agent:
                 if early_check.level == SafetyLevel.BLOCKED:
                     return f"❌ BLOCKED: {early_check.reason}", False
 
-        # Resolve scope before previews, dependency inspection, hooks, or tool
-        # dispatch. This prevents an unapproved path from being read merely to
-        # construct a diff.
+        # Resolve scope outside workspace
         for scoped_path in (item for item in scope_paths if item):
             resolved_file = Path(scoped_path).expanduser()
             if not resolved_file.is_absolute():
@@ -1567,92 +2143,19 @@ class Agent:
                     False,
                 )
 
-        # ── Package existence gate (before dependency writes or installs) ─
-        package_checks = []
-        package_warning_text = ""
-        if name in mutation_tools:
-            for package_path, proposed_content in self._dependency_candidates(name, args):
-                package_checks.extend(self.package_guard.check_file_change(package_path, proposed_content))
-        elif name in ("run_command", "run_process", "process_run") and command:
-            package_checks = self.package_guard.check_command(command)
-        if package_checks:
-            for check in package_checks:
-                self.evidence.append(
-                    kind="package_registry",
-                    claim=f"registry check for {check.registry}:{check.name}",
-                    status=check.status,
-                    tool=name,
-                    raw_output=check.reason,
-                    metadata={
-                        "registry": check.registry,
-                        "name": check.name,
-                        "registry_url": check.url,
-                    },
-                )
-            blocked = [check for check in package_checks if check.blocked]
-            if blocked:
-                details = "\n".join(
-                    f"  {check.registry}:{check.name} — {check.reason}" for check in blocked
-                )
-                return f"❌ BLOCKED by anti-slopsquatting guard:\n{details}", False
-            unverified = [
-                check for check in package_checks if check.requires_confirmation
-            ]
-            if unverified and not _user_confirmed:
-                details = "\n".join(
-                    f"  {check.registry}:{check.name} — {check.reason}"
-                    for check in unverified
-                )
-                uncertainty_check = SafetyCheck(
-                    level=SafetyLevel.DANGEROUS,
-                    operation=f"{name} with unverified package metadata",
-                    reason=(
-                        "The package registry could not be verified. This is not "
-                        "treated as proof of a malicious package, but continuing "
-                        "requires explicit approval"
-                    ),
-                    details=details,
-                    requires_confirmation=True,
-                )
-                confirmation_id = self._queue_confirmation(
-                    name=name,
-                    args=pending_args,
-                    safety_check=uncertainty_check,
-                    edit_confirmed=_edit_confirmed,
-                )
-                return (
-                    "⏸️ PENDING_CONFIRMATION "
-                    f"[{confirmation_id}]: {uncertainty_check.reason}. "
-                    "This operation was not executed. Review the exact operation, then "
-                    f"enter /confirm {confirmation_id} or /cancel {confirmation_id}.\n"
-                    f"{details}",
-                    False,
-                )
-            warnings = [check for check in package_checks if check.status == "warn"]
-            if warnings:
-                package_warning_text = "⚠️ PACKAGE RISK WARNING:\n" + "\n".join(
-                    f"  {check.registry}:{check.name} — {check.reason}" for check in warnings
-                )
+        # ── 3. Enforce Package Safety
+        ok, package_warning_text, err_res = self._enforce_package_safety(
+            name, args, command, pending_args, _user_confirmed, _edit_confirmed, mutation_tools
+        )
+        if not ok: return err_res
 
-        # ── File diff approval gate ──────────────────────────────────────
-        mutation_diff = ""
-        if name in mutation_tools:
-            ok, mutation_diff = preview_mutation(name, args, self.working_dir)
-            if not ok:
-                return f"❌ Cannot create a safe diff preview: {mutation_diff}", False
-        if (
-            name in mutation_tools
-            and not _edit_confirmed
-            and self.permission_mode != "acceptEdits"
-        ):
-            edit_id = self._queue_edit(name, pending_args, mutation_diff)
-            return (
-                f"⏸️ PENDING_EDIT [{edit_id}] — no file was changed.\n{mutation_diff}\n"
-                f"Use /apply {edit_id}, /reject {edit_id}, or /edit-pending {edit_id} <replacement-file>.",
-                False,
-            )
+        # ── 4. File diff approval gate
+        ok, mutation_diff, err_res = self._prepare_mutation_diff(
+            name, args, pending_args, _user_confirmed, _edit_confirmed, mutation_tools
+        )
+        if not ok: return err_res
 
-        # ── 1. Determine lifecycle events ────────────────────────────────
+        # ── Fire BEFORE hooks
         event_before = None
         event_after = None
 
@@ -1677,14 +2180,13 @@ class Agent:
             tool_args=args,
         )
 
-        # ── 2. Fire BEFORE hooks ─────────────────────────────────────────
         if event_before:
             hook_ctx.event = event_before
             hook_results = self.hooks.fire(event_before, hook_ctx)
             if any(r.blocked for r in hook_results):
                 return "❌ Operation blocked by hook policy.", False
-
-        # ── 3. Safety check ──────────────────────────────────────────────
+                
+        # ── Safety check ──
         safety_check = None
         if name in ("run_command", "run_process", "process_run") and command:
             safety_check = self.safety.check_command(command)
@@ -1697,97 +2199,29 @@ class Agent:
                     safety_check = check
                     break
         elif name in mutation_tools and file_path:
-            content = args.get("content", "") or args.get("new_text", "") or args.get("new_content", "")
-            safety_check = self.safety.check_file_write(file_path, content)
-        elif name.startswith("git_"):
-            if name == "git_branch" and args.get("action") == "delete":
-                safety_check = SafetyCheck(
-                    level=SafetyLevel.DANGEROUS,
-                    operation=f"delete git branch {args.get('name', '')}",
-                    reason="Deleting a git branch may discard commits",
-                    details=f"Branch: {args.get('name', '')}",
-                    requires_confirmation=True,
-                )
-            else:
-                safety_check = self.safety.check_git_operation([name] + [str(v) for v in args.values() if isinstance(v, str)])
+            content_val = args.get("content", "") or args.get("new_text", "") or args.get("new_content", "")
+            safety_check = self.safety.check_file_write(file_path, content_val)
+            
+        if safety_check and safety_check.level == SafetyLevel.BLOCKED:
+            return f"❌ BLOCKED: {safety_check.reason}", False
+        elif safety_check and safety_check.level == SafetyLevel.DANGEROUS and not _user_confirmed:
+            confirmation_id = self._queue_confirmation(
+                name=name,
+                args=pending_args,
+                safety_check=safety_check,
+                edit_confirmed=_edit_confirmed,
+            )
+            return (
+                "⏸️ PENDING_CONFIRMATION "
+                f"[{confirmation_id}]: {safety_check.reason}. "
+                "This operation was not executed. Review the exact operation, then "
+                f"enter /confirm {confirmation_id} or /cancel {confirmation_id}.\n"
+                f"{safety_check.details}",
+                False,
+            )
 
-        safety_warning = ""
-        if safety_check and not safety_check.is_allowed:
-            if safety_check.level == SafetyLevel.BLOCKED:
-                return f"❌ BLOCKED: {safety_check.reason}", False
-            if safety_check.level == SafetyLevel.DANGEROUS:
-                if _user_confirmed:
-                    safety_check.confirmed = True
-                else:
-                    confirmation_id = self._queue_confirmation(
-                        name=name,
-                        args=pending_args,
-                        safety_check=safety_check,
-                        edit_confirmed=_edit_confirmed,
-                    )
-                    return (
-                        "⏸️ PENDING_CONFIRMATION "
-                        f"[{confirmation_id}]: {safety_check.reason}. "
-                        "This operation was not executed. Review the exact operation, then "
-                        f"enter /confirm {confirmation_id} or /cancel {confirmation_id}.\n"
-                        f"{safety_check.details}",
-                        False,
-                    )
-            if safety_check.level == SafetyLevel.WARN:
-                safety_warning = safety_check.format_warning()
-
-        if safety_check and safety_check.level == SafetyLevel.DANGEROUS and not safety_check.is_allowed:
-            return "❌ BLOCKED: Dangerous operation lacks explicit user confirmation.", False
-
-        # ── 4. Execute the tool ──────────────────────────────────────────
-        result = ""
-
-        # Check plugin tool dispatch first
-        plugin_handled = False
-        for plugin in self.plugin_loader.plugins.values():
-            dispatch = plugin.get_tool_dispatch()
-            if name in dispatch:
-                try:
-                    result = dispatch[name](**args)
-                    plugin_handled = True
-                except Exception as e:
-                    result = f"❌ Plugin tool error: {e}"
-                    plugin_handled = True
-                break
-
-        if not plugin_handled:
-            for extension_tool in self.extensions.loaded("tools"):
-                if extension_tool.name != name:
-                    continue
-                try:
-                    extension_result = extension_tool.invoke(
-                        args,
-                        ToolContext(
-                            working_dir=self.working_dir,
-                            session_id=self.conversation_id,
-                            task_id=(
-                                str(self._active_plan.current_step)
-                                if self._active_plan is not None
-                                else ""
-                            ),
-                            permission_mode=self.permission_mode,
-                        ),
-                    )
-                    result = (
-                        extension_result
-                        if isinstance(extension_result, str)
-                        else json.dumps(extension_result, ensure_ascii=False)
-                    )
-                except Exception as exc:
-                    result = f"❌ Extension tool error: {exc}"
-                plugin_handled = True
-                break
-
-        if not plugin_handled:
-            if self.mcp.is_mcp_tool(name):
-                result = self.mcp.call_tool(name, args)
-            else:
-                result = execute_tool(name, args)
+        # ── 5. Execute
+        result = self._dispatch_tool_execution(name, args)
 
         success = not result.startswith(("❌", "⏰", "⏸️"))
         if name in ("api_check", "database_check", "browser_check", "security_scan"):
@@ -1796,13 +2230,10 @@ class Agent:
             except (AttributeError, TypeError, json.JSONDecodeError):
                 success = False
 
-        if safety_check and safety_check.level == SafetyLevel.WARN:
-            safety_warning = safety_check.format_warning()
-            result = safety_warning + "\n" + result
         if package_warning_text:
             result = package_warning_text + "\n" + result
 
-        # ── Verified-completion evidence ─────────────────────────────────
+        # ── Verified-completion evidence
         if success and name in mutation_tools:
             verified, detail, artifacts = verify_mutation(name, args, self.working_dir)
             code_failures = []
@@ -1845,11 +2276,7 @@ class Agent:
                 )
             result += f"\n🔎 VERIFIED: {detail}\nEvidence: {self.evidence.path}"
         elif name in ("run_command", "run_process", "process_run"):
-            exit_code = (
-                command_exit_code(result)
-                if name in ("run_command", "run_process")
-                else None
-            )
+            exit_code = command_exit_code(result) if name in ("run_command", "run_process") else None
             status = "verified" if success and (exit_code == 0 or name == "process_run") else "failed"
             self.evidence.append(
                 kind="command",
@@ -1884,7 +2311,7 @@ class Agent:
                 metadata={"arguments": args},
             )
 
-        # ── 5. Track file access in context manager ──────────────────────
+        # ── 6. Track file access in context manager
         if file_path:
             was_edited = name in ("write_file", "edit_file", "patch_file", "multi_edit")
             self.context_mgr.track_file_access(file_path, was_edited=was_edited)
@@ -1892,13 +2319,13 @@ class Agent:
                 self.context_mgr.track_file_imports(file_path, result)
                 self.context_mgr.summarize_file(file_path, result)
 
-        # ── 6. Fire AFTER hooks ──────────────────────────────────────────
+        # ── 7. Fire AFTER hooks
         if event_after:
             hook_ctx.event = event_after
             hook_ctx.tool_result = result
             self.hooks.fire(event_after, hook_ctx)
 
-        # ── 7. Fire error hook on failure ────────────────────────────────
+        # ── 8. Fire error hook on failure
         if not success:
             self.hooks.fire(HookEvent.ON_ERROR, HookContext(
                 event=HookEvent.ON_ERROR,
@@ -2318,12 +2745,13 @@ class Agent:
 
         # --- NEW ENGINE EXECUTION LOOP ---
         _run_id = self.run_ledger.session_id if hasattr(self, "run_ledger") and self.run_ledger else None
-        engine = ExecutionKernel(
-            self.client,
+        session = ExecutionSession(
+            provider=self.client,
             max_turns=max_iterations,
             model_id=self.model_cfg["id"],
             run_id=_run_id,
         )
+        engine = session.interactive
         
         def handle_tool(name, args):
             tc = [{"id": f"call_{time.time()}", "name": name, "arguments": json.dumps(args)}]

@@ -1,0 +1,546 @@
+{
+  "created_at": "2026-07-31T17:52:33.497742+00:00",
+  "repository": "/Users/ashishsingh/Desktop/product",
+  "workspace_root": "/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z",
+  "python": "3.13.2 (v3.13.2:4f8bb3947cf, Feb  4 2025, 11:51:10) [Clang 15.0.0 (clang-1500.3.9.4)]",
+  "scenarios": [
+    {
+      "name": "01_python_entrypoint",
+      "model": "nova_codex",
+      "model_id": null,
+      "passed": false,
+      "workspace": "/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/01_python_entrypoint",
+      "transcript": "/Users/ashishsingh/Desktop/product/verification_evidence/20260731T175058Z/raw/01_python_entrypoint.log",
+      "steps": [
+        {
+          "label": "git init",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity email",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity name",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git add baseline",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git baseline commit",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus CLI",
+          "returncode": 2,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "native execution",
+          "returncode": 2,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "Nexus git status",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git diff check",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "02_python_surgical_bugfix",
+      "model": "nova_codex",
+      "model_id": null,
+      "passed": false,
+      "workspace": "/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/02_python_surgical_bugfix",
+      "transcript": "/Users/ashishsingh/Desktop/product/verification_evidence/20260731T175058Z/raw/02_python_surgical_bugfix.log",
+      "steps": [
+        {
+          "label": "git init",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity email",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity name",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git add baseline",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git baseline commit",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus CLI",
+          "returncode": 2,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "Nexus evidence trail",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "behavior assertions",
+          "returncode": 1,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "Nexus git status",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git diff check",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "03_go_executable",
+      "model": "nova_codex",
+      "model_id": null,
+      "passed": false,
+      "workspace": "/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/03_go_executable",
+      "transcript": "/Users/ashishsingh/Desktop/product/verification_evidence/20260731T175058Z/raw/03_go_executable.log",
+      "steps": [
+        {
+          "label": "git init",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity email",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity name",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git add baseline",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git baseline commit",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus CLI",
+          "returncode": 2,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "go compiler",
+          "returncode": 1,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "go behavior",
+          "returncode": 1,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "Nexus git status",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git diff check",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "04_cpp_dfs",
+      "model": "nova_codex",
+      "model_id": null,
+      "passed": false,
+      "workspace": "/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/04_cpp_dfs",
+      "transcript": "/Users/ashishsingh/Desktop/product/verification_evidence/20260731T175058Z/raw/04_cpp_dfs.log",
+      "steps": [
+        {
+          "label": "git init",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity email",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity name",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git add baseline",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git baseline commit",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus CLI",
+          "returncode": 2,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "C++ compiler",
+          "returncode": 1,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "C++ behavior",
+          "returncode": null,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "Nexus git status",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git diff check",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "05_javascript_recursive_lister",
+      "model": "nova_codex",
+      "model_id": null,
+      "passed": false,
+      "workspace": "/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/05_javascript_recursive_lister",
+      "transcript": "/Users/ashishsingh/Desktop/product/verification_evidence/20260731T175058Z/raw/05_javascript_recursive_lister.log",
+      "steps": [
+        {
+          "label": "git init",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity email",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity name",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git add baseline",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git baseline commit",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus CLI",
+          "returncode": 2,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "JavaScript syntax",
+          "returncode": 1,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "recursive listing behavior",
+          "returncode": 1,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "Nexus git status",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git diff check",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "06_registry_checked_package_json",
+      "model": "nova_codex",
+      "model_id": null,
+      "passed": false,
+      "workspace": "/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/06_registry_checked_package_json",
+      "transcript": "/Users/ashishsingh/Desktop/product/verification_evidence/20260731T175058Z/raw/06_registry_checked_package_json.log",
+      "steps": [
+        {
+          "label": "git init",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity email",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity name",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git add baseline",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git baseline commit",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus CLI",
+          "returncode": 3,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "Nexus evidence trail",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "manifest assertions",
+          "returncode": 1,
+          "expected_returncode": 0,
+          "passed": false
+        },
+        {
+          "label": "Nexus git status",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git diff check",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "07_dangerous_command_confirmation",
+      "model": "nova_codex",
+      "model_id": null,
+      "passed": true,
+      "workspace": "/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/07_dangerous_command_confirmation",
+      "transcript": "/Users/ashishsingh/Desktop/product/verification_evidence/20260731T175058Z/raw/07_dangerous_command_confirmation.log",
+      "steps": [
+        {
+          "label": "git init",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity email",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity name",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git add baseline",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git baseline commit",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus CLI",
+          "returncode": 2,
+          "expected_returncode": 2,
+          "passed": true
+        },
+        {
+          "label": "sentinel remains",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus git status",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git diff check",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        }
+      ]
+    },
+    {
+      "name": "08_slopsquatting_block",
+      "model": "nova_codex",
+      "model_id": null,
+      "passed": true,
+      "workspace": "/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/08_slopsquatting_block",
+      "transcript": "/Users/ashishsingh/Desktop/product/verification_evidence/20260731T175058Z/raw/08_slopsquatting_block.log",
+      "steps": [
+        {
+          "label": "git init",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity email",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git identity name",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git add baseline",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git baseline commit",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "Nexus CLI",
+          "returncode": 2,
+          "expected_returncode": 2,
+          "passed": true
+        },
+        {
+          "label": "Nexus git status",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        },
+        {
+          "label": "git diff check",
+          "returncode": 0,
+          "expected_returncode": 0,
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "passed": 2,
+  "failed": 6
+}

@@ -1,0 +1,119 @@
+--- ./nexus/api.py	2026-07-31 19:32:26
++++ /tmp/nexus_cli_v3.1_launch_hardened_source/nexus_cli_v3.1_launch_hardened/nexus/api.py	2026-07-31 17:10:00
+@@ -6,10 +6,11 @@
+ import os
+ import time
+ 
+-from openai import OpenAI
++from nexus.openai_compat import OpenAI
+ 
+ NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+ GROQ_BASE_URL = "https://api.groq.com/openai/v1"
++OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+ 
+ # Hosted inference can legitimately take more than a few seconds before the
+ # first token. Keep the defaults conservative while allowing operators to tune
+@@ -34,7 +35,11 @@
+ 
+ def _load_env_file():
+     """Load local Nexus environment files without overriding process values."""
++    cwd = os.getcwd()
++    checkout = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+     possible_paths = [
++        os.path.join(cwd, ".env"),
++        os.path.join(checkout, ".env"),
+         os.path.expanduser("~/.config/nexus/.env"),
+         os.path.expanduser("~/.nexusai/.env"),
+     ]
+@@ -108,6 +113,9 @@
+         self.primary_key = api_key or os.environ.get("NVIDIA_API_KEY", "")
+         self.api_key = self.primary_key
+         self.timeout = timeout
++        self.custom_base_url = os.environ.get("NEXUS_OPENAI_BASE_URL", "").strip().rstrip("/")
++        self.custom_api_key = os.environ.get("NEXUS_OPENAI_API_KEY", "").strip()
++        self.custom_model = os.environ.get("NEXUS_MODEL_ID", "").strip()
+ 
+         # Collect all NVIDIA keys
+         self.nvidia_keys = [self.primary_key] if self.primary_key else []
+@@ -140,9 +148,16 @@
+         self.groq_key = self.groq_keys[0] if self.groq_keys else ""
+         self.groq_pool = RoundRobinKeyPool(self.groq_keys, cooldown_seconds=60.0)
+ 
+-        # Pre-instantiate primary client
+-        if self.nvidia_keys:
++        # Pre-instantiate the highest-priority configured client.
++        if self.custom_base_url and self.custom_api_key:
+             self.client = OpenAI(
++                base_url=self.custom_base_url,
++                api_key=self.custom_api_key,
++                timeout=self.timeout,
++                max_retries=0,
++            )
++        elif self.nvidia_keys:
++            self.client = OpenAI(
+                 base_url=NVIDIA_BASE_URL,
+                 api_key=self.nvidia_keys[0],
+                 timeout=self.timeout,
+@@ -157,13 +172,13 @@
+             )
+         elif os.environ.get("OPENROUTER_API_KEY"):
+             self.client = OpenAI(
+-                base_url="https://openrouter.ai/api/v1",
++                base_url=OPENROUTER_BASE_URL,
+                 api_key=os.environ["OPENROUTER_API_KEY"],
+                 timeout=DEFAULT_GROQ_TIMEOUT,
+                 max_retries=0,
+             )
+         else:
+-            raise ValueError("No valid API key found for NVIDIA, Groq, or OpenRouter.")
++            raise ValueError("No valid API key found for a custom OpenAI-compatible endpoint, NVIDIA, Groq, or OpenRouter.")
+ 
+     @property
+     def all_keys(self) -> list[str]:
+@@ -245,6 +260,23 @@
+         errors = []
+         connection_timed_out = False
+ 
++        # ── Step 0: Explicit custom OpenAI-compatible endpoint ───────────
++        if self.custom_base_url and self.custom_api_key:
++            try:
++                custom_client = OpenAI(
++                    base_url=self.custom_base_url,
++                    api_key=self.custom_api_key,
++                    timeout=self.timeout,
++                    max_retries=0,
++                )
++                effective_model = self.custom_model or model_id
++                return custom_client.chat.completions.create(
++                    model=effective_model,
++                    **kwargs,
++                )
++            except Exception as exc:
++                errors.append(f"Custom OpenAI-compatible endpoint: {exc}")
++
+         # ── Step 1: Try NVIDIA keys with requested model (max 3 key attempts for fast failover)
+         if self.nvidia_keys:
+             start_idx = self.current_key_idx
+@@ -334,7 +366,7 @@
+         if openrouter_key:
+             try:
+                 or_client = OpenAI(
+-                    base_url="https://openrouter.ai/api/v1",
++                    base_url=OPENROUTER_BASE_URL,
+                     api_key=openrouter_key,
+                     timeout=DEFAULT_GROQ_TIMEOUT,
+                     max_retries=0,
+@@ -342,7 +374,12 @@
+                 or_kwargs = dict(kwargs)
+                 if or_kwargs.get("max_tokens", 16384) > 8192:
+                     or_kwargs["max_tokens"] = 8192
+-                return or_client.chat.completions.create(model="deepseek/deepseek-chat", **or_kwargs)
++                openrouter_model = (
++                    os.environ.get("NEXUS_OPENROUTER_MODEL", "").strip()
++                    or self.custom_model
++                    or model_id
++                )
++                return or_client.chat.completions.create(model=openrouter_model, **or_kwargs)
+             except Exception as e:
+                 errors.append(f"OpenRouter Fallback: {e}")
+ 

@@ -1020,12 +1020,13 @@ def main():
 
     # Create agent
     try:
-        automatic_workspace = args.mode != "plan" and not args.resume_run
+        _mode_policy = get_mode_policy(args.mode)
+        automatic_workspace = _mode_policy.may_edit and not args.resume_run
         agent = Agent(
             api_key=api_key,
             model_key=args.model,
             working_dir=args.working_dir,
-            mode_policy=get_mode_policy(args.mode),
+            mode_policy=_mode_policy,
             permission_mode=args.permission_mode,
             allowed_tools=args.allowed_tools,
             disallowed_tools=args.disallowed_tools,

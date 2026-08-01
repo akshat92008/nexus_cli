@@ -1,0 +1,89 @@
+--- ./scripts/run_release_e2e.py	2026-07-31 19:32:26
++++ /tmp/nexus_cli_v3.1_launch_hardened_source/nexus_cli_v3.1_launch_hardened/scripts/run_release_e2e.py	2026-07-31 17:24:58
+@@ -13,6 +13,7 @@
+ import os
+ import subprocess
+ import sys
++import tempfile
+ from dataclasses import dataclass, field
+ from datetime import datetime, timezone
+ from pathlib import Path
+@@ -41,8 +42,13 @@
+     model: str = "nova_codex"
+ 
+ 
+-def nexus_command(workspace: Path, prompt: str, model: str = "nova_codex") -> list[str]:
+-    return [
++def nexus_command(
++    workspace: Path,
++    prompt: str,
++    model: str = "nova_codex",
++    model_id: str | None = None,
++) -> list[str]:
++    command = [
+         sys.executable,
+         str(REPO / "run.py"),
+         "--model",
+@@ -57,6 +63,9 @@
+         "json",
+         prompt,
+     ]
++    if model_id:
++        command[4:4] = ["--model-id", model_id]
++    return command
+ 
+ 
+ def run_step(step: Step, cwd: Path, env: dict[str, str]) -> dict:
+@@ -259,7 +268,9 @@
+ def main() -> int:
+     parser = argparse.ArgumentParser()
+     parser.add_argument("--artifact-root", default=str(REPO / "verification_evidence"))
+-    parser.add_argument("--workspace-root", default="/private/tmp")
++    parser.add_argument("--workspace-root", default=tempfile.gettempdir())
++    parser.add_argument("--model", default=os.environ.get("NEXUS_E2E_MODEL"), help="Override the model for all model-backed scenarios")
++    parser.add_argument("--model-id", default=os.environ.get("NEXUS_MODEL_ID"), help="Provider model ID for --model custom")
+     parser.add_argument("--scenario", action="append", help="Run only the named scenario (repeatable)")
+     args = parser.parse_args()
+ 
+@@ -273,7 +284,7 @@
+     workspace_root.mkdir(parents=True, exist_ok=False)
+ 
+     env = dict(os.environ)
+-    env.setdefault("HOME", "/private/tmp/nexus-home")
++    env.setdefault("HOME", str(Path(tempfile.gettempdir()) / "nexus-home"))
+     env["PYTHONDONTWRITEBYTECODE"] = "1"
+     env["CI"] = "true"
+ 
+@@ -307,11 +318,12 @@
+         for step in setup_steps:
+             records.append(run_step(step, workspace, env))
+ 
++        effective_model = args.model or scenario.model
+         expected_cli_code = 0 if scenario.model_call else 2
+         cli_record = run_step(
+                 Step(
+                     "Nexus CLI",
+-                    nexus_command(workspace, scenario.prompt, scenario.model),
++                    nexus_command(workspace, scenario.prompt, effective_model, args.model_id),
+                     expected_returncode=expected_cli_code,
+                     timeout=600,
+                 ),
+@@ -343,7 +355,7 @@
+         # through Nexus, while git diff --check independently checks whitespace.
+         records.append(
+             run_step(
+-                Step("Nexus git status", nexus_command(workspace, "!git status --short")),
++                Step("Nexus git status", nexus_command(workspace, "!git status --short", effective_model, args.model_id)),
+                 workspace,
+                 env,
+             )
+@@ -356,7 +368,8 @@
+         summaries.append(
+             {
+                 "name": scenario.name,
+-                "model": scenario.model,
++                "model": effective_model,
++                "model_id": args.model_id,
+                 "passed": passed,
+                 "workspace": str(workspace),
+                 "transcript": str(transcript),

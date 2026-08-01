@@ -1,0 +1,147 @@
+SCENARIO: 01_python_entrypoint
+WORKSPACE: /private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/01_python_entrypoint
+PROMPT: Create exactly one file hello.py with a main function that prints exactly hello-nexus, and call main() under an if __name__ == '__main__' guard.
+
+========================================================================================
+STEP: git init
+COMMAND_JSON: ["git", "init"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+Initialized empty Git repository in /private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/01_python_entrypoint/.git/
+
+--- STDERR (complete) ---
+hint: Using 'master' as the name for the initial branch. This default branch name
+hint: will change to "main" in Git 3.0. To configure the initial branch name
+hint: to use in all of your new repositories, which will suppress this warning,
+hint: call:
+hint:
+hint: 	git config --global init.defaultBranch <name>
+hint:
+hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+hint: 'development'. The just-created branch can be renamed via this command:
+hint:
+hint: 	git branch -m <name>
+hint:
+hint: Disable this message with "git config set advice.defaultBranchName false"
+
+--- END STEP ---
+
+========================================================================================
+STEP: git identity email
+COMMAND_JSON: ["git", "config", "user.email", "nexus-e2e@example.invalid"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git identity name
+COMMAND_JSON: ["git", "config", "user.name", "Nexus E2E"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git add baseline
+COMMAND_JSON: ["git", "add", "."]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git baseline commit
+COMMAND_JSON: ["git", "commit", "--allow-empty", "-m", "baseline"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+[master (root-commit) b86ac01] baseline
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus CLI
+COMMAND_JSON: ["/usr/local/bin/python3", "/Users/ashishsingh/Desktop/product/run.py", "--model", "nova_codex", "--working-dir", "/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/01_python_entrypoint", "--permission-mode", "acceptEdits", "--max-turns", "8", "--output-format", "json", "Create exactly one file hello.py with a main function that prints exactly hello-nexus, and call main() under an if __name__ == '__main__' guard."]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 2
+TIMED_OUT: False
+STEP_VERDICT: FAIL
+--- STDOUT (complete) ---
+{"success": false, "result": "Nova guardrails rejected the output before Nexus tools ran:\nPath validator expected ['hello.py'], got ['src/hello.py']", "events": [{"type": "model_trace", "node": "nova", "raw_output": "<<THINKING>>\nCreating src/hello.py\n\n<<FILES>>\n# filepath: src/hello.py\n# action: CREATE\n\ndef main():\n    print('hello-nexus')\n\n<<THINKING>>\nCreating src/hello.py\n\n<<FILES>>\n# filepath: src/hello.py\n# action: CREATE\n\ndef main():\n    print(\"hello-nexus\")", "guardrail_output": "GUARDRAIL PASS task 1: Task scope is explicit and bounded. (scope=atomic, files=0/1)\nGUARDRAIL FAILED attempt=1: Path validator expected ['hello.py'], got ['src/hello.py']\nGUARDRAIL FAILED attempt=2: Path validator expected ['hello.py'], got ['src/hello.py']"}], "session_id": "20260731_232100_032812", "run": {"schema_version": "nexus.run.v2", "session_id": "20260731_232100_032812", "turn_id": "turn-0001", "status": "UNVERIFIED", "objective": "Create exactly one file hello.py with a main function that prints exactly hello-nexus, and call main() under an if __name__ == '__main__' guard.", "acceptance_criteria": [{"criterion": "Requested objective is implemented: Create exactly one file hello.py with a main function that prints exactly hello-nexus, and call main() under an if __name__ == '__main__' guard.", "status": "UNVERIFIED", "evidence_ids": [], "detail": "A mutation alone is insufficient; deterministic checks and review evidence are required."}, {"criterion": "No unrelated files are modified outside the approved task scope", "status": "SATISFIED", "evidence_ids": [], "detail": "All recorded changes remained inside the authorized workspace."}, {"criterion": "Every applied file mutation is re-read and fingerprinted", "status": "UNVERIFIED", "evidence_ids": [], "detail": "No complete verified mutation set was recorded."}, {"criterion": "The new behavior has an executable test, build, or smoke check", "status": "UNVERIFIED", "evidence_ids": [], "detail": "No matching passing project check was recorded."}, {"criterion": "Verification completed: Run the project to verify it works", "status": "UNVERIFIED", "evidence_ids": [], "detail": "No matching passing project check was recorded."}, {"criterion": "Verification completed: Check for lint/type errors", "status": "UNVERIFIED", "evidence_ids": [], "detail": "No matching passing project check was recorded."}], "work_completed": [], "files_changed": [], "checks": [], "checks_skipped": ["Requested objective is implemented: Create exactly one file hello.py with a main function that prints exactly hello-nexus, and call main() under an if __name__ == '__main__' guard.", "Every applied file mutation is re-read and fingerprinted", "The new behavior has an executable test, build, or smoke check", "Verification completed: Run the project to verify it works", "Verification completed: Check for lint/type errors"], "dependencies_added": [], "permissions_used": ["permission_mode:acceptEdits"], "network_calls": [], "model_providers": ["nova3b"], "costs": {"limits": {"max_hosted_calls": null, "max_prompt_tokens": null, "max_completion_tokens": null, "max_cost_usd": null, "input_price_per_million": null, "output_price_per_million": null}, "usage": {"hosted_calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "estimated_cost_usd": 0.0}}, "assumptions": [], "remaining_risks": ["Not every acceptance criterion has passing deterministic evidence."], "metadata": {"model": "nova3b", "response_excerpt": "Nova guardrails rejected the output before Nexus tools ran:\nPath validator expected ['hello.py'], got ['src/hello.py']", "evidence_path": "/Users/ashishsingh/.nexusai/evidence/20260731_232100_032812.jsonl", "workspace": "/Users/ashishsingh/.nexusai/worktrees/20260731_232100_032812", "history_start": 0, "history_end": 0, "local_intern_mode": "off", "local_intern_enabled": false, "plugins_enabled": false}, "completed_at": "2026-07-31T17:51:35.126137+00:00"}}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: native execution
+COMMAND_JSON: ["python3", "hello.py"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: "hello-nexus\n"
+ACTUAL_RETURNCODE: 2
+TIMED_OUT: False
+STEP_VERDICT: FAIL
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+/Library/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python: can't open file '/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/01_python_entrypoint/hello.py': [Errno 2] No such file or directory
+
+--- END STEP ---
+
+========================================================================================
+STEP: Nexus git status
+COMMAND_JSON: ["/usr/local/bin/python3", "/Users/ashishsingh/Desktop/product/run.py", "--model", "nova_codex", "--working-dir", "/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/nexus-release-e2e-20260731T175058Z/01_python_entrypoint", "--permission-mode", "acceptEdits", "--max-turns", "8", "--output-format", "json", "!git status --short"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+{"type": "tool_call", "name": "run_command", "result": "\u2705 $ git status --short\n[sandbox=sandbox-exec network=off duration_ms=53]\n(no output)", "success": true}
+
+--- STDERR (complete) ---
+
+--- END STEP ---
+
+========================================================================================
+STEP: git diff check
+COMMAND_JSON: ["git", "diff", "--check"]
+EXPECTED_RETURNCODE: 0
+EXPECTED_STDOUT_JSON: null
+ACTUAL_RETURNCODE: 0
+TIMED_OUT: False
+STEP_VERDICT: PASS
+--- STDOUT (complete) ---
+
+--- STDERR (complete) ---
+
+--- END STEP ---

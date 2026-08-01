@@ -1,0 +1,11 @@
+--- ./nexus/ui.py	2026-07-31 19:32:26
++++ /tmp/nexus_cli_v3.1_launch_hardened_source/nexus_cli_v3.1_launch_hardened/nexus/ui.py	2026-07-31 17:19:42
+@@ -84,7 +84,7 @@
+         ("/help", "Show this command helper menu"),
+         ("/models", "List available Ceiling models and the local Nova Intern option"),
+         ("/model <name>", "Switch the active Ceiling model (e.g. /model kimi; /model nova_codex for local-only Nova)"),
+-        ("/tools", "List all 34 built-in developer tools"),
++        ("/tools", "List all 38 built-in developer tools"),
+         ("/clear", "Clear session conversation history"),
+         ("/reset", "Reset the conversation session and clear terminal"),
+         ("/project", "Print structural tree of the working directory"),

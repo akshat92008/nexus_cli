@@ -26,10 +26,10 @@ class ModePolicy:
 def get_mode_policy(mode: str) -> ModePolicy:
     """Return the ModePolicy preset for a given mode string."""
     if mode == "review":
-        return ModePolicy(may_edit=False, may_apply=False, require_review=True, context_depth="deep", verification_level="full")
-    elif mode == "workspace":
+        return ModePolicy(may_edit=True, may_apply=False, require_review=True, context_depth="deep", verification_level="full")
+    elif mode in ("workspace", "default"):
         return ModePolicy(may_edit=True, may_apply=False, require_review=True)
-    elif mode == "autonomous":
+    elif mode in ("autonomous", "acceptEdits"):
         return ModePolicy(may_edit=True, may_apply=True, require_review=False, retry_budget=2)
     elif mode == "quality":
         return ModePolicy(may_edit=True, may_apply=True, require_review=True, context_depth="deep", model_strategy="quality", verification_level="full", retry_budget=3)

@@ -25,11 +25,11 @@ from types import SimpleNamespace
 
 from nexus.code_validation import GeneratedCodeValidator
 from nexus.runtime.kernel import (
-    ExecutionKernel,
     ReviewOutcome,
     TaskOutcome,
     classify_failure,
 )
+from nexus.runtime.session import ExecutionSession
 from nexus.nova_backend import PROMPT_PATH, NovaPipelineBackend, NovaToolProposal
 from nexus.nova_runtime import (
     CEILING_SYSTEM_PROMPT,
@@ -552,9 +552,9 @@ class TwoNodeBackend:
                     findings=findings,
                 )
 
-            execution_result = ExecutionKernel(
-                execution_plan,
-                self.run_ledger,
+            execution_result = ExecutionSession(
+                plan=execution_plan,
+                ledger=self.run_ledger,
             ).run_dag(
                 execute_step,
                 repair=repair_step,

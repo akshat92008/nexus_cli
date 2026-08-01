@@ -1,0 +1,170 @@
+--- ./nexus/benchmark.py	2026-07-31 21:36:49
++++ /tmp/nexus_cli_v3.1_launch_hardened_source/nexus_cli_v3.1_launch_hardened/nexus/benchmark.py	2026-07-31 17:12:48
+@@ -107,6 +107,11 @@
+     human_intervention: bool = False
+     recovery_succeeded: bool | None = None
+     detail: str = ""
++    failure_phase: str = ""
++    failure_type: str = ""
++    environment_failure: bool = False
++    stdout_tail: str = ""
++    stderr_tail: str = ""
+ 
+     @property
+     def passed(self) -> bool:
+@@ -185,29 +190,41 @@
+     def __init__(self, suite: BenchmarkSuite):
+         self.suite = suite
+ 
+-    def _preflight_check(self) -> bool:
+-        import os
++    def _preflight(self):
+         from nexus.models import resolve_model
++        from nexus.preflight import BackendProbe, probe_model
++
+         model = os.environ.get("NEXUS_MODEL", "nova")
+         model_cfg = resolve_model(model)
+         if not model_cfg:
+-            return False
+-        if model_cfg.get("backend") != "nova":
+-            if not any(k in os.environ for k in ["NVIDIA_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY"]):
+-                return False
+-        return True
++            return BackendProbe(
++                ready=False,
++                backend="configuration",
++                code="unknown_model",
++                detail=f"Unknown benchmark model: {model}",
++                remediation=("Set NEXUS_MODEL to a key shown by `nexus --list-models`.",),
++            )
++        return probe_model(model_cfg, model_name=model)
+ 
++    def _preflight_check(self) -> bool:
++        """Backward-compatible boolean check used by external callers."""
++        return bool(self._preflight().ready)
++
+     def run(self, *, dry_run: bool = False) -> BenchmarkReport:
+         started = _utc_now()
+-        
+-        if not dry_run and not self._preflight_check():
++        probe = None if dry_run else self._preflight()
++
++        if probe is not None and not probe.ready:
+             results = [
+                 BenchmarkTaskResult(
+                     task_id=task.id,
+                     category=task.category,
+                     status="INVALID_CONFIGURATION",
+                     duration_ms=0,
+-                    detail="Backend preflight failed (missing API key or invalid model)",
++                    detail=probe.format(),
++                    failure_phase="provider_preflight",
++                    failure_type=probe.code,
++                    environment_failure=True,
+                 )
+                 for task in self.suite.tasks
+             ]
+@@ -216,7 +233,7 @@
+                 self._validate_task(task) if dry_run else self._run_task(task)
+                 for task in self.suite.tasks
+             ]
+-            
++
+         return BenchmarkReport(
+             suite=self.suite.name,
+             nexus_version=__version__,
+@@ -303,11 +320,12 @@
+                     "FAILED",
+                     int((time.monotonic() - started) * 1000),
+                     detail=f"Nexus timed out after {task.timeout_seconds}s: {exc}",
++                    failure_phase="agent_execution",
++                    failure_type="timeout",
++                    environment_failure=False,
++                    stdout_tail=_redact_tail(exc.stdout),
++                    stderr_tail=_redact_tail(exc.stderr),
+                 )
+-            if process.returncode != 0:
+-                print(f"[{task.id}] Nexus run failed with code {process.returncode}")
+-                print(f"Stdout:\n{process.stdout}")
+-                print(f"Stderr:\n{process.stderr}")
+             payload = _last_json_object(process.stdout)
+             after = _fingerprints(workspace)
+             changed = sorted(
+@@ -358,6 +376,12 @@
+                 details.append(f"expected files unchanged: {missing_expected}")
+             if run_report.get("status") not in {"VERIFIED", "PARTIALLY_VERIFIED"}:
+                 details.append(f"run status: {run_report.get('status', 'missing')}")
++            failure_phase, failure_type, environment_failure = _classify_process_failure(
++                process.returncode,
++                process.stdout,
++                process.stderr,
++                run_report,
++            )
+             return BenchmarkTaskResult(
+                 task_id=task.id,
+                 category=task.category,
+@@ -379,6 +403,11 @@
+                 retries=int(run_report.get("metadata", {}).get("retries", 0) or 0),
+                 human_intervention=run_report.get("status") == "AWAITING_APPROVAL",
+                 detail="; ".join(details) if details else "All acceptance checks passed",
++                failure_phase="" if passed else failure_phase,
++                failure_type="" if passed else failure_type,
++                environment_failure=False if passed else environment_failure,
++                stdout_tail=_redact_tail(process.stdout),
++                stderr_tail=_redact_tail(process.stderr),
+             )
+         finally:
+             shutil.rmtree(temporary_root, ignore_errors=True)
+@@ -416,5 +445,52 @@
+     return {}
+ 
+ 
++def _redact_tail(value: Any, limit: int = 4000) -> str:
++    if value is None:
++        return ""
++    if isinstance(value, bytes):
++        text = value.decode("utf-8", errors="replace")
++    else:
++        text = str(value)
++    for name in (
++        "NVIDIA_API_KEY",
++        "GROQ_API_KEY",
++        "OPENROUTER_API_KEY",
++        "NEXUS_OPENAI_API_KEY",
++    ):
++        secret = os.environ.get(name)
++        if secret:
++            text = text.replace(secret, "[REDACTED]")
++    return text[-max(0, int(limit)):]
++
++
++def _classify_process_failure(
++    exit_code: int,
++    stdout: str,
++    stderr: str,
++    run_report: dict[str, Any],
++) -> tuple[str, str, bool]:
++    if exit_code == 0 and run_report.get("status") in {"VERIFIED", "PARTIALLY_VERIFIED"}:
++        return "", "", False
++    haystack = (str(stdout) + "\n" + str(stderr)).lower()
++    environment_signatures = {
++        "ollama_unreachable": ("ollama", "connection refused"),
++        "dependency_missing": ("modulenotfounderror",),
++        "credentials_missing": ("api key", "missing"),
++        "provider_unreachable": ("provider", "connection"),
++    }
++    for failure_type, signatures in environment_signatures.items():
++        if all(signature in haystack for signature in signatures):
++            return "environment", failure_type, True
++    if not run_report:
++        return "result_parsing", "missing_structured_result", True
++    status = str(run_report.get("status", "")).lower()
++    if status in {"awaiting_approval", "blocked"}:
++        return "policy", status, False
++    if "verification" in haystack or status in {"unverified", "partially_verified"}:
++        return "verification", "acceptance_checks_failed", False
++    return "agent_execution", "nonzero_exit", False
++
++
+ def _utc_now() -> str:
+     return datetime.now(timezone.utc).isoformat()

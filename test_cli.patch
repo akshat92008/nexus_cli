@@ -1,0 +1,11 @@
+--- ./tests/test_release_cli.py	2026-07-31 19:32:26
++++ /tmp/nexus_cli_v3.1_launch_hardened_source/nexus_cli_v3.1_launch_hardened/tests/test_release_cli.py	2026-07-31 17:13:20
+@@ -60,7 +60,7 @@
+         timeout=10,
+     )
+     assert result.returncode == 0
+-    assert result.stdout.strip() == "NexusAI 3.0.0"
++    assert result.stdout.strip() == "NexusAI 3.1.0"
+ 
+ 
+ def test_ollama_host_without_scheme_is_normalized(monkeypatch):

@@ -1,17 +1,41 @@
-
-"""Dependency-aware, resumable execution and focused repair for Nexus plans."""
+"""Nexus runtime engines: interactive agentic loop and dependency-aware DAG executor."""
 
 from __future__ import annotations
 
+import json
+import logging
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable
+from typing import Any, Callable, Generator
 
 from nexus.planner import ExecutionPlan, PlanStep, TaskStatus
+from nexus.providers.base import Provider
 from nexus.run_state import RunLedger
+from nexus.runtime.events import (
+    BaseEvent,
+    ErrorEvent,
+    ModelRequestCompleted,
+    ModelRequestStarted,
+    ModelStreamChunk,
+    RunCompleted,
+    RunFailed,
+    RunStarted,
+    ToolCallCompleted,
+    ToolCallStarted,
+    TurnCompleted,
+    TurnStarted,
+)
+from nexus.runtime.state_machine import RunState, StateMachine
 
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Shared outcome types (used by both engines and exported via nexus.execution)
+# ---------------------------------------------------------------------------
 
 class FailureKind(str, Enum):
     """Deterministic failure classes used to focus repair prompts."""
@@ -73,41 +97,15 @@ StepRepairer = Callable[[PlanStep, TaskOutcome, FailureKind, int], TaskOutcome]
 PlanReviewer = Callable[[ExecutionPlan], ReviewOutcome]
 
 
-
-"""
-Execution Engine for Nexus.
-Handles the core agentic loop, tool dispatching, and state management.
-"""
-
-import json
-import logging
-import time
-from typing import Callable, Generator
-
-from nexus.providers.base import Provider
-from nexus.runtime.events import (
-    BaseEvent,
-    ErrorEvent,
-    ModelRequestCompleted,
-    ModelRequestStarted,
-    ModelStreamChunk,
-    RunCompleted,
-    RunFailed,
-    RunStarted,
-    ToolCallCompleted,
-    ToolCallStarted,
-    TurnCompleted,
-    TurnStarted,
-)
-from nexus.runtime.state_machine import RunState, StateMachine
-
-logger = logging.getLogger(__name__)
-
+# ---------------------------------------------------------------------------
+# ExecutionKernel — interactive agentic loop
+# ---------------------------------------------------------------------------
 
 class ExecutionKernel:
-    """The canonical execution engine for the Nexus agent.
+    """The canonical interactive execution engine for the Nexus agent.
 
-    Manages the state machine and emits events during execution.
+    Manages the agentic loop: sends messages to a provider, dispatches tool
+    calls, accumulates results, and emits structured events throughout.
 
     Args:
         provider: Any object that satisfies the Provider protocol.
@@ -125,6 +123,8 @@ class ExecutionKernel:
         max_turns: int = 50,
         model_id: str | None = None,
         run_id: str | None = None,
+        # Accept (but ignore) DAG-only kwargs so callers don't crash on
+        # partial migrations where both constructors were sometimes mixed.
         plan: ExecutionPlan | None = None,
         ledger: RunLedger | None = None,
         max_total_repairs: int | None = None,
@@ -145,13 +145,59 @@ class ExecutionKernel:
         self.before_tool_hook: Callable[[str, dict], None] | None = None
         self.after_tool_hook: Callable[[str, dict, bool, str], None] | None = None
 
+        # Event handler registry
+        self._event_handlers: list[Callable[[BaseEvent], None]] = []
+
+        # DAG fields — kept as None for interactive instances; present so
+        # that mixed code paths don't raise AttributeError.
         self.plan = plan
         self.ledger = ledger
         configured = int(plan.retry_policy.get("total_repairs", 5)) if plan else 5
         self.max_total_repairs = max(0, configured if max_total_repairs is None else max_total_repairs)
         self.repairs = 0
 
-    def run_interactive(self,
+    # ------------------------------------------------------------------
+    # Event registry
+    # ------------------------------------------------------------------
+
+    def add_event_handler(self, handler: Callable[[BaseEvent], None]) -> None:
+        """Register a callable that receives every emitted event."""
+        self._event_handlers.append(handler)
+
+    def _emit(self, event: BaseEvent) -> None:
+        """Dispatch an event to all registered handlers (errors are swallowed)."""
+        for handler in self._event_handlers:
+            try:
+                handler(event)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("Event handler raised: %s", exc)
+
+    def _create_and_emit(self, event: BaseEvent) -> BaseEvent:
+        """Emit an event and return it (for use in ``yield`` expressions)."""
+        self._emit(event)
+        return event
+
+    # ------------------------------------------------------------------
+    # Interactive agentic loop
+    # ------------------------------------------------------------------
+
+    def run(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        max_tokens: int | None = None,
+        temperature: float | None = None,
+    ) -> Generator[BaseEvent, None, None]:
+        """Alias for :meth:`run_interactive` — preferred name used by tests."""
+        yield from self.run_interactive(
+            messages,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+
+    def run_interactive(
+        self,
         messages: list[dict],
         tools: list[dict] | None = None,
         max_tokens: int | None = None,
@@ -317,10 +363,6 @@ class ExecutionKernel:
 
         yield self._create_and_emit(RunCompleted(content=final_content))
 
-    def _create_and_emit(self, event: BaseEvent) -> BaseEvent:
-        self._emit(event)
-        return event
-
     def _process_stream(self, stream) -> tuple[str, list[dict]]:
         """Process the generator from the provider."""
         full_content = ""
@@ -363,7 +405,17 @@ class ExecutionKernel:
         return full_content, tool_calls
 
 
-    """Run a typed task DAG with checkpointed state and bounded repairs."""
+# ---------------------------------------------------------------------------
+# TaskDagKernel — dependency-aware, resumable DAG executor
+# ---------------------------------------------------------------------------
+
+class TaskDagKernel:
+    """Run a typed task DAG with checkpointed state and bounded repairs.
+
+    This is the DAG execution engine.  It is a separate class from
+    :class:`ExecutionKernel` (the interactive engine) to avoid the Python
+    single-class / two-``__init__`` pitfall that previously broke the build.
+    """
 
     def __init__(
         self,
@@ -377,6 +429,18 @@ class ExecutionKernel:
         configured = int(plan.retry_policy.get("total_repairs", 5))
         self.max_total_repairs = max(0, configured if max_total_repairs is None else max_total_repairs)
         self.repairs = 0
+
+    # Preserve the old public name for existing callers (e.g. agent.py two-node path)
+    def run(
+        self,
+        execute: StepExecutor,
+        *,
+        verify: StepVerifier | None = None,
+        repair: StepRepairer | None = None,
+        reviewer: PlanReviewer | None = None,
+    ) -> ExecutionResult:
+        """Alias for :meth:`run_dag` — preferred name for new code."""
+        return self.run_dag(execute, verify=verify, repair=repair, reviewer=reviewer)
 
     def run_dag(
         self,
@@ -589,6 +653,10 @@ class ExecutionKernel:
         for task_id in ids:
             visit(task_id)
 
+
+# ---------------------------------------------------------------------------
+# Failure classifier (shared utility)
+# ---------------------------------------------------------------------------
 
 _FAILURE_PATTERNS: tuple[tuple[FailureKind, tuple[str, ...]], ...] = (
     (FailureKind.TIMEOUT, ("timed out", "timeout", "deadline exceeded")),
