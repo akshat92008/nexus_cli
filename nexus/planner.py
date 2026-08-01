@@ -95,11 +95,15 @@ class PlanStep:
     id: int
     title: str
     description: str
+    phase: str = "implementation"
+    subsystem: str = ""
     tools_needed: list[str] = field(default_factory=list)
     depends_on: list[int] = field(default_factory=list)
     permitted_files: list[str] = field(default_factory=list)
     acceptance_criteria: list[str] = field(default_factory=list)
     checks: list[str] = field(default_factory=list)
+    contract_inputs: list[str] = field(default_factory=list)
+    contract_outputs: list[str] = field(default_factory=list)
     risk: str = "medium"
     retry_limit: int = 2
     attempts: int = 0
@@ -136,6 +140,13 @@ class ExecutionPlan:
     verification_steps: list[str] = field(default_factory=list)
     acceptance_criteria: list[str] = field(default_factory=list)
     permitted_files: list[str] = field(default_factory=list)
+    product_spec: dict = field(default_factory=dict)
+    architecture_decisions: list[dict] = field(default_factory=list)
+    subsystem_contracts: list[dict] = field(default_factory=list)
+    integration_plan: dict = field(default_factory=dict)
+    deployment_plan: dict = field(default_factory=dict)
+    failure_replans: list[dict] = field(default_factory=list)
+    revision: int = 1
     retry_policy: dict[str, int] = field(
         default_factory=lambda: {"per_task": 2, "total_repairs": 5}
     )
@@ -195,6 +206,13 @@ class ExecutionPlan:
             "verification_steps": self.verification_steps,
             "acceptance_criteria": self.acceptance_criteria,
             "permitted_files": self.permitted_files,
+            "product_spec": self.product_spec,
+            "architecture_decisions": self.architecture_decisions,
+            "subsystem_contracts": self.subsystem_contracts,
+            "integration_plan": self.integration_plan,
+            "deployment_plan": self.deployment_plan,
+            "failure_replans": self.failure_replans,
+            "revision": self.revision,
             "retry_policy": self.retry_policy,
             "budgets": self.budgets,
         }
@@ -216,6 +234,13 @@ class ExecutionPlan:
             verification_steps=data.get("verification_steps", []),
             acceptance_criteria=data.get("acceptance_criteria", []),
             permitted_files=data.get("permitted_files", []),
+            product_spec=data.get("product_spec", {}),
+            architecture_decisions=data.get("architecture_decisions", []),
+            subsystem_contracts=data.get("subsystem_contracts", []),
+            integration_plan=data.get("integration_plan", {}),
+            deployment_plan=data.get("deployment_plan", {}),
+            failure_replans=data.get("failure_replans", []),
+            revision=max(1, int(data.get("revision", 1))),
             retry_policy=data.get("retry_policy", {"per_task": 2, "total_repairs": 5}),
             budgets=data.get(
                 "budgets",
@@ -623,9 +648,18 @@ class PlanningEngine:
         intent = analysis["intent"]
         difficulty = analysis["difficulty"]
         skills = analysis.get("skills_needed", [])
+        blueprint = (
+            self._build_system_blueprint(goal, skills)
+            if intent == IntentType.BUILD and difficulty == Difficulty.MASSIVE
+            else {}
+        )
 
         # Generate steps based on intent
-        steps = self._generate_steps(goal, intent, difficulty)
+        steps = (
+            self._generate_massive_build_steps(blueprint)
+            if blueprint
+            else self._generate_steps(goal, intent, difficulty)
+        )
 
         # Enforce repo_understanding if the codebase is large
         if repo_summary and (
@@ -655,12 +689,11 @@ class PlanningEngine:
 
         for step in steps:
             step.permitted_files = list(permitted_files)
-            step.acceptance_criteria = list(acceptance)
-            step.checks = (
-                list(verification)
-                if "test" in step.title.lower() or "verify" in step.title.lower()
-                else []
+            step.acceptance_criteria = list(
+                dict.fromkeys([*step.acceptance_criteria, *acceptance])
             )
+            if "test" in step.title.lower() or "verify" in step.title.lower():
+                step.checks = list(dict.fromkeys([*step.checks, *verification]))
             step.risk = self._step_risk(step, intent)
             step.retry_limit = 1 if step.risk == "high" else 2
             step.max_tool_calls = {
@@ -681,6 +714,11 @@ class PlanningEngine:
             verification_steps=verification,
             acceptance_criteria=acceptance,
             permitted_files=permitted_files,
+            product_spec=blueprint.get("product_spec", {}),
+            architecture_decisions=blueprint.get("architecture_decisions", []),
+            subsystem_contracts=blueprint.get("subsystem_contracts", []),
+            integration_plan=blueprint.get("integration_plan", {}),
+            deployment_plan=blueprint.get("deployment_plan", {}),
             retry_policy={"per_task": 2, "total_repairs": 5},
             budgets={
                 "max_tool_calls": {
@@ -699,6 +737,194 @@ class PlanningEngine:
         self.current_plan = plan
         self._save_plan(plan)
         return plan
+
+    @staticmethod
+    def _build_system_blueprint(goal: str, skills: list[str]) -> dict:
+        """Create the durable product-to-deployment hierarchy for a massive build."""
+        subsystem_specs = [
+            (
+                "identity-and-tenancy",
+                ["authentication", "authorization", "tenant isolation", "audit identity"],
+                ["identity API", "authorization policy", "tenant context"],
+            ),
+            (
+                "core-domain",
+                ["domain rules", "state transitions", "transaction boundaries"],
+                ["domain services", "domain events", "stable error taxonomy"],
+            ),
+            (
+                "data-platform",
+                ["schema", "migrations", "indexes", "backup and restore"],
+                ["versioned migrations", "repositories", "data retention rules"],
+            ),
+            (
+                "api-and-integrations",
+                ["versioned API", "validation", "idempotency", "external adapters"],
+                ["API contract", "integration adapters", "contract tests"],
+            ),
+            (
+                "user-experience",
+                ["primary workflows", "responsive UI", "accessibility", "error recovery"],
+                ["routed UI", "typed client", "end-to-end user journeys"],
+            ),
+            (
+                "async-workflows",
+                ["jobs", "queues", "retries", "dead-letter recovery"],
+                ["job contracts", "retry policy", "operational controls"],
+            ),
+            (
+                "platform-and-observability",
+                ["configuration", "secrets", "telemetry", "health", "deployment"],
+                ["deployment manifests", "dashboards", "runbooks", "rollback procedure"],
+            ),
+        ]
+        contracts = []
+        previous = ""
+        for name, responsibilities, outputs in subsystem_specs:
+            dependencies = [previous] if previous else []
+            contracts.append(
+                {
+                    "name": name,
+                    "responsibilities": responsibilities,
+                    "dependencies": dependencies,
+                    "inputs": ["product specification", "architecture decisions"],
+                    "outputs": outputs,
+                    "invariants": [
+                        "tenant and authorization boundaries are explicit",
+                        "failures are observable and recoverable",
+                        "public behavior is covered by executable checks",
+                    ],
+                    "acceptance_criteria": [
+                        f"{name} contract tests pass",
+                        f"{name} integrates without placeholder implementations",
+                    ],
+                }
+            )
+            previous = name
+        return {
+            "product_spec": {
+                "objective": goal.strip(),
+                "delivery_mode": "single-prompt long-horizon execution",
+                "required_capabilities": list(dict.fromkeys(skills)),
+                "user_outcomes": [
+                    "critical user journeys work end to end",
+                    "administrators can operate and recover the product",
+                    "the system can be deployed and verified reproducibly",
+                ],
+                "non_functional_requirements": [
+                    "security and tenant isolation",
+                    "data integrity and reversible migrations",
+                    "accessibility and responsive behavior",
+                    "observability, performance budgets, and disaster recovery",
+                ],
+            },
+            "architecture_decisions": [
+                {
+                    "id": "ADR-001",
+                    "decision": "Define contracts before subsystem implementation",
+                    "status": "required",
+                },
+                {
+                    "id": "ADR-002",
+                    "decision": "Use versioned schemas and backwards-compatible boundaries",
+                    "status": "required",
+                },
+                {
+                    "id": "ADR-003",
+                    "decision": "Make retries idempotent and operations observable",
+                    "status": "required",
+                },
+            ],
+            "subsystem_contracts": contracts,
+            "integration_plan": {
+                "order": [item["name"] for item in contracts],
+                "gates": [
+                    "contract tests at every subsystem boundary",
+                    "migration and rollback rehearsal",
+                    "end-to-end critical journeys",
+                    "security, accessibility, and performance checks",
+                ],
+            },
+            "deployment_plan": {
+                "stages": ["build", "migrate", "canary", "smoke-test", "promote"],
+                "rollback": "automated application rollback with migration compatibility check",
+                "readiness": ["health checks", "telemetry", "runbook", "backup restore proof"],
+            },
+        }
+
+    @staticmethod
+    def _generate_massive_build_steps(blueprint: dict) -> list[PlanStep]:
+        """Turn the persisted blueprint into dependency-ordered execution units."""
+        steps = [
+            PlanStep(
+                id=0,
+                title="Freeze product specification",
+                description="Resolve requirements, journeys, constraints, and measurable completion gates.",
+                phase="product-specification",
+                tools_needed=["read_file", "get_project_structure", "repo_index"],
+                contract_outputs=["approved product specification", "acceptance matrix"],
+            ),
+            PlanStep(
+                id=1,
+                title="Freeze architecture and subsystem contracts",
+                description="Map boundaries, data ownership, interfaces, invariants, and integration order.",
+                phase="architecture",
+                tools_needed=["repo_context", "repo_symbols", "write_file"],
+                depends_on=[0],
+                contract_inputs=["approved product specification"],
+                contract_outputs=["architecture decisions", "versioned subsystem contracts"],
+            ),
+        ]
+        for contract in blueprint.get("subsystem_contracts", []):
+            step_id = len(steps)
+            steps.append(
+                PlanStep(
+                    id=step_id,
+                    title=f"Implement {contract['name']}",
+                    description=(
+                        "Implement the subsystem against its declared interfaces and invariants; "
+                        "finish its executable contract checks before advancing."
+                    ),
+                    phase="subsystem-implementation",
+                    subsystem=contract["name"],
+                    tools_needed=[
+                        "read_file",
+                        "search_code",
+                        "write_file",
+                        "edit_file",
+                        "run_process",
+                    ],
+                    depends_on=[step_id - 1],
+                    acceptance_criteria=list(contract.get("acceptance_criteria", [])),
+                    checks=[f"{contract['name']} contract tests pass"],
+                    contract_inputs=list(contract.get("inputs", [])),
+                    contract_outputs=list(contract.get("outputs", [])),
+                )
+            )
+        integration_id = len(steps)
+        steps.extend(
+            [
+                PlanStep(
+                    id=integration_id,
+                    title="Integrate the complete product",
+                    description="Connect subsystem contracts and exercise critical journeys across real boundaries.",
+                    phase="integration",
+                    tools_needed=["repo_impact", "edit_file", "run_process", "browser_check"],
+                    depends_on=[integration_id - 1],
+                    contract_outputs=["integrated system", "end-to-end evidence"],
+                ),
+                PlanStep(
+                    id=integration_id + 1,
+                    title="Qualify release and recovery",
+                    description="Run full tests, security, migration, rollback, performance, and deployment readiness gates.",
+                    phase="release-qualification",
+                    tools_needed=["run_process", "security_scan", "browser_check"],
+                    depends_on=[integration_id],
+                    contract_outputs=["release evidence", "rollback proof", "operations runbook"],
+                ),
+            ]
+        )
+        return steps
 
     def _generate_steps(
         self, goal: str, intent: IntentType, difficulty: Difficulty
@@ -735,7 +961,7 @@ class PlanningEngine:
                 (
                     "Test the implementation",
                     "Run the code and fix any errors",
-                    ["run_command", "read_file", "edit_file"],
+                    ["run_process", "read_file", "edit_file"],
                 ),
                 (
                     "Polish and document",
@@ -748,7 +974,7 @@ class PlanningEngine:
                 (
                     "Reproduce the error",
                     "Understand the error by reading logs and running the failing code",
-                    ["run_command", "read_file"],
+                    ["run_process", "read_file"],
                 ),
                 (
                     "Trace the root cause",
@@ -756,7 +982,7 @@ class PlanningEngine:
                     ["search_code", "read_file"],
                 ),
                 ("Implement the fix", "Apply the code fix", ["edit_file"]),
-                ("Verify the fix", "Run the code again to confirm the fix works", ["run_command"]),
+                ("Verify the fix", "Run the code again to confirm the fix works", ["run_process"]),
                 (
                     "Add regression test",
                     "Write a test to prevent this bug from recurring",
@@ -776,7 +1002,7 @@ class PlanningEngine:
                 ),
                 ("Identify improvements", "List specific refactoring opportunities", []),
                 ("Apply refactoring", "Make the code changes", ["edit_file", "multi_edit"]),
-                ("Run tests", "Ensure nothing is broken by the refactoring", ["run_command"]),
+                ("Run tests", "Ensure nothing is broken by the refactoring", ["run_process"]),
                 ("Commit changes", "Commit the refactored code", ["git_commit"]),
             ],
             IntentType.REVIEW: [
@@ -798,11 +1024,11 @@ class PlanningEngine:
                 ("Understand the code", "Read the code that needs testing", ["read_file"]),
                 ("Identify test cases", "Determine what scenarios to test", []),
                 ("Write tests", "Implement the test files", ["write_file"]),
-                ("Run tests", "Execute the tests and verify they pass", ["run_command"]),
+                ("Run tests", "Execute the tests and verify they pass", ["run_process"]),
                 (
                     "Fix failing tests",
                     "Debug and fix any test failures",
-                    ["edit_file", "run_command"],
+                    ["edit_file", "run_process"],
                 ),
                 ("Commit tests", "Commit the test files", ["git_commit"]),
             ],
@@ -810,7 +1036,7 @@ class PlanningEngine:
                 (
                     "Verify build",
                     "Run build and tests to ensure deployment readiness",
-                    ["run_command"],
+                    ["run_process"],
                 ),
                 (
                     "Create deployment config",
@@ -822,11 +1048,11 @@ class PlanningEngine:
                     "Set up environment variables and secrets",
                     ["edit_file"],
                 ),
-                ("Deploy", "Execute the deployment", ["run_command"]),
+                ("Deploy", "Execute the deployment", ["run_process"]),
                 (
                     "Verify deployment",
                     "Check that the deployment succeeded",
-                    ["run_command", "web_fetch"],
+                    ["run_process", "web_fetch"],
                 ),
             ],
             IntentType.DOCS: [
@@ -850,36 +1076,36 @@ class PlanningEngine:
                 (
                     "Update dependencies",
                     "Change package configs and imports",
-                    ["edit_file", "run_command"],
+                    ["edit_file", "run_process"],
                 ),
-                ("Test migration", "Verify everything works in the new form", ["run_command"]),
-                ("Clean up", "Remove old files and dead code", ["run_command"]),
+                ("Test migration", "Verify everything works in the new form", ["run_process"]),
+                ("Clean up", "Remove old files and dead code", ["run_process"]),
                 ("Commit", "Commit the migrated code", ["git_commit"]),
             ],
             IntentType.OPTIMIZE: [
-                ("Profile current performance", "Measure baseline performance", ["run_command"]),
+                ("Profile current performance", "Measure baseline performance", ["run_process"]),
                 (
                     "Identify bottlenecks",
                     "Find slow areas in the code",
                     ["read_file", "search_code"],
                 ),
                 ("Apply optimizations", "Implement performance improvements", ["edit_file"]),
-                ("Benchmark improvements", "Measure the impact of changes", ["run_command"]),
+                ("Benchmark improvements", "Measure the impact of changes", ["run_process"]),
                 ("Commit optimizations", "Commit with performance metrics", ["git_commit"]),
             ],
             IntentType.SECURITY: [
                 (
                     "Scan for vulnerabilities",
                     "Check for common security issues",
-                    ["search_code", "run_command"],
+                    ["search_code", "run_process"],
                 ),
                 ("Review authentication", "Check auth flows and session management", ["read_file"]),
-                ("Check dependencies", "Audit dependency vulnerabilities", ["run_command"]),
+                ("Check dependencies", "Audit dependency vulnerabilities", ["run_process"]),
                 ("Fix findings", "Apply security patches", ["edit_file"]),
                 (
                     "Verify fixes",
                     "Re-scan to confirm vulnerabilities are resolved",
-                    ["run_command"],
+                    ["run_process"],
                 ),
                 ("Commit fixes", "Commit security improvements", ["git_commit"]),
             ],
@@ -1055,6 +1281,20 @@ class PlanningEngine:
                 if status == TaskStatus.FAILED:
                     step.error = result
                     self.current_plan.status = TaskStatus.FAILED
+                    self.current_plan.revision += 1
+                    self.current_plan.failure_replans.append(
+                        {
+                            "revision": self.current_plan.revision,
+                            "step_id": step.id,
+                            "subsystem": step.subsystem,
+                            "failed_at": step.completed_at,
+                            "evidence": result,
+                            "required_action": (
+                                "Diagnose root cause, update affected contracts and impact scope, "
+                                "then retry only this step and its unfinished dependents."
+                            ),
+                        }
+                    )
                 elif self.current_plan.is_complete:
                     self.current_plan.status = TaskStatus.COMPLETED
                     self.current_plan.current_step = None
@@ -1091,6 +1331,8 @@ Progress: {plan.progress:.0f}% | Step {next_step.id + 1}/{len(plan.steps)}
 
 Current Step: {next_step.title}
 Description: {next_step.description}
+Phase: {next_step.phase}
+Subsystem: {next_step.subsystem or "cross-cutting"}
 Suggested Tools: {", ".join(next_step.tools_needed) if next_step.tools_needed else "any"}
 
 Remaining Steps:
@@ -1103,6 +1345,25 @@ Remaining Steps:
             context += "\nVerification (after completion):\n"
             for v in plan.verification_steps:
                 context += f"  • {v}\n"
+
+        if plan.product_spec:
+            context += "\nPersistent Product Specification:\n"
+            context += f"  Objective: {plan.product_spec.get('objective', plan.goal)}\n"
+            for requirement in plan.product_spec.get("non_functional_requirements", []):
+                context += f"  • {requirement}\n"
+        if next_step.contract_inputs or next_step.contract_outputs:
+            context += "\nCurrent Contract:\n"
+            for item in next_step.contract_inputs:
+                context += f"  Input: {item}\n"
+            for item in next_step.contract_outputs:
+                context += f"  Output: {item}\n"
+        if plan.failure_replans:
+            latest = plan.failure_replans[-1]
+            context += (
+                "\nLatest Failure Replan:\n"
+                f"  Step {latest.get('step_id')}: {latest.get('evidence', '')}\n"
+                f"  Required action: {latest.get('required_action', '')}\n"
+            )
 
         return context
 

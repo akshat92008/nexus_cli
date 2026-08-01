@@ -1,3 +1,5 @@
+import sys
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 from nexus.behavioral import (
@@ -120,7 +122,14 @@ def test_browser_verifier_success():
     mock_sync_pw_cm = MagicMock()
     mock_sync_pw_cm.__enter__.return_value = mock_playwright
 
-    with patch("playwright.sync_api.sync_playwright", return_value=mock_sync_pw_cm, create=True):
+    playwright_module = ModuleType("playwright")
+    sync_api_module = ModuleType("playwright.sync_api")
+    sync_api_module.sync_playwright = MagicMock(return_value=mock_sync_pw_cm)
+    playwright_module.sync_api = sync_api_module
+    with patch.dict(
+        sys.modules,
+        {"playwright": playwright_module, "playwright.sync_api": sync_api_module},
+    ):
         res = verifier.verify(spec)
         assert res.status == ProbeStatus.PASSED
         mock_page.goto.assert_called_with("http://127.0.0.1/", wait_until="networkidle")

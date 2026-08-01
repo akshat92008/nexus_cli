@@ -184,6 +184,9 @@ def test_custom_endpoint_preflight_rejects_unsafe_scheme(monkeypatch):
 def test_direct_nova_executes_declared_test_and_reaches_verified_status(
     tmp_path, monkeypatch
 ):
+    test_policy = get_mode_policy("autonomous")
+    test_policy.require_os_isolation = False
+    test_policy.allow_shell_command = True
     monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
     (tmp_path / "verify.py").write_text(
         "from answer import ANSWER\nassert ANSWER == 42\n",
@@ -212,7 +215,7 @@ def test_direct_nova_executes_declared_test_and_reaches_verified_status(
         model_key="nova3b",
         working_dir=str(tmp_path),
         permission_mode="acceptEdits",
-        mode_policy=get_mode_policy("autonomous"),
+        mode_policy=test_policy,
         workspace_isolation=False,
     )
 

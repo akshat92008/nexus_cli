@@ -156,7 +156,12 @@ class BenchmarkTaskResult:
 
     @property
     def passed(self) -> bool:
-        return self.status in {"PASSED", "VALID"}
+        return self.status == "PASSED"
+
+    @property
+    def manifest_valid(self) -> bool:
+        """Whether a dry-run validated the task without executing the agent."""
+        return self.status == "VALID"
 
 
 @dataclass
@@ -172,6 +177,10 @@ class BenchmarkReport:
 
     def to_dict(self) -> dict[str, Any]:
         passed = sum(item.passed for item in self.results)
+        executed = [item for item in self.results if item.status != "VALID"]
+        verified_passed = sum(
+            1 for item in executed if item.passed and item.agent_status == "VERIFIED"
+        )
         return {
             "schema_version": self.schema_version,
             "suite": self.suite,
@@ -183,22 +192,15 @@ class BenchmarkReport:
             "summary": {
                 "tasks": len(self.results),
                 "passed": passed,
-                "verified_passed": sum(
-                    1 for item in self.results if item.passed and item.agent_status == "VERIFIED"
-                ),
-                "failed": len(self.results) - passed,
-                "pass_rate": (round(passed / len(self.results), 4) if self.results else 0.0),
+                "verified_passed": verified_passed,
+                "manifest_valid_tasks": sum(item.manifest_valid for item in self.results),
+                "executed_tasks": len(executed),
+                "not_executed_tasks": len(self.results) - len(executed),
+                "failed": sum(1 for item in executed if not item.passed),
+                "pass_rate": (round(passed / len(executed), 4) if executed else 0.0),
                 "verified_pass_rate": (
-                    round(
-                        sum(
-                            1
-                            for item in self.results
-                            if item.passed and item.agent_status == "VERIFIED"
-                        )
-                        / len(self.results),
-                        4,
-                    )
-                    if self.results
+                    round(verified_passed / len(executed), 4)
+                    if executed
                     else 0.0
                 ),
                 "total_duration_ms": sum(item.duration_ms for item in self.results),

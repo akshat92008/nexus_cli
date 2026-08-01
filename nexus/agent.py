@@ -907,6 +907,26 @@ class Agent:
                 if self.model_cfg["id"] != "qwen/qwen3.5-397b-a17b"
                 else "meta/llama-3.3-70b-instruct"
             )
+        if (
+            self.mode_policy.require_distinct_reviewer
+            and reviewer_model == self.model_cfg["id"]
+        ):
+            message = (
+                "Independent review failed closed: quality mode requires a reviewer model "
+                "different from the executor. Set NEXUS_REVIEW_MODEL_ID accordingly."
+            )
+            self.evidence.append(
+                kind="independent_review",
+                claim="a distinct hosted reviewer evaluated the applied diff",
+                status="failed",
+                raw_output=message,
+                metadata={
+                    "reviewer_model": reviewer_model,
+                    "executor_model": self.model_cfg["id"],
+                    "findings": [message],
+                },
+            )
+            return False, message
 
         chunk_size = 50_000
         chunks = [diff[index : index + chunk_size] for index in range(0, len(diff), chunk_size)]
@@ -1581,7 +1601,16 @@ class Agent:
         reflection_context = self.reflector.get_reflection_context()
 
         # Active file context
-        active_context = self.context_mgr.get_relevant_context()
+        active_context = self.context_mgr.get_relevant_context(
+            " ".join(
+                item
+                for item in (
+                    self._active_objective,
+                    getattr(getattr(self._active_plan, "next_step", None), "description", ""),
+                )
+                if item
+            )
+        )
 
         system = {
             "role": "system",
@@ -1657,6 +1686,7 @@ class Agent:
             name = str(definition.get("function", {}).get("name", ""))
             return bool(
                 name
+                and (self.mode_policy.allow_shell_command or name != "run_command")
                 and name not in self.disallowed_tools
                 and (not effective_allowlist or name in effective_allowlist)
             )
@@ -2163,6 +2193,12 @@ class Agent:
         from nexus.tools import normalize_tool_arguments
 
         args = normalize_tool_arguments(name, args)
+        if name == "run_command" and not self.mode_policy.allow_shell_command:
+            return (
+                "❌ BLOCKED: shell-string execution is disabled in this mode; use "
+                "run_process with an explicit argv array.",
+                False,
+            )
         pending_args = dict(args)
         nova_guardrail = args.pop("_nova_guardrail", None)
         file_path = args.get("path", "") or args.get("file_path", "")
@@ -2379,18 +2415,13 @@ class Agent:
                 False,
             )
 
-        # Autonomous production presets never execute a dangerous or networked
-        # command through the policy-only restricted subprocess fallback. Safe,
-        # local verification commands remain portable on hosts without bwrap or
-        # sandbox-exec; elevated operations fail closed unless native isolation
-        # is actually available.
+        # Production presets fail closed for every command when no kernel-backed
+        # workspace boundary is available. A merely "safe-looking" command can
+        # still read arbitrary host paths, so danger classification is not a
+        # containment boundary.
         if (
             name in ("run_command", "run_process", "process_run")
             and self.mode_policy.require_os_isolation
-            and (
-                bool(args.get("network"))
-                or bool(safety_check and safety_check.level == SafetyLevel.DANGEROUS)
-            )
         ):
             args["require_os_isolation"] = True
 

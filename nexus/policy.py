@@ -23,6 +23,8 @@ class ModePolicy:
     verification_level: str = "standard"
     retry_budget: int = 0
     require_os_isolation: bool = False
+    allow_shell_command: bool = True
+    require_distinct_reviewer: bool = False
 
 
 def get_mode_policy(mode: str) -> ModePolicy:
@@ -44,6 +46,7 @@ def get_mode_policy(mode: str) -> ModePolicy:
             require_review=False,
             retry_budget=2,
             require_os_isolation=True,
+            allow_shell_command=False,
         )
     elif mode == "quality":
         return ModePolicy(
@@ -55,6 +58,8 @@ def get_mode_policy(mode: str) -> ModePolicy:
             verification_level="full",
             retry_budget=3,
             require_os_isolation=True,
+            allow_shell_command=False,
+            require_distinct_reviewer=True,
         )
     elif mode == "budget":
         return ModePolicy(
@@ -64,6 +69,7 @@ def get_mode_policy(mode: str) -> ModePolicy:
             model_strategy="budget",
             retry_budget=1,
             require_os_isolation=True,
+            allow_shell_command=False,
         )
     elif mode == "plan":
         return ModePolicy(
@@ -77,6 +83,7 @@ def get_mode_policy(mode: str) -> ModePolicy:
             model_strategy="local",
             retry_budget=2,
             require_os_isolation=True,
+            allow_shell_command=False,
         )
     elif mode == "ci":
         return ModePolicy(
@@ -86,6 +93,7 @@ def get_mode_policy(mode: str) -> ModePolicy:
             verification_level="full",
             retry_budget=1,
             require_os_isolation=True,
+            allow_shell_command=False,
         )
     return ModePolicy()
 

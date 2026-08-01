@@ -199,3 +199,31 @@ def test_ceiling_timeout_works_outside_main_thread():
 
     assert not worker.is_alive()
     assert result == {"timed_out": True}
+
+
+def test_timed_out_ceiling_transport_cannot_block_process_shutdown():
+    release = threading.Event()
+    result = {}
+
+    def run():
+        try:
+            _run_ceiling_call(lambda: release.wait(timeout=1), 0.01)
+        except CeilingCallTimeout as exc:
+            result["error"] = str(exc)
+
+    caller = threading.Thread(target=run)
+    caller.start()
+    caller.join(timeout=0.5)
+
+    transports = [
+        thread for thread in threading.enumerate() if thread.name == "nexus-ceiling-call"
+    ]
+    try:
+        assert not caller.is_alive()
+        assert "daemonized transport" in result["error"]
+        assert transports
+        assert all(thread.daemon for thread in transports)
+    finally:
+        release.set()
+        for thread in transports:
+            thread.join(timeout=0.5)

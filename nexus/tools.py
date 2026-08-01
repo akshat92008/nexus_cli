@@ -10,16 +10,20 @@ Tools:
   Web:     web_fetch, web_search
 """
 
+import atexit
 import contextvars
 import fnmatch
 import hashlib
 import html
+import http.client
 import json
 import mimetypes
 import os
 import re
 import shlex
 import signal
+import socket
+import ssl
 import subprocess
 import urllib.error
 import urllib.parse
@@ -1644,6 +1648,23 @@ def stop_owned_processes(owner: str) -> dict[str, object]:
     return {"stopped": stopped, "errors": errors}
 
 
+def stop_all_background_processes() -> dict[str, object]:
+    """Best-effort shutdown for every child still owned by this Nexus process."""
+    stopped: list[int] = []
+    errors: list[str] = []
+    for pid, record in list(_bg_processes.items()):
+        try:
+            _terminate_background_record(record)
+            stopped.append(pid)
+            _bg_processes.pop(pid, None)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"PID {pid}: {exc}")
+    return {"stopped": stopped, "errors": errors}
+
+
+atexit.register(stop_all_background_processes)
+
+
 def tool_search_code(
     pattern: str, directory: str | None = None, file_pattern: str | None = None
 ) -> str:
@@ -2279,8 +2300,138 @@ class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _safe_urlopen(request: urllib.request.Request, *, timeout: float, policy):
-    opener = urllib.request.build_opener(_PolicyRedirectHandler(policy, request.full_url))
-    return opener.open(request, timeout=timeout)
+    """Open HTTP(S) on an address validated by ``NetworkPolicy``.
+
+    Connecting to the validated IP, while retaining the original Host header
+    and TLS server name, removes the DNS-rebinding gap between validation and
+    urllib's connection-time DNS lookup.
+    """
+    original_url = request.full_url
+    current_url = original_url
+    for _redirect in range(6):
+        violation, target = policy.resolve_url(current_url)
+        if violation or target is None:
+            reason = violation.reason if violation else "URL could not be resolved safely"
+            raise urllib.error.URLError(reason)
+        parsed = urllib.parse.urlparse(current_url)
+        connection_type = (
+            _PinnedHTTPSConnection if parsed.scheme.lower() == "https" else _PinnedHTTPConnection
+        )
+        connection = connection_type(
+            target.hostname,
+            target.addresses[0],
+            target.port,
+            timeout=timeout,
+        )
+        headers = dict(request.header_items())
+        default_port = 443 if parsed.scheme.lower() == "https" else 80
+        headers.setdefault(
+            "Host",
+            target.hostname if target.port == default_port else f"{target.hostname}:{target.port}",
+        )
+        path = urllib.parse.urlunparse(("", "", parsed.path or "/", "", parsed.query, ""))
+        try:
+            connection.request(request.get_method(), path, body=request.data, headers=headers)
+            response = connection.getresponse()
+        except BaseException:
+            connection.close()
+            raise
+        if response.status in {301, 302, 303, 307, 308}:
+            location = response.headers.get("Location", "")
+            response.close()
+            connection.close()
+            if not location:
+                raise urllib.error.URLError("Redirect response did not include a Location header")
+            destination = urllib.parse.urljoin(current_url, location)
+            redirect_violation = policy.check_url_syntax(destination)
+            if redirect_violation:
+                raise urllib.error.URLError(
+                    f"Redirect from {original_url} leads to blocked destination: "
+                    f"{redirect_violation.reason}"
+                )
+            current_url = destination
+            continue
+        wrapped = _PinnedResponse(response, connection, current_url)
+        if response.status >= 400:
+            raise urllib.error.HTTPError(
+                current_url,
+                response.status,
+                response.reason,
+                response.headers,
+                wrapped,
+            )
+        return wrapped
+    raise urllib.error.URLError("Too many redirects (maximum 5)")
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTP connection whose socket destination is a pre-validated IP."""
+
+    def __init__(self, hostname: str, address: str, port: int, *, timeout: float):
+        super().__init__(hostname, port=port, timeout=timeout)
+        self._pinned_address = address
+
+    def connect(self):
+        self.sock = self._create_connection(
+            (self._pinned_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS connection pinned to an IP while validating the original hostname."""
+
+    def __init__(self, hostname: str, address: str, port: int, *, timeout: float):
+        super().__init__(
+            hostname,
+            port=port,
+            timeout=timeout,
+            context=ssl.create_default_context(),
+        )
+        self._pinned_address = address
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self._pinned_address, self.port),
+            self.timeout,
+            self.source_address,
+        )
+        server_hostname = self.host
+        if self._tunnel_host:
+            self._tunnel()
+            server_hostname = self._tunnel_host
+        self.sock = self._context.wrap_socket(self.sock, server_hostname=server_hostname)
+
+
+class _PinnedResponse:
+    """Context-managed adapter retaining the final URL and owning connection."""
+
+    def __init__(self, response, connection, url: str):
+        self._response = response
+        self._connection = connection
+        self._url = url
+        self.headers = response.headers
+
+    def read(self, amount: int | None = None):
+        return self._response.read(amount)
+
+    def geturl(self) -> str:
+        return self._url
+
+    def close(self) -> None:
+        try:
+            self._response.close()
+        finally:
+            self._connection.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc_info):
+        self.close()
 
 
 def tool_web_fetch(url: str, max_length: int = 10000) -> str:
@@ -2290,7 +2441,10 @@ def tool_web_fetch(url: str, max_length: int = 10000) -> str:
     if not isinstance(url, str) or not url.strip() or len(url) > 4096:
         return "❌ Network policy blocked URL: URL must contain 1-4096 characters"
     policy = NetworkPolicy(max_response_bytes=500_000)
-    violation = policy.check_url(url)
+    # Full resolution happens inside _safe_urlopen immediately before the
+    # socket is pinned. Syntax validation here keeps mocked/offline tests free
+    # of accidental DNS calls.
+    violation = policy.check_url_syntax(url)
     if violation:
         return f"❌ Network policy blocked URL ({violation.category}): {violation.reason}"
     try:
@@ -2304,7 +2458,7 @@ def tool_web_fetch(url: str, max_length: int = 10000) -> str:
         )
         with _safe_urlopen(req, timeout=15, policy=policy) as resp:
             final_url = getattr(resp, "geturl", lambda: url)()
-            redirect_violation = policy.check_redirect(url, final_url)
+            redirect_violation = policy.check_url_syntax(final_url)
             if final_url != url and redirect_violation:
                 return (
                     "❌ Network policy blocked redirect "

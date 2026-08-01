@@ -265,7 +265,8 @@ def test_simple_build_plan_still_implements_and_verifies():
 
     tool_contracts = [set(step.tools_needed) for step in plan.steps]
     assert any({"write_file", "edit_file"} & tools for tools in tool_contracts)
-    assert any("run_command" in tools for tools in tool_contracts)
+    assert any("run_process" in tools for tools in tool_contracts)
+    assert all("run_command" not in tools for tools in tool_contracts)
     assert all("git_commit" not in tools for tools in tool_contracts)
 
 
@@ -435,6 +436,9 @@ def test_subagent_runtime_enforces_template_tools_and_turn_limit(tmp_path, monke
 def test_hosted_write_test_review_reaches_verified_without_stdout_noise(
     tmp_path, monkeypatch, capsys
 ):
+    test_policy = get_mode_policy("autonomous")
+    test_policy.require_os_isolation = False
+    test_policy.allow_shell_command = True
     state_root = tmp_path.parent / f"{tmp_path.name}-state"
     monkeypatch.setenv("NEXUS_HOME", str(state_root))
     monkeypatch.setenv("PYTHON", sys.executable)
@@ -525,7 +529,7 @@ def test_hosted_write_test_review_reaches_verified_without_stdout_noise(
         api_key="test",
         working_dir=str(tmp_path),
         permission_mode="acceptEdits",
-        mode_policy=get_mode_policy("autonomous"),
+        mode_policy=test_policy,
         workspace_isolation=False,
     )
     agent.client = HostedFake()

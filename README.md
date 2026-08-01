@@ -175,6 +175,12 @@ returns a pending edit with an exact diff:
 Use `--permission-mode acceptEdits` only in a workspace where automatic edits
 are acceptable. Safety blocks and out-of-scope confirmation still apply.
 
+Autonomous, `acceptEdits`, quality, budget, local-only, and CI presets fail
+closed if the host cannot provide a native OS sandbox (`bubblewrap` on Linux
+or `sandbox-exec` on macOS). These presets expose shell-free `run_process`
+instead of the compatibility `run_command` shell. This prevents a command
+that merely looks safe from reading outside the authorized workspace.
+
 ## Models
 
 Hosted model IDs are drawn from the NVIDIA NIM catalog. Provider availability
@@ -231,6 +237,11 @@ python scripts/run_live_provider_gate.py --allow-cost \
   --manifest benchmarks/long_horizon.json --trials 3
 ```
 
+Dry runs validate manifests only. Their `VALID` tasks are reported under
+`manifest_valid_tasks` and `not_executed_tasks`; they never increase execution
+`passed` or `pass_rate`. Only real runs that satisfy external quality gates can
+produce `PASSED` results.
+
 ## Durable runs and recovery
 
 Every turn is saved under the Nexus state directory with `request.json`,
@@ -250,6 +261,12 @@ Resume reloads the same workspace, original objective, saved plan, completed
 task state, and latest checkpoint. Automated long-horizon benchmarks use this
 mechanism to continue one initial product prompt across bounded attempts; they
 do not inject follow-up product instructions.
+
+Massive builds also persist a product specification, architecture decisions,
+subsystem contracts, integration/deployment gates, and failure-driven plan
+revisions. File/interface summaries and dependency impact are cached across
+restarts so later turns do not have to reconstruct the entire system from raw
+file clips.
 
 ## Built-in tools
 

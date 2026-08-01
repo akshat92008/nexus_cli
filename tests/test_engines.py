@@ -73,7 +73,7 @@ def test_context_manager():
 
         # Test basic tracking
         cm.track_file_access("main.py", was_edited=True)
-        assert str(Path("main.py").resolve()) in cm._file_contexts
+        assert str((Path(tmpdir) / "main.py").resolve()) in cm._file_contexts
 
         # Test imports parser
         cm.track_file_imports(
@@ -81,6 +81,28 @@ def test_context_manager():
         )
         relevant = cm.get_relevant_context("Help me edit main.py")
         assert "main.py" in relevant or "STRUCTURE" in relevant
+
+
+def test_context_summaries_and_dependency_impact_survive_restart(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    module = workspace / "service.py"
+    dependency = workspace / "domain.py"
+    module.write_text("from domain import Entity\n\ndef execute():\n    return Entity()\n")
+    dependency.write_text("class Entity:\n    pass\n")
+
+    first = ContextManager(str(workspace))
+    first.track_file_access("domain.py")
+    first.track_file_access("service.py", was_edited=True)
+
+    restored = ContextManager(str(workspace))
+    relevant = restored.get_relevant_context("change execute in service.py")
+    impact = restored.get_change_impact_context(["domain.py"])
+
+    assert "functions: execute" in relevant
+    assert "service.py" in impact
+    assert "domain.py" in impact
 
 
 def test_safety_layer():

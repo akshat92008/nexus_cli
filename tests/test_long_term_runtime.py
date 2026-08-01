@@ -13,6 +13,7 @@ import pytest
 from nexus.agent import Agent
 from nexus.budget import BudgetController, BudgetedClient, BudgetExceeded, BudgetLimits
 from nexus.planner import Difficulty, IntentType, PlanningEngine, PlanType, TaskStatus
+from nexus.policy import get_mode_policy
 from nexus.repo_graph import RepoGraph
 from nexus.run_state import CriterionResult, CriterionStatus, RunLedger, RunStatus
 from nexus.workspace import GitWorktreeSession, WorktreeError
@@ -265,11 +266,14 @@ def test_agent_run_ledger_tracks_verified_tools_and_complete_rollback(
 ):
     monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
     monkeypatch.chdir(tmp_path)
+    test_policy = get_mode_policy("autonomous")
+    test_policy.require_os_isolation = False
     agent = Agent(
         api_key="nvapi-test",
         model_key="glm-5.2",
         working_dir=str(tmp_path),
         permission_mode="acceptEdits",
+        mode_policy=test_policy,
     )
     request = "Build calculator.py with a regression test"
     analysis = agent.planner.analyze(request)
@@ -293,8 +297,8 @@ def test_agent_run_ledger_tracks_verified_tools_and_complete_rollback(
         },
     )
     command_result, command_ok = agent._execute_tool_with_safety(
-        "run_command",
-        {"command": f"{sys.executable} -m pytest -q", "cwd": str(tmp_path)},
+        "run_process",
+        {"argv": [sys.executable, "-m", "pytest", "-q"], "cwd": str(tmp_path)},
     )
     report = agent._finish_managed_run(
         "Implemented calculator with regression coverage.",

@@ -71,7 +71,7 @@ def test_explicit_confirmation_executes_only_the_pending_call(tmp_path, monkeypa
     assert "expired" in expired
 
 
-def test_autonomous_mode_fails_closed_for_dangerous_command_without_native_sandbox(
+def test_autonomous_mode_disables_shell_and_fails_closed_without_native_sandbox(
     tmp_path, monkeypatch
 ):
     target = tmp_path / "must_remain"
@@ -84,16 +84,46 @@ def test_autonomous_mode_fails_closed_for_dangerous_command_without_native_sandb
         mode_policy=get_mode_policy("autonomous"),
     )
 
-    pending, pending_success = agent._execute_tool_with_safety(
+    shell_result, shell_success = agent._execute_tool_with_safety(
         "run_command", {"command": "rm -rf ./must_remain"}
     )
-    confirmed, confirmed_success = agent.confirm_pending_operation("danger-0001")
+    typed_result, typed_success = agent._execute_tool_with_safety(
+        "run_process",
+        {"argv": [sys.executable, "-c", "print('safe')"], "cwd": str(tmp_path)},
+    )
 
-    assert not pending_success
-    assert "PENDING_CONFIRMATION" in pending
-    assert not confirmed_success
-    assert "No supported OS sandbox" in confirmed
+    assert not shell_success
+    assert "shell-string execution is disabled" in shell_result
+    assert not typed_success
+    assert "No supported OS sandbox" in typed_result
+    assert "run_command" not in {
+        item["function"]["name"] for item in (agent._get_tools() or [])
+    }
     assert target.is_dir()
+
+
+def test_quality_mode_rejects_executor_model_as_reviewer(tmp_path, monkeypatch):
+    monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
+    agent = Agent(
+        api_key="test",
+        working_dir=str(tmp_path),
+        mode_policy=get_mode_policy("quality"),
+        workspace_isolation=False,
+    )
+    monkeypatch.setenv("NEXUS_REVIEW_MODEL_ID", agent.model_cfg["id"])
+    monkeypatch.setattr(agent.history, "get_recent_diffs", lambda *_args: "+secure = True")
+    agent._active_objective = "Apply a secure change"
+    agent.evidence.append(
+        kind="file_mutation",
+        claim="file changed",
+        status="verified",
+        raw_output="changed",
+    )
+
+    approved, detail = agent._run_independent_review()
+
+    assert approved is False
+    assert "different from the executor" in detail
 
 
 def test_cancelled_dangerous_call_never_executes(tmp_path, monkeypatch):

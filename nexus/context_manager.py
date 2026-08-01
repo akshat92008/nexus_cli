@@ -8,12 +8,15 @@ Architecture:
     File Access Tracker → Relevance Scoring → Token Budget → Context Assembly
 """
 
+import hashlib
 import json
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
+
+from nexus.paths import nexus_home
 
 
 @dataclass
@@ -196,12 +199,15 @@ class ContextManager:
     """
 
     def __init__(self, working_dir: str, max_context_tokens: int = 30000):
-        self.working_dir = working_dir
+        self.working_dir = str(Path(working_dir).expanduser().resolve())
         self.max_context_tokens = max_context_tokens
         self._file_contexts: dict[str, FileContext] = {}
         self._architecture: ArchitectureMap | None = None
         self._dependency_graph: dict[str, set[str]] = defaultdict(set)  # file -> depends_on
         self._initialized = False
+        workspace_key = hashlib.sha256(self.working_dir.encode("utf-8")).hexdigest()[:20]
+        self._cache_path = nexus_home() / "context" / f"{workspace_key}.json"
+        self._load_cache()
 
     def initialize(self) -> str:
         """
@@ -238,7 +244,7 @@ class ContextManager:
 
     def track_file_access(self, filepath: str, was_edited: bool = False):
         """Record that a file was accessed or edited."""
-        abs_path = str(Path(filepath).resolve())
+        abs_path = self._absolute_path(filepath)
         now = datetime.now().isoformat()
 
         if abs_path not in self._file_contexts:
@@ -254,15 +260,27 @@ class ContextManager:
         if was_edited:
             ctx.was_edited = True
         ctx.relevance_score = self._calculate_relevance(ctx)
+        candidate = Path(abs_path)
+        try:
+            if candidate.is_file() and candidate.stat().st_size <= 2_000_000:
+                content = candidate.read_text(encoding="utf-8", errors="replace")
+                self.summarize_file(abs_path, content)
+                self.track_file_imports(abs_path, content)
+        except OSError:
+            pass
+        self._save_cache()
 
     def track_file_imports(self, filepath: str, content: str):
         """Extract and track import relationships from file content."""
-        abs_path = str(Path(filepath).resolve())
+        abs_path = self._absolute_path(filepath)
         if abs_path in self._file_contexts:
             imports = self._extract_imports(content, Path(filepath).suffix.lower())
             self._file_contexts[abs_path].imports = imports
             for imp in imports:
-                self._dependency_graph[abs_path].add(imp)
+                resolved = self._resolve_import(abs_path, imp)
+                if resolved:
+                    self._dependency_graph[abs_path].add(resolved)
+        self._save_cache()
 
     def get_relevant_context(self, user_input: str = "") -> str:
         """
@@ -273,17 +291,21 @@ class ContextManager:
             return ""
 
         # Score all files
+        query = user_input.lower()
         scored = sorted(
             self._file_contexts.values(),
-            key=lambda f: f.relevance_score,
+            key=lambda item: (
+                item.relevance_score
+                + (5.0 if item.basename.lower() in query else 0.0)
+                + (
+                    2.0
+                    if item.summary
+                    and any(word in item.summary.lower() for word in query.split())
+                    else 0.0
+                )
+            ),
             reverse=True,
         )
-
-        # Boost relevance if user mentions specific files
-        if user_input:
-            for ctx in scored:
-                if ctx.basename.lower() in user_input.lower():
-                    ctx.relevance_score *= 2.0
 
         # Build context within token budget
         parts = []
@@ -320,7 +342,7 @@ class ContextManager:
 
     def get_dependency_context(self, filepath: str) -> list[str]:
         """Get files that are related to (depend on or depended by) a given file."""
-        abs_path = str(Path(filepath).resolve())
+        abs_path = self._absolute_path(filepath)
         related = set()
 
         # Files this file imports
@@ -379,14 +401,106 @@ class ContextManager:
         summary = " | ".join(parts)
 
         # Cache the summary
-        abs_path = str(Path(filepath).resolve())
+        abs_path = self._absolute_path(filepath)
         if abs_path in self._file_contexts:
             self._file_contexts[abs_path].summary = summary
             self._file_contexts[abs_path].line_count = line_count
+            self._file_contexts[abs_path].exports = self._extract_exports(content, lang)
+            self._save_cache()
 
         return summary
 
+    def get_change_impact_context(self, filepaths: list[str]) -> str:
+        """Return persistent summaries for changed files and their dependents."""
+        impacted: set[str] = set()
+        for filepath in filepaths:
+            absolute = self._absolute_path(filepath)
+            impacted.add(absolute)
+            impacted.update(self.get_dependency_context(absolute))
+        entries = []
+        for path in sorted(impacted):
+            context = self._file_contexts.get(path)
+            if context:
+                entries.append(f"{path}: {context.summary or 'tracked without summary'}")
+        return "[CHANGE IMPACT]\n" + "\n".join(entries) if entries else ""
+
     # ── Private Methods ──────────────────────────────────────────────────
+
+    def _absolute_path(self, filepath: str) -> str:
+        candidate = Path(filepath).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path(self.working_dir) / candidate
+        return str(candidate.resolve())
+
+    def _load_cache(self) -> None:
+        try:
+            payload = json.loads(self._cache_path.read_text(encoding="utf-8"))
+            if payload.get("workspace") != self.working_dir:
+                return
+            for item in payload.get("files", []):
+                context = FileContext(**{
+                    key: value
+                    for key, value in item.items()
+                    if key in FileContext.__dataclass_fields__
+                })
+                self._file_contexts[context.path] = context
+            for path, dependencies in payload.get("dependencies", {}).items():
+                self._dependency_graph[path].update(str(item) for item in dependencies)
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return
+
+    def _save_cache(self) -> None:
+        payload = {
+            "schema": "nexus.context.v1",
+            "workspace": self.working_dir,
+            "files": [asdict(item) for item in self._file_contexts.values()],
+            "dependencies": {
+                path: sorted(dependencies)
+                for path, dependencies in self._dependency_graph.items()
+            },
+        }
+        try:
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self._cache_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            temporary.replace(self._cache_path)
+        except OSError:
+            pass
+
+    def _resolve_import(self, source: str, imported: str) -> str:
+        root = Path(self.working_dir)
+        source_path = Path(source)
+        candidates: list[Path] = []
+        if imported.startswith("."):
+            candidates.append((source_path.parent / imported).resolve())
+        elif source_path.suffix.lower() in (".py", ".pyi", ".pyx"):
+            module = imported.lstrip(".").replace(".", "/")
+            candidates.extend([root / f"{module}.py", root / module / "__init__.py"])
+        elif imported.startswith(("./", "../")):
+            base = source_path.parent / imported
+            candidates.extend(
+                [base, *(base.with_suffix(ext) for ext in (".ts", ".tsx", ".js", ".jsx"))]
+            )
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+                resolved.relative_to(root)
+                if resolved.is_file():
+                    return str(resolved)
+            except (OSError, ValueError):
+                continue
+        return ""
+
+    @staticmethod
+    def _extract_exports(content: str, language: str) -> list[str]:
+        if language == "python":
+            return re.findall(r"^(?:class|def)\s+(\w+)", content, re.MULTILINE)[:100]
+        if language in ("javascript", "typescript"):
+            return re.findall(
+                r"export\s+(?:default\s+)?(?:function|class|const|let|var)\s+(\w+)",
+                content,
+            )[:100]
+        return []
 
     def _calculate_relevance(self, ctx: FileContext) -> float:
         """Calculate a relevance score for a file (0.0 to 10.0)."""

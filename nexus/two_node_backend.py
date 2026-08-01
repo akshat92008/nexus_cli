@@ -11,13 +11,12 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import queue
 import re
 import shutil
 import signal
 import tempfile
 import threading
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -61,7 +60,7 @@ class CeilingCallTimeout(TimeoutError):
 
 
 @contextlib.contextmanager
-def ceiling_timeout(seconds: int):
+def ceiling_timeout(seconds: float):
     """Hard timeout for blocking Ceiling API calls on Unix-like systems."""
     can_use_alarm = (
         seconds > 0
@@ -73,17 +72,26 @@ def ceiling_timeout(seconds: int):
         return
 
     previous_handler = signal.getsignal(signal.SIGALRM)
+    previous_timer = signal.getitimer(signal.ITIMER_REAL) if hasattr(signal, "getitimer") else None
 
     def _raise_timeout(_signum, _frame):
         raise CeilingCallTimeout(f"Ceiling API call exceeded {seconds}s")
 
     signal.signal(signal.SIGALRM, _raise_timeout)
-    signal.alarm(seconds)
+    if hasattr(signal, "setitimer"):
+        signal.setitimer(signal.ITIMER_REAL, float(seconds))
+    else:  # pragma: no cover - legacy Unix fallback
+        signal.alarm(max(1, int(seconds)))
     try:
         yield
     finally:
-        signal.alarm(0)
+        if hasattr(signal, "setitimer"):
+            signal.setitimer(signal.ITIMER_REAL, 0)
+        else:  # pragma: no cover - legacy Unix fallback
+            signal.alarm(0)
         signal.signal(signal.SIGALRM, previous_handler)
+        if previous_timer and previous_timer[0] > 0:
+            signal.setitimer(signal.ITIMER_REAL, *previous_timer)
 
 
 def _run_ceiling_call(call, timeout_seconds: float):
@@ -91,18 +99,32 @@ def _run_ceiling_call(call, timeout_seconds: float):
     if timeout_seconds <= 0:
         return call()
     if hasattr(signal, "SIGALRM") and threading.current_thread() is threading.main_thread():
-        with ceiling_timeout(int(timeout_seconds)):
+        with ceiling_timeout(timeout_seconds):
             return call()
 
-    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="nexus-ceiling")
-    future = executor.submit(call)
+    # Python cannot safely kill an arbitrary blocking thread. Use a daemon so a
+    # misbehaving transport cannot keep the CLI/test process alive. Provider
+    # clients still carry their own request timeouts for real network I/O.
+    outcome: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+    def invoke() -> None:
+        try:
+            outcome.put((True, call()))
+        except BaseException as exc:  # relay the provider exception to the caller
+            outcome.put((False, exc))
+
+    worker = threading.Thread(target=invoke, name="nexus-ceiling-call", daemon=True)
+    worker.start()
     try:
-        return future.result(timeout=timeout_seconds)
-    except FutureTimeoutError as exc:
-        future.cancel()
-        raise CeilingCallTimeout(f"Ceiling API call exceeded {timeout_seconds:g}s") from exc
-    finally:
-        executor.shutdown(wait=False, cancel_futures=True)
+        succeeded, value = outcome.get(timeout=timeout_seconds)
+    except queue.Empty as exc:
+        raise CeilingCallTimeout(
+            f"Ceiling API call exceeded {timeout_seconds:g}s; the daemonized transport "
+            "was detached and cannot delay process shutdown"
+        ) from exc
+    if succeeded:
+        return value
+    raise value
 
 
 CEILING_DIRECT_SYSTEM = """You are the Ceiling node in a two-node coding agent.

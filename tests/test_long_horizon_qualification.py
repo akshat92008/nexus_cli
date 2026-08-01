@@ -37,7 +37,10 @@ def test_long_horizon_manifest_is_valid_and_dry_runnable():
         "startup-control-plane-from-one-prompt",
         "operations-erp-from-one-prompt",
     }
-    assert report["summary"]["passed"] == 2
+    assert report["summary"]["passed"] == 0
+    assert report["summary"]["manifest_valid_tasks"] == 2
+    assert report["summary"]["executed_tasks"] == 0
+    assert report["summary"]["pass_rate"] == 0.0
 
 
 def test_long_horizon_agent_command_preserves_single_prompt_across_resumes(tmp_path):

@@ -7,9 +7,13 @@ Request Forgery (SSRF) and network abuse through the agent's web tools.
 from __future__ import annotations
 
 import ipaddress
+import queue
 import socket
+import threading
+import time
 import urllib.parse
 from dataclasses import dataclass
+from typing import Callable
 
 
 @dataclass(frozen=True)
@@ -19,6 +23,16 @@ class NetworkViolation:
     url: str
     reason: str
     category: str  # "private_range", "metadata", "loopback", "blocked_scheme", etc.
+
+
+@dataclass(frozen=True)
+class ResolvedTarget:
+    """A URL and the exact validated addresses an HTTP client may connect to."""
+
+    url: str
+    hostname: str
+    port: int
+    addresses: tuple[str, ...]
 
 
 # Cloud metadata endpoints (AWS, GCP, Azure, DigitalOcean, Oracle, Alibaba)
@@ -85,14 +99,26 @@ class NetworkPolicy:
         allow_private: bool = False,
         allowed_hosts: frozenset[str] | None = None,
         max_response_bytes: int = MAX_RESPONSE_BYTES,
+        dns_timeout_seconds: float = 3.0,
+        dns_cache_ttl_seconds: float = 30.0,
+        resolver: Callable[..., list] | None = None,
     ):
         self.allow_localhost = allow_localhost
         self.allow_private = allow_private
         self.allowed_hosts = allowed_hosts  # If set, only these hosts are allowed
         self.max_response_bytes = max_response_bytes
+        self.dns_timeout_seconds = max(0.05, float(dns_timeout_seconds))
+        self.dns_cache_ttl_seconds = max(0.0, float(dns_cache_ttl_seconds))
+        self._resolver = resolver or socket.getaddrinfo
+        self._dns_cache: dict[str, tuple[float, tuple[str, ...]]] = {}
 
     def check_url(self, url: str) -> NetworkViolation | None:
         """Validate a URL before making a request.  Returns None if allowed."""
+        violation, _target = self.resolve_url(url)
+        return violation
+
+    def check_url_syntax(self, url: str) -> NetworkViolation | None:
+        """Validate URL syntax/host policy without starting a DNS lookup."""
         try:
             parsed = urllib.parse.urlparse(url)
         except ValueError:
@@ -118,11 +144,6 @@ class NetworkPolicy:
                 "metadata",
             )
 
-        # Resolve to IP and check address ranges
-        violation = self._check_host_ip(url, hostname)
-        if violation:
-            return violation
-
         # Optional allowlist
         if self.allowed_hosts is not None and hostname not in self.allowed_hosts:
             return NetworkViolation(
@@ -131,7 +152,37 @@ class NetworkPolicy:
                 "not_allowed",
             )
 
-        return None
+        try:
+            literal = ipaddress.ip_address(hostname)
+        except ValueError:
+            return None
+        return self._check_ip(url, str(literal), hostname)
+
+    def resolve_url(
+        self, url: str
+    ) -> tuple[NetworkViolation | None, ResolvedTarget | None]:
+        """Validate and resolve a URL, returning the addresses that must be pinned."""
+        violation = self.check_url_syntax(url)
+        if violation:
+            return violation, None
+        parsed = urllib.parse.urlparse(url)
+        hostname = (parsed.hostname or "").lower().rstrip(".")
+        try:
+            port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+        except ValueError:
+            return NetworkViolation(url, "Invalid URL port", "parse_error"), None
+        try:
+            literal = ipaddress.ip_address(hostname)
+            addresses = (str(literal),)
+        except ValueError:
+            addresses, error = self._resolve_host(hostname, port)
+            if error:
+                return NetworkViolation(url, error[0], error[1]), None
+        for address in addresses:
+            violation = self._check_ip(url, address, hostname)
+            if violation:
+                return violation, None
+        return None, ResolvedTarget(url, hostname, port, addresses)
 
     def check_redirect(self, original_url: str, redirect_url: str) -> NetworkViolation | None:
         """Revalidate a redirect destination — redirects into blocked ranges are SSRF."""
@@ -155,25 +206,55 @@ class NetworkPolicy:
             )
         return None
 
-    def _check_host_ip(self, url: str, hostname: str) -> NetworkViolation | None:
-        """Resolve hostname and check the IP address against blocked ranges."""
-        try:
-            addr = ipaddress.ip_address(hostname)
-        except ValueError:
-            # It's a hostname, try DNS resolution
+    def _resolve_host(
+        self, hostname: str, port: int
+    ) -> tuple[tuple[str, ...], tuple[str, str] | None]:
+        """Resolve on a bounded daemon thread and fail closed on every DNS error."""
+        cached = self._dns_cache.get(hostname)
+        now = time.monotonic()
+        if cached and now - cached[0] <= self.dns_cache_ttl_seconds:
+            return cached[1], None
+
+        result: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+        def resolve() -> None:
             try:
-                infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
-                for _family, _, _, _, sockaddr in infos:
-                    ip_str = sockaddr[0]
-                    violation = self._check_ip(url, ip_str, hostname)
-                    if violation:
-                        return violation
-                return None
-            except (socket.gaierror, OSError):
-                # Can't resolve — allow (it will fail at request time anyway)
-                return None
-        else:
-            return self._check_ip(url, str(addr), hostname)
+                result.put(
+                    (
+                        True,
+                        self._resolver(
+                            hostname,
+                            port,
+                            socket.AF_UNSPEC,
+                            socket.SOCK_STREAM,
+                        ),
+                    )
+                )
+            except BaseException as exc:
+                result.put((False, exc))
+
+        threading.Thread(
+            target=resolve,
+            name=f"nexus-dns-{hostname[:32]}",
+            daemon=True,
+        ).start()
+        try:
+            succeeded, value = result.get(timeout=self.dns_timeout_seconds)
+        except queue.Empty:
+            return (), (f"DNS resolution timed out for {hostname}", "dns_timeout")
+        if not succeeded:
+            return (), (f"DNS resolution failed for {hostname}: {value}", "dns_error")
+        addresses = tuple(
+            dict.fromkeys(
+                str(info[4][0])
+                for info in value
+                if len(info) >= 5 and info[4] and info[4][0]
+            )
+        )
+        if not addresses:
+            return (), (f"DNS resolution returned no addresses for {hostname}", "dns_empty")
+        self._dns_cache[hostname] = (now, addresses)
+        return addresses, None
 
     def _check_ip(self, url: str, ip_str: str, hostname: str) -> NetworkViolation | None:
         """Check a single IP address against blocked ranges."""
