@@ -267,6 +267,29 @@ class ExecutionPipeline:
         """Classify intent and generate or retrieve the execution plan."""
         t = time.monotonic()
         try:
+            resume_analysis = getattr(self._agent, "_resume_analysis_override", None)
+            resume_plan = getattr(self._agent, "_resume_plan_override", None)
+            if resume_analysis is not None and resume_plan is not None:
+                self._agent._resume_analysis_override = None  # noqa: SLF001
+                self._agent._resume_plan_override = None  # noqa: SLF001
+                self._agent.planner.current_plan = resume_plan
+                return (
+                    resume_analysis,
+                    resume_plan,
+                    StageResult(
+                        stage=PipelineStage.PLANNING,
+                        success=True,
+                        duration_ms=int((time.monotonic() - t) * 1000),
+                        metadata={
+                            "intent": str(resume_analysis.get("intent", "")),
+                            "plan_type": str(resume_analysis.get("plan_type", "")),
+                            "resumed": True,
+                            "completed_steps": sum(
+                                step.status == TaskStatus.COMPLETED for step in resume_plan.steps
+                            ),
+                        },
+                    ),
+                )
             analysis = self._agent.planner.analyze(user_input)
             plan = None
             if analysis.get("plan_type") == "planned":

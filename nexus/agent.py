@@ -3168,6 +3168,17 @@ class Agent:
         if not plan_data.get("id"):
             raise ValueError("Interrupted run has no resumable execution plan")
         plan = ExecutionPlan.from_dict(plan_data)
+        # A killed process can leave a step in progress, while a bounded model
+        # turn can deliberately close it as failed. Explicit recovery retries
+        # only those unfinished steps and preserves completed checkpoints.
+        for step in plan.steps:
+            if step.status in {TaskStatus.IN_PROGRESS, TaskStatus.FAILED}:
+                step.status = TaskStatus.PENDING
+                step.error = ""
+                step.completed_at = ""
+        plan.status = TaskStatus.PENDING
+        next_step = plan.next_step
+        plan.current_step = next_step.id if next_step else None
         self.planner.current_plan = plan
         session_id = turn_dir.parent.name
         self.conversation_id = session_id

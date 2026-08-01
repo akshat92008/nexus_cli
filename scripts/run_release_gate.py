@@ -128,6 +128,19 @@ def main() -> int:
             cwd=root,
             env=smoke_env,
         )
+        run(
+            [
+                python,
+                "-m",
+                "nexus",
+                "benchmark",
+                "--manifest",
+                str(REPO / "benchmarks" / "long_horizon.json"),
+                "--dry-run",
+            ],
+            cwd=root,
+            env=smoke_env,
+        )
 
         doctor_env = dict(smoke_env)
         doctor_env["NVIDIA_API_KEY"] = "nvapi-release-smoke"

@@ -24,7 +24,8 @@ specification:
   database checks, HTTP contracts, and optional browser workflows;
 - every run persists request, plan, task, model, tool, cost, patch, test,
   checkpoint, state, and final-report artifacts;
-- interrupted work can resume from its latest verified checkpoint;
+- interrupted work resumes the persisted plan from its latest checkpoint,
+  preserving completed steps and retrying only unfinished work;
 - SDK contracts, skills, hooks, plugins, subagents, MCP, CI mode, issue
   solving, and a versioned benchmark harness are included.
 
@@ -211,8 +212,9 @@ python3 -m venv .venv
 .venv/bin/python scripts/run_release_gate.py
 ```
 
-The separate `scripts/run_release_e2e.py` harness makes real model calls and is
-opt-in for pull requests and mandatory for version-tag release artifacts.
+The deterministic gate never spends provider credits. Real hosted-provider
+qualification is explicitly cost-gated through
+`scripts/run_live_provider_gate.py` and the manual GitHub workflow.
 
 The public benchmark manifest is versioned and shell-free:
 
@@ -220,6 +222,13 @@ The public benchmark manifest is versioned and shell-free:
 nexus benchmark --manifest benchmarks/core.json --dry-run
 nexus benchmark --manifest benchmarks/core.json \
   --output benchmarks/results/nexus-3.1.1.json
+
+# Validate the large single-prompt product contract without spending credits
+nexus benchmark --manifest benchmarks/long_horizon.json --dry-run
+
+# Run real-provider qualification and preserve redacted attempt evidence
+python scripts/run_live_provider_gate.py --allow-cost \
+  --manifest benchmarks/long_horizon.json --trials 3
 ```
 
 ## Durable runs and recovery
@@ -237,8 +246,10 @@ nexus resume <run-id>
 nexus rollback <run-id>
 ```
 
-Resume reloads the same workspace, completed task state, and latest verified
-checkpoint, then continues only pending or failed work.
+Resume reloads the same workspace, original objective, saved plan, completed
+task state, and latest checkpoint. Automated long-horizon benchmarks use this
+mechanism to continue one initial product prompt across bounded attempts; they
+do not inject follow-up product instructions.
 
 ## Built-in tools
 

@@ -434,7 +434,7 @@ def _handle_benchmark() -> bool:
     benchmark_parser.add_argument(
         "--manifest",
         required=True,
-        help="Path to a nexus.benchmark.v1 JSON manifest",
+        help="Path to a nexus.benchmark.v1 or nexus.benchmark.v2 JSON manifest",
     )
     benchmark_parser.add_argument(
         "--output",
@@ -445,12 +445,25 @@ def _handle_benchmark() -> bool:
         action="store_true",
         help="Validate the manifest and repositories without invoking a model",
     )
+    benchmark_parser.add_argument(
+        "--artifact-dir",
+        help="Preserve redacted per-attempt evidence under this directory",
+    )
+    benchmark_parser.add_argument(
+        "--keep-workspaces",
+        action="store_true",
+        help="Keep isolated benchmark workspaces for forensic inspection",
+    )
     benchmark_args = benchmark_parser.parse_args(sys.argv[2:])
     from nexus.benchmark import BenchmarkRunner, BenchmarkSuite
 
     try:
         suite = BenchmarkSuite.load(benchmark_args.manifest)
-        report = BenchmarkRunner(suite).run(dry_run=benchmark_args.dry_run)
+        report = BenchmarkRunner(
+            suite,
+            artifact_root=benchmark_args.artifact_dir,
+            keep_workspaces=benchmark_args.keep_workspaces,
+        ).run(dry_run=benchmark_args.dry_run)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc

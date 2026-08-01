@@ -1,0 +1,68 @@
+name: Live provider qualification
+
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: Benchmark profile
+        required: true
+        type: choice
+        options:
+          - core
+          - long-horizon
+        default: core
+      model:
+        description: Nexus model key
+        required: true
+        default: glm-5.2
+      trials:
+        description: Independent fresh-workspace trials
+        required: true
+        default: "1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-provider-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      NEXUS_RUN_LIVE_PROVIDER: "1"
+      NEXUS_MODEL: ${{ inputs.model }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+      - name: Install Nexus and release dependencies
+        run: uv sync --locked --extra dev --extra browser
+      - name: Run live-provider qualification
+        shell: bash
+        run: |
+          manifest="benchmarks/core.json"
+          if [[ "${{ inputs.profile }}" == "long-horizon" ]]; then
+            manifest="benchmarks/long_horizon.json"
+          fi
+          uv run python scripts/run_live_provider_gate.py \
+            --allow-cost \
+            --manifest "$manifest" \
+            --model "${{ inputs.model }}" \
+            --trials "${{ inputs.trials }}" \
+            --artifact-root verification_evidence/live-provider
+      - name: Upload qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-provider-${{ inputs.profile }}-${{ github.run_id }}
+          path: verification_evidence/live-provider
+          if-no-files-found: warn
+          retention-days: 30

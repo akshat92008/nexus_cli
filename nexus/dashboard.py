@@ -131,16 +131,20 @@ class RegressionDashboard:
         except json.JSONDecodeError as exc:
             raise ValueError(f"Invalid JSON in result file: {exc}") from exc
 
-        if data.get("schema_version") != "nexus.benchmark-result.v1":
+        if data.get("schema_version") not in {
+            "nexus.benchmark-result.v1",
+            "nexus.benchmark-result.v2",
+            "nexus.benchmark-result.v3",
+        }:
             raise ValueError(f"Unsupported schema version: {data.get('schema_version')}")
 
         summary = data.get("summary", {})
         results = data.get("results", [])
 
-        total_tasks = summary.get("total", 0)
+        total_tasks = summary.get("tasks", summary.get("total", 0))
         passed = summary.get("passed", 0)
         success_rate = round((passed / total_tasks * 100) if total_tasks else 0, 1)
-        total_cost = f"{summary.get('estimated_cost_usd', 0.0):.4f}"
+        total_cost = f"{summary.get('total_cost_usd', summary.get('estimated_cost_usd', 0.0)):.4f}"
         total_duration = round(summary.get("total_duration_ms", 0) / 1000, 1)
 
         table_rows = []
