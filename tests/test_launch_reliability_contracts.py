@@ -440,7 +440,7 @@ def test_hosted_write_test_review_reaches_verified_without_stdout_noise(
     tests_dir = tmp_path / "tests"
     tests_dir.mkdir()
     (tests_dir / "test_hello.py").write_text(
-        "from hello import message\n\ndef test_message():\n    assert message() == 'hello-nexus'\n",
+        "from hello import message\n\n\ndef test_message():\n    assert message() == 'hello-nexus'\n",
         encoding="utf-8",
     )
 
