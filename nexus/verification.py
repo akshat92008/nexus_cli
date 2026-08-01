@@ -210,8 +210,9 @@ class VerificationEngine:
             )
 
         try:
+            import sys
             result = subprocess.run(
-                [os.environ.get("PYTHON", "python"), "-m", "compileall", "-q", "-f", "."],
+                [os.environ.get("PYTHON", sys.executable), "-m", "compileall", "-q", "-f", "."],
                 cwd=self.root,
                 capture_output=True,
                 text=True,
