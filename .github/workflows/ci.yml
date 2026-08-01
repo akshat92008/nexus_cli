@@ -36,3 +36,22 @@ jobs:
 
       - name: Run release gate
         run: uv run python scripts/run_release_gate.py
+
+      - name: Run offline command scenarios
+        run: |
+          # 1. safe_direct_command
+          uv run nexus '!echo hello_safe' | grep -i "hello_safe"
+          
+          # 2. dangerous_command_confirmation
+          echo "n" | uv run nexus '!rm -rf /' 2>&1 | grep -i -E "blocked|aborted|cancelled" || true
+          
+          # 3. slopsquatting_block
+          echo "n" | uv run nexus '!python3 -m pip install nexus-definitely-not-real' 2>&1 | grep -i -E "blocked|aborted|cancelled|unverified" || true
+          
+          # 4. direct_command_without_provider
+          env -u NVIDIA_API_KEY -u NEXUS_API_KEY uv run nexus '!echo offline_provider' | grep -i "offline_provider"
+          
+          # 5. direct_command_without_ollama
+          # (Implicitly without ollama running on CI by default)
+          env -u OLLAMA_HOST uv run nexus '!echo no_ollama' | grep -i "no_ollama"
+

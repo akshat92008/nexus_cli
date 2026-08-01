@@ -29,21 +29,53 @@ PURPLE = "#8b5cf6"  # Electric Violet
 
 
 def print_banner():
-    """Print the gorgeous startup banner."""
-    banner = r"""
-[bold #00f0ff]  ███╗   ██╗███████╗██╗  ██╗██╗   ██╗███████╗[/]  [bold #d946ef] █████╗ ██╗[/]
-[bold #00f0ff]  ████╗  ██║██╔════╝╚██╗██╔╝██║   ██║██╔════╝[/]  [bold #d946ef]██╔══██╗██║[/]
-[bold #00f0ff]  ██╔██╗ ██║█████╗   ╚███╔╝ ██║   ██║███████╗[/]  [bold #d946ef]███████║██║[/]
-[bold #00f0ff]  ██║╚██╗██║██╔══╝   ██╔██╗ ██║   ██║╚════██║[/]  [bold #d946ef]██╔══██║██║[/]
-[bold #00f0ff]  ██║ ╚████║███████╗██╔╝ ╚██╗╚██████╔╝███████║[/]  [bold #d946ef]██║  ██║██║[/]
-[bold #00f0ff]  ╚═╝  ╚═══╝╚══════╝╚═╝   ╚═╝ ╚═════╝ ╚══════╝[/]  [bold #d946ef]╚═╝  ╚═╝╚═╝[/]
+    """Print the gorgeous animated startup banner."""
+    import time
+    from rich.live import Live
+    from rich.align import Align
+    from rich.text import Text
+    from rich.panel import Panel
+
+    frames = [
+        # Frame 1 (eyes open)
+        r"""
+  [bold #d946ef]▀▄   ▄▀[/]  
+ [bold #00f0ff]▄█▀███▀█▄[/] 
+[bold #00f0ff]█▀███████▀█[/]
+[bold #00f0ff]█ [bold #fbbf24]█▀▀▀▀▀█[/] █[/]
+  [bold #d946ef]▀▀   ▀▀[/]  
+""",
+        # Frame 2 (eyes closed)
+        r"""
+  [bold #d946ef]▀▄   ▄▀[/]  
+ [bold #00f0ff]▄█▀███▀█▄[/] 
+[bold #00f0ff]█▀███████▀█[/]
+[bold #00f0ff]█ [bold #fbbf24]█▀   ▀█[/] █[/]
+  [bold #d946ef]▀▀   ▀▀[/]  
 """
-    console.print(banner)
-    console.print(
-        f"  [bold {CYAN}]✦ NEXUS AI ✦[/] [dim]—[/] [bold {WHITE}]The Autonomous Coding Agent Operating System[/]\n"
-        f"  [dim]🤖 Frontier Planner + Nova V11 Worker • 🔧 34 Typed Tools • 💾 Durable Runs • ⚡ Verified Execution[/]",
-        justify="center",
-    )
+    ]
+    
+    welcome_text = "Welcome to Nexus!"
+    
+    with Live(refresh_per_second=15, transient=False, console=console) as live:
+        for i in range(12):
+            frame_idx = i % 2
+            
+            # Typewriter effect for welcome text
+            text_len = min(len(welcome_text), int((i / 8) * len(welcome_text)))
+            current_text = welcome_text[:text_len]
+            
+            output = frames[frame_idx] + f"\n[bold white]{current_text}[/]"
+            live.update(Align.center(Text.from_markup(output)))
+            time.sleep(0.06)
+            
+        # Final state
+        final_output = (
+            frames[0] + 
+            f"\n[bold white]{welcome_text}[/]\n\n"
+            f"[dim]Run /help for commands. /status for setup info.[/]\n"
+        )
+        live.update(Align.center(Text.from_markup(final_output)))
     console.print()
 
 
@@ -287,7 +319,7 @@ class LiveStatus:
     def start(self, message: str = "Thinking..."):
         if not self._is_active:
             try:
-                self._status = self.console.status(f"[bold {CYAN}]⚡ {message}[/]", spinner="dots")
+                self._status = self.console.status(f"[{DIM}]{message}[/]", spinner="bouncingBar")
                 self._status.start()
                 self._is_active = True
             except Exception:
@@ -296,7 +328,7 @@ class LiveStatus:
     def update(self, message: str):
         if self._is_active and self._status:
             try:
-                self._status.update(f"[bold {CYAN}]⚡ {message}[/]")
+                self._status.update(f"[{DIM}]{message}[/]")
             except Exception:
                 pass
         else:

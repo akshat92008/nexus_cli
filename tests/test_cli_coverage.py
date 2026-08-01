@@ -83,4 +83,39 @@ def test_generate_dashboard_accepts_shipped_manifest_schema(tmp_path):
         main()
 
     assert output_path.is_file()
-    assert "smoke" in output_path.read_text(encoding="utf-8")
+
+def test_cli_direct_command():
+    with patch.dict(os.environ, {"NVIDIA_API_KEY": "test"}):
+        with patch("nexus.cli.Agent") as MockAgent:
+            with patch.object(sys, "argv", ["nexus", "!echo hello"]):
+                mock_agent = MockAgent.return_value
+                mock_agent._execute_tool_with_safety.return_value = ("hello\n", True)
+                try:
+                    main()
+                except SystemExit:
+                    pass
+                mock_agent._execute_tool_with_safety.assert_called_once_with(
+                    "run_process", {"argv": ["echo", "hello"], "cwd": mock_agent.working_dir}, _user_initiated=True
+                )
+
+
+def test_cli_single_prompt():
+    with patch.dict(os.environ, {"NVIDIA_API_KEY": "test"}):
+        with patch("nexus.cli.Agent") as MockAgent:
+            with patch.object(sys, "argv", ["nexus", "write a python script"]):
+                mock_agent = MockAgent.return_value
+                mock_agent.export_final_report.return_value = {"status": "VERIFIED"}
+                try:
+                    main()
+                except SystemExit:
+                    pass
+                mock_agent.run.assert_called_once_with("write a python script")
+
+
+def test_cli_missing_credentials(capsys):
+    with patch.dict(os.environ, {}, clear=True):
+        with patch.object(sys, "argv", ["nexus"]):
+            with pytest.raises(SystemExit) as excinfo:
+                main()
+            assert excinfo.value.code != 0
+

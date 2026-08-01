@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import os
+import shlex
 import sys
 from pathlib import Path
 
@@ -847,8 +848,15 @@ def run_interactive(agent: Agent):
 
             if user_input.lstrip().startswith("!"):
                 command = user_input.lstrip()[1:].strip()
+                try:
+                    argv = shlex.split(command, posix=os.name != "nt")
+                except ValueError as e:
+                    ui.print_error(f"Invalid command: {e}")
+                    continue
                 result, success = agent._execute_tool_with_safety(
-                    "run_command", {"command": command, "cwd": agent.working_dir}
+                    "run_process", 
+                    {"argv": argv, "cwd": agent.working_dir},
+                    _user_initiated=True
                 )
                 ui.print_tool_result(result, success)
                 continue
@@ -1050,10 +1058,9 @@ def main():
 
     # Direct command mode (runs before model preflight)
     if args.prompt and args.prompt.lstrip().startswith("!"):
-        from nexus.agent import Agent
-        from nexus.policy import get_mode_policy
         try:
             command = args.prompt.lstrip()[1:].strip()
+            argv = shlex.split(command, posix=os.name != "nt")
             _mode_policy = get_mode_policy(args.mode)
             agent = Agent(
                 api_key="offline-direct-command",
@@ -1067,7 +1074,8 @@ def main():
                 plugins_enabled=False,
             )
             result, success = agent._execute_tool_with_safety(
-                "run_command", {"command": command, "cwd": agent.working_dir}
+                "run_process", {"argv": argv, "cwd": agent.working_dir},
+                _user_initiated=True
             )
             if args.output_format in ("json", "jsonl", "stream-json"):
                 print(

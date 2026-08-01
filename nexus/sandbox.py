@@ -465,7 +465,7 @@ class SandboxRunner:
 
         def authorized(candidate: str, *, executable: bool = False) -> bool:
             candidate = candidate.strip().strip("'\"()[]{};,|&<>")
-            if not candidate or "://" in candidate:
+            if not candidate:
                 return True
             if any(marker in candidate for marker in forbidden_home_markers):
                 return False
@@ -485,19 +485,32 @@ class SandboxRunner:
             # Runtime/toolchain reads are safe; user, home, root and /etc reads are not.
             return any(_is_relative_to(resolved, root) for root in safe_system_roots) and not _is_relative_to(resolved, Path("/System/Volumes/Data"))
 
+        def _remove_safe_urls(text: str) -> str:
+            from urllib.parse import urlparse
+            for match in re.finditer(r"\b([a-zA-Z][a-zA-Z0-9+.-]*://\S+)", text):
+                candidate_url = match.group(1).strip("'\"()[]{};,|&<>")
+                try:
+                    parsed = urlparse(candidate_url)
+                    if parsed.scheme in ("http", "https", "ftp") and parsed.netloc:
+                        text = text.replace(match.group(1), "")
+                except ValueError:
+                    continue
+            return text
+
         def inspect_value(value: str, *, executable: bool = False) -> str:
-            if any(marker in value for marker in forbidden_home_markers):
+            value_no_urls = _remove_safe_urls(value)
+            if any(marker in value_no_urls for marker in forbidden_home_markers):
                 return f"Command references a home-directory expansion outside the workspace: {value[:160]}"
             # Catch absolute paths and parent traversal even when embedded in
             # --flag=/path, redirections, or interpreter source strings.
             candidates = re.findall(
                 r"(?<![A-Za-z0-9_])(?:/[A-Za-z0-9_./@+%:=~-]+|\.\.?/[A-Za-z0-9_./@+%:=~-]+)",
-                value,
+                value_no_urls,
             )
             if not candidates:
-                candidates = [value]
+                candidates = [value_no_urls]
             for candidate in candidates:
-                if not authorized(candidate, executable=executable and candidate == value):
+                if not authorized(candidate, executable=executable and candidate == value_no_urls):
                     return f"Command path escapes the authorized workspace: {candidate}"
             return ""
 

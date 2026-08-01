@@ -382,28 +382,43 @@ def test_macos_profile_has_no_global_file_read_grant(tmp_path):
         inside_file = tmp_path / "inside.txt"
         inside_file.write_text("hello", encoding="utf-8")
         
-        # Create a secret file outside the workspace
-        outside_file = tmp_path.parent / "secret-outside.txt"
+        # Create a secret file outside the workspace (and outside temp_dir, which is permitted)
+        outside_file = Path.home() / ".nexus_test_sandbox_escape.txt"
         outside_file.write_text("secret", encoding="utf-8")
         
         try:
+            import subprocess
+
+            def _run_raw_sandbox(argv, network=True):
+                # Bypass the path inspector to directly test the OS sandbox
+                cmd_spec = CommandSpec.create(argv, tmp_path, network=network)
+                cmd, profile_path = runner._macos_command(cmd_spec, tmp_path)
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(tmp_path))
+                    return result.returncode, result.stdout, result.stderr
+                finally:
+                    profile_path.unlink(missing_ok=True)
+
             # 1. Sandboxed process that successfully reads the first
-            res_inside = runner.run(CommandSpec.create(["cat", "inside.txt"], tmp_path))
-            assert res_inside.success is True
-            assert "hello" in res_inside.stdout
+            code, stdout, stderr = _run_raw_sandbox(["cat", "inside.txt"])
+            assert code == 0
+            assert "hello" in stdout
 
             # 2. Sandboxed process that is denied access to the second
-            res_outside = runner.run(CommandSpec.create(["cat", str(outside_file)], tmp_path))
-            # It should fail (either blocked by path check or sandbox)
-            assert res_outside.success is False
+            code, stdout, stderr = _run_raw_sandbox(["cat", str(outside_file)])
+            assert code != 0
+            assert "Operation not permitted" in stderr or "No such file" in stderr
 
             # 3. Sandboxed process that cannot write outside the workspace
-            res_write = runner.run(CommandSpec.create(["sh", "-c", f"echo 'test' > {outside_file}"], tmp_path))
-            assert res_write.success is False
+            code, stdout, stderr = _run_raw_sandbox(["sh", "-c", f"echo 'test' > {outside_file}"])
+            assert code != 0
+            assert "Operation not permitted" in stderr or "No such file" in stderr
 
             # 4. Network check for network-disabled execution
-            res_net = runner.run(CommandSpec.create(["curl", "-s", "--max-time", "1", "http://1.1.1.1"], tmp_path, network=False))
-            assert res_net.success is False
+            code, stdout, stderr = _run_raw_sandbox(["curl", "-s", "--max-time", "1", "http://1.1.1.1"], network=False)
+            assert code != 0
+            # Network drops often result in timeout or specific curl errors
+            assert "Operation not permitted" in stderr or code in (6, 7, 28)
 
         finally:
             outside_file.unlink(missing_ok=True)

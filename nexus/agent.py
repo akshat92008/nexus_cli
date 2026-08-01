@@ -1998,6 +1998,7 @@ class Agent:
         name: str,
         args: dict,
         *,
+        _user_initiated: bool = False,
         _user_confirmed: bool = False,
         _edit_confirmed: bool = False,
     ) -> tuple[str, bool]:
@@ -2012,6 +2013,7 @@ class Agent:
             result, success = self._execute_tool_with_safety_impl(
                 name,
                 args,
+                _user_initiated=_user_initiated,
                 _user_confirmed=_user_confirmed,
                 _edit_confirmed=_edit_confirmed,
             )
@@ -2094,6 +2096,7 @@ class Agent:
         command: str,
         scope_paths: list[str],
         pending_args: dict,
+        _user_initiated: bool,
         _user_confirmed: bool,
         _edit_confirmed: bool,
         mutation_tools: tuple,
@@ -2227,7 +2230,7 @@ class Agent:
                     )
                 ):
                     approval_targets.append(policy_target or name)
-            policy_requires_approval = approval_targets and not _user_confirmed
+            policy_requires_approval = approval_targets and not (_user_confirmed or _user_initiated)
             if policy_requires_approval:
                 policy_target = ", ".join(approval_targets)
                 policy_check = SafetyCheck(
@@ -2262,11 +2265,12 @@ class Agent:
         args: dict,
         command: str,
         pending_args: dict,
+        _user_initiated: bool,
         _user_confirmed: bool,
         _edit_confirmed: bool,
     ) -> tuple[bool, tuple[str, bool]]:
         requests_network = bool(args.get("network")) or bool(args.get("allow_external"))
-        if requests_network and not _user_confirmed:
+        if requests_network and not (_user_confirmed or _user_initiated):
             network_check = SafetyCheck(
                 level=SafetyLevel.DANGEROUS,
                 operation=f"{name} network access",
@@ -2454,6 +2458,7 @@ class Agent:
         name: str,
         args: dict,
         *,
+        _user_initiated: bool = False,
         _user_confirmed: bool = False,
         _edit_confirmed: bool = False,
     ) -> tuple[str, bool]:
@@ -2571,6 +2576,7 @@ class Agent:
             command,
             scope_paths,
             pending_args,
+            _user_initiated,
             _user_confirmed,
             _edit_confirmed,
             mutation_tools,
@@ -2581,7 +2587,7 @@ class Agent:
 
         # ── 2. Enforce Network Safety
         ok, err_res = self._enforce_network_safety(
-            name, args, command, pending_args, _user_confirmed, _edit_confirmed
+            name, args, command, pending_args, _user_initiated, _user_confirmed, _edit_confirmed
         )
         if not ok:
             return err_res
@@ -3576,7 +3582,7 @@ class Agent:
         try:
             if emit_ui:
                 live = ui.LiveStatus()
-                live.start("Hosted planner and local intern are preparing the task graph...")
+                live.start("Preparing task graph...")
                 try:
                     result = backend.run(user_input, planner_analysis=analysis)
                 finally:
@@ -3761,7 +3767,7 @@ class Agent:
         try:
             if emit_ui:
                 live = ui.LiveStatus()
-                live.start("Running Nova 3B through local guardrails...")
+                live.start("Running local worker...")
                 try:
                     nova_result = backend.run(user_input)
                 finally:
