@@ -1048,6 +1048,45 @@ def main():
         ui.print_models_table()
         sys.exit(0)
 
+    # Direct command mode (runs before model preflight)
+    if args.prompt and args.prompt.lstrip().startswith("!"):
+        from nexus.agent import Agent
+        from nexus.policy import get_mode_policy
+        try:
+            command = args.prompt.lstrip()[1:].strip()
+            _mode_policy = get_mode_policy(args.mode)
+            agent = Agent(
+                api_key="offline-direct-command",
+                model_key="custom",
+                model_id_override="offline/direct",
+                working_dir=args.working_dir,
+                mode_policy=_mode_policy,
+                permission_mode=args.permission_mode,
+                workspace_isolation=False,
+                tools_enabled=False,
+                plugins_enabled=False,
+            )
+            result, success = agent._execute_tool_with_safety(
+                "run_command", {"command": command, "cwd": agent.working_dir}
+            )
+            if args.output_format in ("json", "jsonl", "stream-json"):
+                print(
+                    json.dumps(
+                        {
+                            "type": "tool_call",
+                            "name": "run_command",
+                            "result": result,
+                            "success": success,
+                        }
+                    )
+                )
+            else:
+                print(result)
+            _close_and_exit(agent, 0 if success else 2)
+        except Exception as exc:
+            ui.print_error(str(exc))
+            sys.exit(2)
+
     if args.doctor:
         model_cfg = resolve_model(args.model) or {}
         success, report = run_doctor(
@@ -1207,25 +1246,6 @@ def main():
 
     # Single prompt mode
     if args.prompt:
-        if args.prompt.lstrip().startswith("!"):
-            command = args.prompt.lstrip()[1:].strip()
-            result, success = agent._execute_tool_with_safety(
-                "run_command", {"command": command, "cwd": agent.working_dir}
-            )
-            if args.output_format in ("json", "jsonl", "stream-json"):
-                print(
-                    json.dumps(
-                        {
-                            "type": "tool_call",
-                            "name": "run_command",
-                            "result": result,
-                            "success": success,
-                        }
-                    )
-                )
-            else:
-                print(result)
-            _close_and_exit(agent, 0 if success else 2)
         if args.print_mode or args.output_format != "text":
             content, events = agent.run_non_interactive(args.prompt)
             exit_code = non_interactive_exit_code(content, events)

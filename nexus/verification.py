@@ -393,6 +393,19 @@ class VerificationEngine:
         normalized = re.sub(r"\b\d+(?:\.\d+)?s\b", "<TIME>", normalized)
         normalized = re.sub(r"duration_ms[=: ]+\d+", "duration_ms=<TIME>", normalized)
         normalized = re.sub(r"0x[0-9a-fA-F]+", "0x<ADDR>", normalized)
+        normalized = re.sub(r"pid=\d+", "pid=<PID>", normalized)
+
+        # For pytest, extract semantic signatures
+        if "=================================== FAILURES ===================================" in normalized or "short test summary info" in normalized:
+            signatures = []
+            for line in normalized.splitlines():
+                stripped = line.rstrip()
+                if stripped.startswith("FAILED ") or stripped.startswith("ERROR "):
+                    signatures.append(stripped)
+                elif stripped.startswith("E   ") or stripped.startswith("E "):
+                    signatures.append(stripped)
+            if signatures:
+                return "\n".join(signatures)
 
         stable_lines: list[str] = []
         for line in normalized.strip().splitlines():
@@ -401,7 +414,7 @@ class VerificationEngine:
             # failure identity. The failure sections and node IDs remain below.
             if re.fullmatch(r"[.FEsxX]+\s+\[\s*\d+%\]", stripped.strip()):
                 continue
-            if re.fullmatch(r"=+\s*(?:short test summary info|FAILURES)\s*=+", stripped.strip()):
+            if re.fullmatch(r"=+\s*(?:short test summary info|FAILURES|ERRORS)\s*=+", stripped.strip()):
                 continue
             # Pytest's final aggregate count varies in timing only; individual
             # FAILED/ERROR node lines and assertion content are retained.

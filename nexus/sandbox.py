@@ -339,6 +339,15 @@ class SandboxRunner:
             "--ro-bind",
             "/lib64",
             "/lib64",
+        ]
+        
+        import sys
+        for root in {sys.prefix, sys.base_prefix}:
+            if root and Path(root).exists():
+                command.extend(["--ro-bind", root, root])
+
+        command.extend(
+            [
             "--ro-bind",
             "/etc/alternatives",
             "/etc/alternatives",
@@ -346,7 +355,7 @@ class SandboxRunner:
             "/proc",
             "--dev",
             "/dev",
-        ]
+        ])
         try:
             self.workspace.relative_to(Path(tempfile.gettempdir()).resolve())
         except ValueError:
@@ -368,8 +377,9 @@ class SandboxRunner:
         return [*command, "--", *spec.argv]
 
     def _macos_command(self, spec: CommandSpec, cwd: Path) -> tuple[list[str], Path]:
-        workspace = str(self.workspace).replace('"', '\\"')
-        temp_dir = tempfile.gettempdir().replace('"', '\\"')
+        import sys
+        workspace = str(self.workspace.resolve()).replace('"', '\\"')
+        temp_dir = str(Path(tempfile.gettempdir()).resolve()).replace('"', '\\"')
         read_roots = [
             workspace,
             temp_dir,
@@ -380,6 +390,10 @@ class SandboxRunner:
             "/opt",
             "/Library/Developer",
             "/Library/Frameworks",
+            "/private/var/db/dyld",
+            "/System/Volumes/Preboot",
+            sys.prefix,
+            sys.base_prefix,
         ]
         read_rules = " ".join(f'(subpath "{item}")' for item in read_roots)
         rules = [
@@ -391,9 +405,9 @@ class SandboxRunner:
             "(allow ipc-posix-shm)",
             "(allow file-read-metadata)",
             f"(allow file-read* {read_rules} "
+            '(literal "/") '
             '(literal "/dev/null") (literal "/dev/zero") '
             '(literal "/dev/random") (literal "/dev/urandom"))',
-            "(allow file-read-data)",
             f'(allow file-write* (subpath "{workspace}") (subpath "{temp_dir}"))',
             '(allow file-write-data (literal "/dev/null") (literal "/dev/zero"))',
         ]
@@ -429,6 +443,7 @@ class SandboxRunner:
             "${USERPROFILE}",
         )
         allowed_device_paths = {Path("/dev/null"), Path("/dev/zero"), Path("/dev/random"), Path("/dev/urandom")}
+        import sys
         safe_system_roots = tuple(
             Path(item)
             for item in (
@@ -441,6 +456,10 @@ class SandboxRunner:
                 "/opt",
                 "/Library/Developer",
                 "/Library/Frameworks",
+                "/private/var/db/dyld",
+                "/System/Volumes/Preboot",
+                sys.prefix,
+                sys.base_prefix,
             )
         )
 
@@ -453,9 +472,7 @@ class SandboxRunner:
             if candidate.startswith("~"):
                 return False
             path = Path(candidate).expanduser()
-            if not path.is_absolute() and not candidate.startswith(("../", "..\\")):
-                return True
-            resolved = path.resolve() if path.is_absolute() else (cwd / path).resolve()
+            resolved = path.resolve() if path.is_absolute() else (cwd / path).resolve(strict=False)
             try:
                 resolved.relative_to(self.workspace)
                 return True
@@ -477,7 +494,7 @@ class SandboxRunner:
                 r"(?<![A-Za-z0-9_])(?:/[A-Za-z0-9_./@+%:=~-]+|\.\.?/[A-Za-z0-9_./@+%:=~-]+)",
                 value,
             )
-            if not candidates and (value.startswith("~") or value.startswith("..")):
+            if not candidates:
                 candidates = [value]
             for candidate in candidates:
                 if not authorized(candidate, executable=executable and candidate == value):

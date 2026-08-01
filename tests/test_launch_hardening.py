@@ -359,6 +359,7 @@ def test_sandbox_blocks_common_credential_exfiltration_paths_before_spawn(
 
 
 def test_macos_profile_has_no_global_file_read_grant(tmp_path):
+    import platform
     from nexus.sandbox import CommandSpec, SandboxRunner
 
     runner = SandboxRunner(tmp_path)
@@ -373,7 +374,63 @@ def test_macos_profile_has_no_global_file_read_grant(tmp_path):
     assert command[0] == "sandbox-exec"
     assert "(allow file-read*)" not in content
     assert "(allow file-read* (subpath" in content
+    assert "(allow file-read-data)" not in content
     assert '(subpath "/etc")' not in content
+
+    if platform.system().lower() == "darwin":
+        # Create a readable file inside the workspace
+        inside_file = tmp_path / "inside.txt"
+        inside_file.write_text("hello", encoding="utf-8")
+        
+        # Create a secret file outside the workspace
+        outside_file = tmp_path.parent / "secret-outside.txt"
+        outside_file.write_text("secret", encoding="utf-8")
+        
+        try:
+            # 1. Sandboxed process that successfully reads the first
+            res_inside = runner.run(CommandSpec.create(["cat", "inside.txt"], tmp_path))
+            assert res_inside.success is True
+            assert "hello" in res_inside.stdout
+
+            # 2. Sandboxed process that is denied access to the second
+            res_outside = runner.run(CommandSpec.create(["cat", str(outside_file)], tmp_path))
+            # It should fail (either blocked by path check or sandbox)
+            assert res_outside.success is False
+
+            # 3. Sandboxed process that cannot write outside the workspace
+            res_write = runner.run(CommandSpec.create(["sh", "-c", f"echo 'test' > {outside_file}"], tmp_path))
+            assert res_write.success is False
+
+            # 4. Network check for network-disabled execution
+            res_net = runner.run(CommandSpec.create(["curl", "-s", "--max-time", "1", "http://1.1.1.1"], tmp_path, network=False))
+            assert res_net.success is False
+
+        finally:
+            outside_file.unlink(missing_ok=True)
+
+
+def test_sandbox_runner_blocks_relative_symlink_escape(tmp_path):
+    from nexus.sandbox import CommandSpec, SandboxRunner
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    
+    link = workspace / "escape.txt"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+        
+    runner = SandboxRunner(workspace)
+    # Using relative path to the symlink
+    result = runner.run(CommandSpec.create(["cat", "escape.txt"], workspace))
+    
+    assert result.success is False
+    assert result.backend.value == "blocked"
+    assert "escapes the authorized workspace" in result.blocked_reason
 
 
 def test_run_context_is_isolated_between_concurrent_agent_threads(tmp_path):
