@@ -9,7 +9,7 @@ Research date: 2026-07-29. Source of truth: Anthropic's official [Claude Code do
 | Claude Code capability | NEXUS implementation |
 |---|---|
 | Multi-turn tool loop and streaming | Persistent OpenAI-compatible tool-call loop, streaming terminal UI, bounded turns |
-| Read, write, edit, glob/grep, repository graph, shell, git, web, behavioral checks | 34 built-in tools in `nexus/tools.py` |
+| Read, write, edit, glob/grep, repository graph, shell, git, web, behavioral checks | 38 built-in tools in `nexus/tools.py` |
 | Diff approval and permission modes | Dry-run unified diff; `/apply`, `/reject`, `/edit-pending`; `default`, `acceptEdits`, and read-only `plan` modes |
 | Checkpoint/rewind | Persistent pre-edit snapshots; canonical run checkpoints; `/undo N`, `/rewind N`, `/rollback-run`, `/diff`, `/changes` |
 | Session continue/resume | Auto-saved history plus canonical run state, `runs`, `inspect`, `replay`, `resume`, `rollback`, `--continue`, and `--resume` |
@@ -50,7 +50,7 @@ Research date: 2026-07-29. Source of truth: Anthropic's official [Claude Code do
 | IDE plugins, voice, mobile, Remote Control, browser computer use | External product surfaces; not simulated |
 | Hosted artifacts, PR cloud review, enterprise analytics/policy delivery | Anthropic/cloud services; not simulated |
 
-These are not part of the Nexus 3.1.1 open CLI specification. Host-dependent
+These are not part of the Nexus 3.2.0 open CLI specification. Host-dependent
 features such as LSP, Tree-sitter, Playwright, compilers, services, and native
 sandboxing are reported as available, unavailable, or policy-only at runtime;
 Nexus never converts an unavailable check into verified success.

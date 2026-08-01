@@ -67,6 +67,29 @@ def test_dashboard_generation(tmp_path: Path):
     assert "status-failed" in html
 
 
+def test_dashboard_generation_from_shipped_manifest_schema(tmp_path: Path):
+    manifest = {
+        "schema_version": "nexus.benchmark.v1",
+        "name": "launch-suite",
+        "tasks": [
+            {"id": "task-1", "category": "feature"},
+            {"id": "task-2", "category": "bug-repair"},
+        ],
+    }
+    input_file = tmp_path / "manifest.json"
+    input_file.write_text(json.dumps(manifest), encoding="utf-8")
+    output_file = tmp_path / "dashboard.html"
+
+    RegressionDashboard.generate(str(input_file), str(output_file))
+
+    html = output_file.read_text(encoding="utf-8")
+    assert "launch-suite" in html
+    assert "task-1" in html
+    assert "task-2" in html
+    assert "NOT_RUN" in html
+    assert "status-not-run" in html
+
+
 def test_dashboard_invalid_schema(tmp_path: Path):
     result_data = {
         "schema_version": "invalid.v1",

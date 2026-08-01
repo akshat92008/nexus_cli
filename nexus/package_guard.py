@@ -49,12 +49,27 @@ class PackageGuard:
         self.resolver = resolver or self._lookup
         self._cache: dict[tuple[str, str], PackageCheck] = {}
 
-    def check_file_change(self, path: str, content: str) -> list[PackageCheck]:
+    def check_file_change(
+        self,
+        path: str,
+        content: str,
+        current_content: str | None = None,
+    ) -> list[PackageCheck]:
+        """Validate only newly introduced dependency coordinates.
+
+        Existing private or self-hosted dependencies are preserved without
+        forcing a public-registry lookup.  Changed package names are treated as
+        newly introduced; version-only changes keep the same package identity.
+        """
         p = Path(path)
         registry = DEPENDENCY_FILES.get(p.name)
         if not registry:
             return []
-        return self._check_names(registry, self._extract_file_packages(p.name, content))
+        proposed = set(self._extract_file_packages(p.name, content))
+        current = set(
+            self._extract_file_packages(p.name, current_content or "")
+        )
+        return self._check_names(registry, sorted(proposed - current))
 
     def check_command(self, command: str) -> list[PackageCheck]:
         try:

@@ -5,6 +5,7 @@ import subprocess
 import sys
 
 from nexus.agent import Agent
+from nexus.policy import get_mode_policy
 from nexus.providers.base import Provider
 
 
@@ -111,6 +112,24 @@ class FullFakeProvider(Provider):
     def chat_sync(
         self, model_id, messages, tools=None, max_tokens=None, temperature=None, **kwargs
     ):
+        if tools is None and any(
+            "independent, read-only senior code reviewer" in str(message.get("content", ""))
+            for message in messages
+        ):
+            class ReviewMessage:
+                content = (
+                    '{"approved": true, "summary": "The targeted fix is correct and the '
+                    'full test suite passes.", "findings": []}'
+                )
+                tool_calls = []
+
+            class ReviewChoice:
+                message = ReviewMessage()
+
+            class ReviewResponse:
+                choices = [ReviewChoice()]
+
+            return ReviewResponse()
         return self.chat(
             model_id,
             messages,
@@ -133,6 +152,12 @@ def test_full_autonomous_agent_workflow(tmp_path, monkeypatch):
     monkeypatch.setenv("NVIDIA_API_KEY", "fake_key")
     repo_dir = tmp_path / "repo"
     repo_dir.mkdir()
+
+    (repo_dir / "pyproject.toml").write_text(
+        "[project]\nname='e2e-math'\nversion='0.0.0'\n"
+        "[tool.pytest.ini_options]\ntestpaths=['.']\n",
+        encoding="utf-8",
+    )
 
     # Create flawed script
     math_py = repo_dir / "my_math.py"
@@ -176,57 +201,76 @@ def test_full_autonomous_agent_workflow(tmp_path, monkeypatch):
             }
         ),
     )
+    reproduce_call = DummyToolCall(
+        "run_process",
+        json.dumps(
+            {
+                "argv": [sys.executable, "-m", "pytest", "-q"],
+                "cwd": ".",
+            }
+        ),
+    )
     test_call = DummyToolCall(
-        "run_command", json.dumps({"command": f"{sys.executable} -m pytest test_math.py"})
+        "run_process",
+        json.dumps(
+            {
+                "argv": [sys.executable, "-m", "pytest", "-q"],
+                "cwd": ".",
+            }
+        ),
     )
 
     # Sequence of responses simulating a real model session
     fake_provider = FullFakeProvider(
         [
             {"tool_calls": [read_call]},
+            {"tool_calls": [reproduce_call]},
             {"tool_calls": [edit_call]},
             {"tool_calls": [test_call]},
-            {"content": "I have fixed the math function and the tests now pass."},
+            {"content": "I have fixed the math function and the full test suite now passes."},
         ]
     )
 
-    # Create autonomous agent with workspace isolation
+    # Create autonomous agent with workspace isolation. The test explicitly
+    # disables the kernel-sandbox requirement because the CI host may not have
+    # bubblewrap; containment is covered by dedicated sandbox tests.
+    test_policy = get_mode_policy("autonomous")
+    test_policy.require_os_isolation = False
+    test_policy.allow_shell_command = False
     agent = Agent(
         working_dir=str(repo_dir),
         permission_mode="acceptEdits",
+        mode_policy=test_policy,
         workspace_isolation=True,
         max_turns=10,
     )
 
-    # Disable two-node backend to test direct ExecutionEngine
     agent._should_use_two_node = lambda analysis: False
-
-    # Override client
     agent.client = fake_provider
 
-    # Run agent
-    prompt = "Fix the bug in my_math.py where add is subtracting. Then verify it by running pytest test_math.py."
-    # agent.run returns a generator of events, we need to consume it
-    events = []
-    for e in agent.run(prompt):
-        if hasattr(e, "__dict__"):
-            events.append(e.__dict__)
-        else:
-            events.append(e)
-
-    # We should have completed the run
-    # Verification: workspace apply should sync the edit back
-    agent.worktree.apply()
-
-    final_content = math_py.read_text()
-    assert "return a + b" in final_content, (
-        "The edit was not correctly applied to the main workspace."
+    prompt = (
+        "Fix the bug in my_math.py where add is subtracting. "
+        "Then verify it by running pytest test_math.py."
     )
-
-    # Verification: The final report should show VERIFIED because the agent ran the test and it passed
-    # Wait, the final report logic might only trigger if the verification system actually parsed the output.
-    # We can just check that it generated a report.
+    content, events = agent.run_non_interactive(prompt)
     report = agent.export_final_report()
-    assert "status" in report, "Report should have a status field"
 
-    # Make sure the run produced a status report
+    assert report["status"] == "VERIFIED", report
+    assert any(
+        event.get("type") == "tool_call"
+        and event.get("name") == "multi_edit"
+        and event.get("success")
+        for event in events
+    )
+    assert any(
+        event.get("type") == "tool_call"
+        and event.get("name") == "run_process"
+        and event.get("success")
+        for event in events
+    )
+    assert "fixed" in content.lower()
+
+    # VERIFIED completion applies the isolated worktree through the normal
+    # product path. The source repository must contain the tested mutation.
+    assert "return a + b" in math_py.read_text(encoding="utf-8")
+

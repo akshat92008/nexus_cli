@@ -55,6 +55,7 @@ class RunContext:
     session_id: str
     source_root: Path
     workspace_root: Path
+    additional_roots: tuple[Path, ...] = ()
     permission_policy: PermissionPolicy = field(default_factory=PermissionPolicy)
     budget: BudgetLimitsSnapshot = field(default_factory=BudgetLimitsSnapshot)
     environment_grants: Mapping[str, str] = field(default_factory=dict)
@@ -75,13 +76,13 @@ class RunContext:
             resolved = p.resolve()
         else:
             resolved = (self.workspace_root / p).resolve()
-        self._assert_within_workspace(resolved)
+        self._assert_within_authorized_roots(resolved)
         return resolved
 
     def is_within_workspace(self, path: str | Path) -> bool:
         """Check whether *path* is inside the workspace."""
         try:
-            self._assert_within_workspace(Path(path).resolve())
+            self._assert_within_authorized_roots(Path(path).resolve())
             return True
         except ValueError:
             return False
@@ -99,6 +100,17 @@ class RunContext:
                 f"Path {resolved} is outside the workspace {self.workspace_root}"
             ) from None
 
+    def _assert_within_authorized_roots(self, resolved: Path) -> None:
+        roots = (self.workspace_root, *self.additional_roots)
+        for root in roots:
+            try:
+                resolved.relative_to(root)
+                return
+            except ValueError:
+                continue
+        rendered = ", ".join(str(root) for root in roots)
+        raise ValueError(f"Path {resolved} is outside authorized roots: {rendered}")
+
     # ── Factory ──────────────────────────────────────────────────────────
 
     @classmethod
@@ -107,6 +119,7 @@ class RunContext:
         *,
         source_root: str | Path,
         workspace_root: str | Path | None = None,
+        additional_roots: tuple[str | Path, ...] | list[str | Path] | None = None,
         session_id: str | None = None,
         permission_mode: str = "default",
         allowed_tools: frozenset[str] | None = None,
@@ -124,6 +137,7 @@ class RunContext:
             session_id=session_id or datetime.now().strftime("%Y%m%d_%H%M%S_%f"),
             source_root=src,
             workspace_root=ws,
+            additional_roots=tuple(Path(item).expanduser().resolve() for item in (additional_roots or ())),
             permission_policy=PermissionPolicy(
                 mode=permission_mode,
                 allowed_tools=allowed_tools or frozenset(),

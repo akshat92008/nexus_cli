@@ -8,6 +8,8 @@ import sys
 import urllib.error
 from pathlib import Path
 
+import pytest
+
 from nexus.cli import _configure_output_streams, non_interactive_exit_code
 from nexus.doctor import run_doctor
 from nexus.nova_runtime import OllamaClient
@@ -63,7 +65,7 @@ def test_module_entrypoint_exposes_version():
         timeout=10,
     )
     assert result.returncode == 0
-    assert result.stdout.strip() == "NexusAI 3.1.1"
+    assert result.stdout.strip() == "NexusAI 3.2.0"
 
 
 def test_ollama_host_without_scheme_is_normalized(monkeypatch):
@@ -110,6 +112,30 @@ def test_release_gate_uses_uv_when_managed_venv_has_no_pip(monkeypatch):
     ]
 
 
+def test_release_gate_rejects_dependency_mirror_drift(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["httpx[socks]>=0.27", "rich>=13"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "requirements.txt").write_text("rich>=13\n", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match=r"missing=\['httpx'\]"):
+        run_release_gate.assert_dependency_mirror(tmp_path)
+
+
+def test_release_gate_accepts_dependency_mirror(tmp_path):
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\ndependencies = ["httpx[socks]>=0.27", "rich>=13"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "requirements.txt").write_text(
+        "rich>=13\nhttpx[socks]>=0.27\n",
+        encoding="utf-8",
+    )
+
+    run_release_gate.assert_dependency_mirror(tmp_path)
+
+
 def test_release_gate_prefers_pip_when_available(monkeypatch):
     monkeypatch.setattr(run_release_gate.importlib.util, "find_spec", lambda _name: object())
 
@@ -130,3 +156,21 @@ def test_cli_reconfigures_legacy_output_streams_to_utf8():
 
     assert stream.encoding.lower().replace("-", "") == "utf8"
     assert raw.getvalue() == "✓".encode()
+
+
+def test_source_revision_falls_back_to_stable_archive_hash(tmp_path, monkeypatch):
+    (tmp_path / "nexus").mkdir()
+    (tmp_path / "nexus" / "module.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text("release source\n", encoding="utf-8")
+
+    def no_git(*_args, **_kwargs):
+        raise subprocess.CalledProcessError(128, ["git", "rev-parse", "HEAD"])
+
+    monkeypatch.setattr(run_release_gate.subprocess, "check_output", no_git)
+    first = run_release_gate.source_revision(tmp_path)
+    (tmp_path / "dist").mkdir()
+    (tmp_path / "dist" / "ignored.whl").write_bytes(b"generated")
+    second = run_release_gate.source_revision(tmp_path)
+
+    assert first.startswith("archive:")
+    assert first == second

@@ -42,6 +42,9 @@ class NexusTool(Protocol):
     name: str
     description: str
     input_schema: dict[str, Any]
+    # Implementations must expose ``capabilities``. Filesystem tools must also
+    # expose ``filesystem = {"read_arguments": [...], "write_arguments": [...]}``.
+    capabilities: tuple[str, ...] | list[str] | set[str]
 
     def invoke(self, arguments: dict[str, Any], context: "ToolContext") -> Any: ...
 

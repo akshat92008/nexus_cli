@@ -11,7 +11,7 @@ permissions:
 jobs:
   verified-artifact:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 360
 
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +26,19 @@ jobs:
 
       - name: Install exact locked environment
         run: uv sync --locked --extra dev --extra browser
+
+      - name: Install and verify kernel sandbox
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bubblewrap
+          uv run python - <<'PY'
+          from pathlib import Path
+          from nexus.sandbox import SandboxBackend, SandboxRunner
+          backend = SandboxRunner(Path.cwd()).backend()
+          if backend is not SandboxBackend.BUBBLEWRAP:
+              raise SystemExit(f"release runner is not kernel-confined: {backend.value}")
+          print(f"kernel sandbox verified: {backend.value}")
+          PY
 
       - name: Run deterministic release gate
         run: uv run python scripts/run_release_gate.py
@@ -51,6 +64,22 @@ jobs:
           --model-id "$NEXUS_MODEL_ID"
           --scenario 02_python_surgical_bugfix
           --artifact-root release-evidence
+
+      - name: Run release-blocking long-horizon qualification
+        env:
+          NEXUS_OPENAI_API_KEY: ${{ secrets.NEXUS_RELEASE_PROVIDER_API_KEY }}
+          NEXUS_OPENAI_BASE_URL: ${{ secrets.NEXUS_RELEASE_PROVIDER_BASE_URL }}
+          NEXUS_MODEL_ID: ${{ secrets.NEXUS_RELEASE_PROVIDER_MODEL_ID }}
+          NEXUS_RUN_LIVE_PROVIDER: "1"
+        run: >-
+          uv run python scripts/run_live_provider_gate.py
+          --allow-cost
+          --manifest benchmarks/release_long_horizon.json
+          --model custom
+          --model-id "$NEXUS_MODEL_ID"
+          --trials 3
+          --required-pass-rate 1.0
+          --artifact-root release-evidence/long-horizon
 
       - name: Build exact release artifacts
         run: |

@@ -112,8 +112,38 @@ def main() -> int:
         and verified == total
         and live_calls_observed
     )
+    failure_categories: dict[str, int] = {}
+    for item in task_results:
+        category = str(item.get("failure_type") or item.get("failure_phase") or "none")
+        failure_categories[category] = failure_categories.get(category, 0) + 1
+    task_evidence = [
+        {
+            "task_id": item.get("task_id"),
+            "status": item.get("status"),
+            "agent_status": item.get("agent_status"),
+            "attempts": item.get("attempts", 0),
+            "retries": item.get("retries", 0),
+            "cost_usd": item.get("estimated_cost_usd"),
+            "changed_files": item.get("changed_files", []),
+            "external_verification_passed": item.get(
+                "external_verification_passed", False
+            ),
+            "failure_phase": item.get("failure_phase", ""),
+            "failure_type": item.get("failure_type", ""),
+            "human_intervention": item.get("human_intervention", False),
+            "quality_score": item.get("quality_score", 0.0),
+        }
+        for item in task_results
+    ]
+    grouped_statuses: dict[str, list[str]] = {}
+    for item in task_results:
+        grouped_statuses.setdefault(str(item.get("task_id", "unknown")), []).append(
+            str(item.get("status", ""))
+        )
+    run_to_run_consistent = all(len(set(statuses)) == 1 for statuses in grouped_statuses.values())
+
     summary = {
-        "schema_version": "nexus.live-provider-qualification.v1",
+        "schema_version": "nexus.live-provider-qualification.v2",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "model": args.model,
         "model_id": args.model_id,
@@ -127,6 +157,20 @@ def main() -> int:
         "required_pass_rate": args.required_pass_rate,
         "live_calls_observed": live_calls_observed,
         "qualified": qualified,
+        "total_retries": sum(int(item.get("retries", 0) or 0) for item in task_results),
+        "total_attempts": sum(int(item.get("attempts", 0) or 0) for item in task_results),
+        "total_cost_usd": round(
+            sum(float(item.get("estimated_cost_usd") or 0.0) for item in task_results), 8
+        ),
+        "external_verification_passed": sum(
+            bool(item.get("external_verification_passed")) for item in task_results
+        ),
+        "human_intervention_count": sum(
+            bool(item.get("human_intervention")) for item in task_results
+        ),
+        "failure_categories": failure_categories,
+        "run_to_run_consistent": run_to_run_consistent,
+        "task_evidence": task_evidence,
         "reports": reports,
     }
     _write_json(run_root / "qualification.json", summary)

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -31,6 +32,14 @@ try:
     import resource
 except ImportError:  # pragma: no cover - unavailable on Windows
     resource = None
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
 
 
 class SandboxBackend(str, Enum):
@@ -191,6 +200,10 @@ class SandboxRunner:
             return self._blocked(spec, "Command cwd is outside the authorized workspace")
         if not cwd.is_dir():
             return self._blocked(spec, f"Command cwd does not exist: {cwd}")
+
+        path_violation = self._command_path_violation(spec, cwd)
+        if path_violation:
+            return self._blocked(spec, path_violation)
 
         backend = self.backend()
         if spec.require_os_isolation and backend == SandboxBackend.RESTRICTED:
@@ -357,6 +370,18 @@ class SandboxRunner:
     def _macos_command(self, spec: CommandSpec, cwd: Path) -> tuple[list[str], Path]:
         workspace = str(self.workspace).replace('"', '\\"')
         temp_dir = tempfile.gettempdir().replace('"', '\\"')
+        read_roots = [
+            workspace,
+            temp_dir,
+            "/System",
+            "/usr",
+            "/bin",
+            "/sbin",
+            "/opt",
+            "/Library/Developer",
+            "/Library/Frameworks",
+        ]
+        read_rules = " ".join(f'(subpath "{item}")' for item in read_roots)
         rules = [
             "(version 1)",
             "(deny default)",
@@ -364,7 +389,11 @@ class SandboxRunner:
             "(allow sysctl-read)",
             "(allow mach-lookup)",
             "(allow ipc-posix-shm)",
-            "(allow file-read*)",
+            "(allow file-read-metadata)",
+            f"(allow file-read* {read_rules} "
+            '(literal "/dev/null") (literal "/dev/zero") '
+            '(literal "/dev/random") (literal "/dev/urandom"))',
+            "(allow file-read-data)",
             f'(allow file-write* (subpath "{workspace}") (subpath "{temp_dir}"))',
             '(allow file-write-data (literal "/dev/null") (literal "/dev/zero"))',
         ]
@@ -375,6 +404,117 @@ class SandboxRunner:
         profile = Path(raw_path)
         profile.write_text("\n".join(rules) + "\n", encoding="utf-8")
         return ["sandbox-exec", "-f", str(profile), *spec.argv], profile
+
+    def _command_path_violation(self, spec: CommandSpec, cwd: Path) -> str:
+        """Reject command arguments that can address sensitive host paths.
+
+        This is defense in depth for the restricted-process backend.  Strong
+        modes still require a kernel sandbox; this guard blocks common absolute,
+        traversal, home-directory, redirection, and interpreter-literal escapes
+        before any backend starts.
+        """
+        argv = list(spec.argv)
+        shell_command = ""
+        if len(argv) >= 3 and Path(argv[0]).name in {"sh", "bash", "zsh", "dash", "cmd.exe"}:
+            if argv[1] in {"-c", "/c", "/d"}:
+                shell_command = argv[-1]
+
+        raw_values = [shell_command] if shell_command else argv[1:]
+        forbidden_home_markers = (
+            "~/",
+            "$HOME",
+            "${HOME}",
+            "%USERPROFILE%",
+            "$USERPROFILE",
+            "${USERPROFILE}",
+        )
+        allowed_device_paths = {Path("/dev/null"), Path("/dev/zero"), Path("/dev/random"), Path("/dev/urandom")}
+        safe_system_roots = tuple(
+            Path(item)
+            for item in (
+                "/usr",
+                "/bin",
+                "/sbin",
+                "/lib",
+                "/lib64",
+                "/System",
+                "/opt",
+                "/Library/Developer",
+                "/Library/Frameworks",
+            )
+        )
+
+        def authorized(candidate: str, *, executable: bool = False) -> bool:
+            candidate = candidate.strip().strip("'\"()[]{};,|&<>")
+            if not candidate or "://" in candidate:
+                return True
+            if any(marker in candidate for marker in forbidden_home_markers):
+                return False
+            if candidate.startswith("~"):
+                return False
+            path = Path(candidate).expanduser()
+            if not path.is_absolute() and not candidate.startswith(("../", "..\\")):
+                return True
+            resolved = path.resolve() if path.is_absolute() else (cwd / path).resolve()
+            try:
+                resolved.relative_to(self.workspace)
+                return True
+            except ValueError:
+                pass
+            if resolved in allowed_device_paths:
+                return True
+            if executable:
+                return any(_is_relative_to(resolved, root) for root in safe_system_roots) and not _is_relative_to(resolved, Path("/System/Volumes/Data"))
+            # Runtime/toolchain reads are safe; user, home, root and /etc reads are not.
+            return any(_is_relative_to(resolved, root) for root in safe_system_roots) and not _is_relative_to(resolved, Path("/System/Volumes/Data"))
+
+        def inspect_value(value: str, *, executable: bool = False) -> str:
+            if any(marker in value for marker in forbidden_home_markers):
+                return f"Command references a home-directory expansion outside the workspace: {value[:160]}"
+            # Catch absolute paths and parent traversal even when embedded in
+            # --flag=/path, redirections, or interpreter source strings.
+            candidates = re.findall(
+                r"(?<![A-Za-z0-9_])(?:/[A-Za-z0-9_./@+%:=~-]+|\.\.?/[A-Za-z0-9_./@+%:=~-]+)",
+                value,
+            )
+            if not candidates and (value.startswith("~") or value.startswith("..")):
+                candidates = [value]
+            for candidate in candidates:
+                if not authorized(candidate, executable=executable and candidate == value):
+                    return f"Command path escapes the authorized workspace: {candidate}"
+            return ""
+
+        if shell_command:
+            normalized = re.sub(r"(&&|\|\||;)", r" \1 ", shell_command)
+            try:
+                tokens = shlex.split(normalized, posix=os.name != "nt")
+            except ValueError:
+                return "Shell command could not be safely parsed"
+            command_position = True
+            for token in tokens:
+                if token in {"&&", "||", ";", "|"}:
+                    command_position = True
+                    continue
+                violation = inspect_value(token, executable=command_position)
+                if violation:
+                    return violation
+                command_position = False
+            # Interpreter code may contain quoted paths that shlex removes into
+            # a single token; inspect the raw command as a second line of defense.
+            violation = inspect_value(shell_command)
+            if violation:
+                # Permit only system executable paths used at command positions.
+                absolute_candidates = re.findall(r"/[A-Za-z0-9_./@+%:=~-]+", shell_command)
+                unsafe = [item for item in absolute_candidates if not authorized(item)]
+                if unsafe:
+                    return f"Command path escapes the authorized workspace: {unsafe[0]}"
+            return ""
+
+        for _index, value in enumerate(raw_values):
+            violation = inspect_value(str(value), executable=False)
+            if violation:
+                return violation
+        return ""
 
     def _filtered_env(self, additions: Mapping[str, str]) -> dict[str, str]:
         env = {

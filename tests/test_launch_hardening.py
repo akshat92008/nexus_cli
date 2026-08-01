@@ -233,3 +233,182 @@ def test_direct_nova_executes_declared_test_and_reaches_verified_status(
     assert report["outcome"] == "COMPLETED_VERIFIED"
     assert report["metadata"]["model_calls"] == 1
     assert report["metadata"]["tests_executed"] >= 2
+
+
+def test_default_command_policy_requires_approval_and_blocks_host_read(tmp_path):
+    agent = Agent(api_key="test", working_dir=str(tmp_path), permission_mode="default")
+    pending, success = agent._execute_tool_with_safety(
+        "run_process", {"argv": ["cat", "/etc/hostname"], "cwd": "."}
+    )
+    assert success is False
+    assert "PENDING_CONFIRMATION" in pending
+    assert "not executed" in pending
+
+    blocked, success = agent.confirm_pending_operation()
+    assert success is False
+    assert "escapes the authorized workspace" in blocked
+
+
+def test_run_context_blocks_absolute_and_symlink_escape(tmp_path):
+    from nexus.run_context import RunContext, run_context_scope
+    from nexus.tools import tool_read_file
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "inside.txt").write_text("inside", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret-outside", encoding="utf-8")
+    link = workspace / "escape.txt"
+    try:
+        link.symlink_to(outside)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks are unavailable on this platform")
+
+    context = RunContext.create(source_root=workspace, workspace_root=workspace)
+    with run_context_scope(context):
+        assert "inside" in tool_read_file("inside.txt")
+        absolute = tool_read_file(str(outside))
+        symlinked = tool_read_file("escape.txt")
+
+    assert "outside authorized roots" in absolute
+    assert "outside authorized roots" in symlinked
+
+
+def test_sandbox_preflight_rejects_host_paths_without_spawning(tmp_path, monkeypatch):
+    from nexus.sandbox import CommandSpec, SandboxRunner
+
+    runner = SandboxRunner(tmp_path)
+    spawned = False
+
+    def fail_if_spawned(*_args, **_kwargs):
+        nonlocal spawned
+        spawned = True
+        raise AssertionError("subprocess must not start for a host-path escape")
+
+    monkeypatch.setattr("nexus.sandbox.subprocess.run", fail_if_spawned)
+    result = runner.run(
+        CommandSpec.create(["cat", "/etc/hostname"], tmp_path, require_os_isolation=False)
+    )
+
+    assert result.success is False
+    assert result.backend.value == "blocked"
+    assert "escapes the authorized workspace" in result.blocked_reason
+    assert spawned is False
+
+
+def test_quality_mode_rejects_local_nova_without_independent_reviewer(tmp_path):
+    from nexus.pipeline import ExecutionPipeline
+
+    policy = get_mode_policy("quality")
+    agent = Agent(
+        model_key="nova3b",
+        working_dir=str(tmp_path),
+        mode_policy=policy,
+        permission_mode="acceptEdits",
+    )
+    stage = ExecutionPipeline(agent)._stage_review("nova", verification_succeeded=True)
+
+    assert stage.success is False
+    assert stage.metadata["review_assurance"] == "deterministic_only"
+    assert "independent semantic reviewer" in stage.error
+
+
+def test_local_only_nova_labels_assurance_as_deterministic_only(tmp_path):
+    from nexus.pipeline import ExecutionPipeline
+
+    policy = get_mode_policy("local-only")
+    agent = Agent(
+        model_key="nova3b",
+        working_dir=str(tmp_path),
+        mode_policy=policy,
+        permission_mode="acceptEdits",
+    )
+    stage = ExecutionPipeline(agent)._stage_review("nova", verification_succeeded=True)
+
+    assert stage.success is True
+    assert stage.metadata["review_assurance"] == "deterministic_only"
+    assert stage.metadata["independent_semantic_review"] is False
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["bash", "-c", "cat ~/.ssh/id_rsa"],
+        ["bash", "-c", "cat $HOME/.config/token"],
+        [sys.executable, "-c", "print(open('/etc/passwd').read())"],
+        ["cat", "/home/example/.aws/credentials"],
+        ["cat", "../outside-secret"],
+    ],
+)
+def test_sandbox_blocks_common_credential_exfiltration_paths_before_spawn(
+    tmp_path, monkeypatch, argv
+):
+    from nexus.sandbox import CommandSpec, SandboxRunner
+
+    def fail_if_spawned(*_args, **_kwargs):
+        raise AssertionError("unsafe command reached subprocess.run")
+
+    monkeypatch.setattr("nexus.sandbox.subprocess.run", fail_if_spawned)
+    result = SandboxRunner(tmp_path).run(
+        CommandSpec.create(argv, tmp_path, require_os_isolation=False)
+    )
+
+    assert result.success is False
+    assert result.backend.value == "blocked"
+    assert result.blocked_reason
+
+
+def test_macos_profile_has_no_global_file_read_grant(tmp_path):
+    from nexus.sandbox import CommandSpec, SandboxRunner
+
+    runner = SandboxRunner(tmp_path)
+    command, profile = runner._macos_command(
+        CommandSpec.create(["python", "-V"], tmp_path), tmp_path
+    )
+    try:
+        content = profile.read_text(encoding="utf-8")
+    finally:
+        profile.unlink(missing_ok=True)
+
+    assert command[0] == "sandbox-exec"
+    assert "(allow file-read*)" not in content
+    assert "(allow file-read* (subpath" in content
+    assert '(subpath "/etc")' not in content
+
+
+def test_run_context_is_isolated_between_concurrent_agent_threads(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    from nexus.run_context import RunContext, run_context_scope
+    from nexus.tools import tool_read_file
+
+    roots = []
+    for index in range(2):
+        root = tmp_path / f"workspace-{index}"
+        root.mkdir()
+        (root / "value.txt").write_text(f"workspace-{index}", encoding="utf-8")
+        roots.append(root)
+
+    def read(root):
+        context = RunContext.create(source_root=root, workspace_root=root)
+        with run_context_scope(context):
+            return tool_read_file("value.txt")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outputs = list(executor.map(read, roots))
+
+    assert "workspace-0" in outputs[0]
+    assert "workspace-1" in outputs[1]
+    assert "workspace-1" not in outputs[0]
+    assert "workspace-0" not in outputs[1]
+
+
+def test_dynamic_capability_registry_is_agent_scoped(tmp_path):
+    from nexus.capabilities import ToolCapability
+
+    first = Agent(api_key="test", working_dir=str(tmp_path / "first"))
+    second = Agent(api_key="test", working_dir=str(tmp_path / "second"))
+    first._register_tool_capability("session_only", frozenset({ToolCapability.PURE}))
+
+    assert "session_only" in first._tool_capabilities
+    assert "session_only" not in second._tool_capabilities

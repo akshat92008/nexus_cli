@@ -16,6 +16,7 @@ Discovers plugins in:
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -307,7 +308,27 @@ class _PluginProxy(BasePlugin):
         return []
 
     def get_tool_dispatch(self) -> dict[str, Any]:
-        return {}
+        dispatch: dict[str, Any] = {}
+        for definition in self.get_tools():
+            function = definition.get("function", definition) if isinstance(definition, dict) else {}
+            tool_name = str(function.get("name", "")) if isinstance(function, dict) else ""
+            if not tool_name:
+                continue
+
+            def invoke(_tool_name: str = tool_name, **arguments: Any) -> str:
+                result = self._worker.call(
+                    "execute_tool",
+                    tool_name=_tool_name,
+                    arguments=arguments,
+                )
+                if not result.success:
+                    raise RuntimeError(result.error or f"Plugin tool {_tool_name} failed")
+                if isinstance(result.data, str):
+                    return result.data
+                return json.dumps(result.data, ensure_ascii=False)
+
+            dispatch[tool_name] = invoke
+        return dispatch
 
     def setup(self) -> bool:
         return True  # Setup happened in worker.start()

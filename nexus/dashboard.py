@@ -68,6 +68,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         }}
         .status-passed {{ background: rgba(16, 185, 129, 0.1); color: var(--success); border: 1px solid var(--success); }}
         .status-failed {{ background: rgba(239, 68, 68, 0.1); color: var(--danger); border: 1px solid var(--danger); }}
+        .status-not-run {{ background: rgba(148, 163, 184, 0.1); color: var(--text-muted); border: 1px solid var(--text-muted); }}
         .cost {{ font-family: monospace; color: #cbd5e1; }}
     </style>
 </head>
@@ -131,15 +132,41 @@ class RegressionDashboard:
         except json.JSONDecodeError as exc:
             raise ValueError(f"Invalid JSON in result file: {exc}") from exc
 
-        if data.get("schema_version") not in {
+        schema_version = data.get("schema_version")
+        result_schemas = {
             "nexus.benchmark-result.v1",
             "nexus.benchmark-result.v2",
             "nexus.benchmark-result.v3",
-        }:
-            raise ValueError(f"Unsupported schema version: {data.get('schema_version')}")
+        }
+        manifest_schemas = {"nexus.benchmark.v1"}
+        if schema_version not in result_schemas | manifest_schemas:
+            raise ValueError(f"Unsupported schema version: {schema_version}")
 
-        summary = data.get("summary", {})
-        results = data.get("results", [])
+        if schema_version in manifest_schemas:
+            tasks = data.get("tasks", [])
+            summary = {
+                "total": len(tasks),
+                "passed": 0,
+                "failed": 0,
+                "total_duration_ms": 0,
+                "estimated_cost_usd": 0.0,
+            }
+            results = [
+                {
+                    "task_id": task.get("id", "unknown"),
+                    "category": task.get("category", "unspecified"),
+                    "status": "NOT_RUN",
+                    "agent_status": "NOT_RUN",
+                    "duration_ms": 0,
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "estimated_cost_usd": 0.0,
+                }
+                for task in tasks
+            ]
+        else:
+            summary = data.get("summary", {})
+            results = data.get("results", [])
 
         total_tasks = summary.get("tasks", summary.get("total", 0))
         passed = summary.get("passed", 0)
@@ -150,7 +177,12 @@ class RegressionDashboard:
         table_rows = []
         for res in results:
             status = res.get("status", "FAILED")
-            badge_class = "status-passed" if status == "PASSED" else "status-failed"
+            if status == "PASSED":
+                badge_class = "status-passed"
+            elif status == "NOT_RUN":
+                badge_class = "status-not-run"
+            else:
+                badge_class = "status-failed"
             cost = res.get("estimated_cost_usd")
             cost_str = f"${cost:.4f}" if cost is not None else "N/A"
             duration = round(res.get("duration_ms", 0) / 1000, 1)
@@ -170,7 +202,7 @@ class RegressionDashboard:
 
         html = HTML_TEMPLATE.format(
             generated_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S UTC"),
-            manifest_id=data.get("manifest_id", "Unknown Manifest"),
+            manifest_id=data.get("manifest_id", data.get("name", "Unknown Manifest")),
             success_rate=success_rate,
             total_tasks=total_tasks,
             total_cost=total_cost,

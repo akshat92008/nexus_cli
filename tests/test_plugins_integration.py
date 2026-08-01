@@ -52,3 +52,67 @@ def register():
     assert len(loader.diagnostics) == 1
     assert loader.diagnostics[0].status == "loaded"
     loader.shutdown()
+
+
+def test_isolated_plugin_tool_executes_through_rpc(tmp_path):
+    project_dir = tmp_path / "project"
+    plugin_dir = project_dir / "plugin"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "name": "rpc-plugin",
+                "version": "1.0.0",
+                "entry_point": "plugin_entry.py",
+                "capabilities": ["pure"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (plugin_dir / "plugin_entry.py").write_text(
+        '''
+class RpcPlugin:
+    name = "rpc-plugin"
+
+    def setup(self):
+        return True
+
+    def teardown(self):
+        return None
+
+    def get_tools(self):
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "plugin_echo",
+                    "description": "Echo a value from the isolated worker",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                        "required": ["value"],
+                    },
+                },
+            }
+        ]
+
+    def get_tool_dispatch(self):
+        return {"plugin_echo": self.echo}
+
+    def echo(self, value):
+        return {"echo": value, "isolated": True}
+''',
+        encoding="utf-8",
+    )
+
+    loader = PluginLoader(
+        working_dir=str(project_dir), plugins_enabled=True, trust_checker=lambda _path: True
+    )
+    plugin = loader._load_plugin_dir(plugin_dir, "local")
+    assert plugin is not None
+    definitions = plugin.get_tools()
+    assert definitions[0]["function"]["name"] == "plugin_echo"
+
+    result = plugin.get_tool_dispatch()["plugin_echo"](value="hello")
+    assert json.loads(result) == {"echo": "hello", "isolated": True}
+    loader.shutdown()

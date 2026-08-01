@@ -7,12 +7,9 @@ from typing import Any
 
 # Temporarily alias NvidiaClient until it's fully migrated out of api.py
 from nexus.api import NvidiaClient
-from nexus.providers.base import Provider
+from nexus.providers.base import ChatRequest, Provider, ProviderCapabilities
 
 logger = logging.getLogger(__name__)
-
-_UNSET = object()  # Sentinel for optional parameters
-
 
 class HostedProvider(Provider):
     """Adapter for hosted API providers (OpenAI-compatible).
@@ -55,6 +52,25 @@ class HostedProvider(Provider):
         """Return the effective model string if one was set, otherwise fall back to id."""
         return self._model_id or self.id
 
+    @property
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            streaming=True,
+            tools=True,
+            json_mode=True,
+            parallel_tool_calls=True,
+            supported_options=frozenset(
+                {
+                    "parallel_tool_calls",
+                    "response_format",
+                    "seed",
+                    "stop",
+                    "tool_choice",
+                    "top_p",
+                }
+            ),
+        )
+
     # ── Core chat methods ────────────────────────────────────────────────────
 
     def chat(
@@ -68,19 +84,22 @@ class HostedProvider(Provider):
         **kwargs: Any,
     ) -> Any:
         """Streaming-capable chat with bounded failover in ``NvidiaClient``."""
-        call_kwargs: dict[str, Any] = {}
-        if max_tokens is not None:
-            call_kwargs["max_tokens"] = max_tokens
-        if temperature is not None:
-            call_kwargs["temperature"] = temperature
-        call_kwargs.update(kwargs)
-
-        return self._client.chat(
+        request = ChatRequest(
             model_id=model_id,
             messages=messages,
             tools=tools,
             stream=stream,
-            **call_kwargs,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            options=kwargs,
+        ).validate(self.capabilities)
+
+        return self._client.chat(
+            model_id=request.model_id,
+            messages=request.messages,
+            tools=request.tools,
+            stream=request.stream,
+            **request.client_kwargs(),
         )
 
     def chat_sync(
@@ -93,17 +112,20 @@ class HostedProvider(Provider):
         **kwargs: Any,
     ) -> Any:
         """Non-streaming (blocking) chat completion."""
-        call_kwargs: dict[str, Any] = {}
-        if max_tokens is not None:
-            call_kwargs["max_tokens"] = max_tokens
-        if temperature is not None:
-            call_kwargs["temperature"] = temperature
-        call_kwargs.update(kwargs)
-        return self._client.chat_sync(
+        request = ChatRequest(
             model_id=model_id,
             messages=messages,
             tools=tools,
-            **call_kwargs,
+            stream=False,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            options=kwargs,
+        ).validate(self.capabilities)
+        return self._client.chat_sync(
+            model_id=request.model_id,
+            messages=request.messages,
+            tools=request.tools,
+            **request.client_kwargs(),
         )
 
     def count_tokens(self, text: str) -> int:

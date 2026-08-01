@@ -21,6 +21,11 @@ from typing import Any
 from nexus import ui
 from nexus.approvals import preview_mutation
 from nexus.budget import BudgetController, BudgetedClient, BudgetExceeded, BudgetLimits
+from nexus.capabilities import (
+    TOOL_CAPABILITIES,
+    ToolCapability,
+    ToolCapabilityDeclaration,
+)
 from nexus.code_validation import GeneratedCodeValidator
 from nexus.context_manager import ContextManager
 from nexus.evidence import EvidenceTrail, command_exit_code, verify_mutation
@@ -44,7 +49,6 @@ from nexus.policy import ModePolicy, PermissionDecision, PolicyLoader, get_mode_
 from nexus.project_memory import ProjectMemory
 from nexus.providers.hosted import HostedProvider
 from nexus.providers.nova import NovaProvider
-from nexus.providers.router import FallbackRouter
 from nexus.reflection import ReflectionEngine, ReflectionVerdict
 from nexus.repo_graph import RepoGraph
 from nexus.run_catalog import RunCatalog
@@ -62,6 +66,8 @@ from nexus.trust import TrustStore
 from nexus.user_memory import UserMemory
 from nexus.verification import CheckStatus, CheckType, VerificationEngine
 from nexus.workspace import GitWorktreeSession, WorktreeError
+
+logger = logging.getLogger(__name__)
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
@@ -259,6 +265,8 @@ class Agent:
         self.source_working_dir = str(Path(working_dir or os.getcwd()).resolve())
         self.conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self.worktree: GitWorktreeSession | None = None
+        self._workspace_applied = False
+        self._workspace_apply_detail = ""
         self.working_dir = self.source_working_dir
         # P0-3 FIX: Remove os.chdir(self.working_dir) to prevent global process state pollution
         self.mode_policy = mode_policy or get_mode_policy(permission_mode)
@@ -307,11 +315,10 @@ class Agent:
                 attempt_controller=self.budget,
                 attempt_observer=self._record_provider_attempt,
             )
-            router = FallbackRouter(primary)
             from nexus.budget import BudgetedClient
 
             # BudgetedClient duck-types the provider to add budget enforcement
-            hosted_client = BudgetedClient(router, self.budget)
+            hosted_client = BudgetedClient(primary, self.budget)
 
         # Validate provider configuration and budgets before allocating a
         # persistent worktree so constructor failures cannot leak workspaces.
@@ -350,6 +357,21 @@ class Agent:
         self.additional_dirs = [
             str(Path(item).expanduser().resolve()) for item in (additional_dirs or [])
         ]
+        from nexus.run_context import RunContext
+
+        self.run_context = RunContext.create(
+            source_root=self.source_working_dir,
+            workspace_root=self.working_dir,
+            additional_roots=self.additional_dirs,
+            session_id=self.conversation_id,
+            permission_mode=self.permission_mode,
+            allowed_tools=frozenset(self.allowed_tools),
+            disallowed_tools=frozenset(self.disallowed_tools),
+            model_key=self.model_key,
+            workspace_isolated=bool(self.worktree),
+            max_hosted_calls=max_hosted_calls,
+            max_cost_usd=max_cost_usd,
+        )
         self.max_turns = max(1, int(max_turns))
 
         # Legacy compatibility
@@ -372,6 +394,12 @@ class Agent:
         self._permissions_used: set[str] = set()
         self._network_calls: list[str] = []
         self.package_guard = PackageGuard()
+        # Capability declarations are copied per Agent so concurrent sessions
+        # cannot overwrite each other's dynamic plugin/MCP/extension contracts.
+        self._tool_capabilities: dict[str, ToolCapabilityDeclaration] = dict(
+            TOOL_CAPABILITIES
+        )
+        self._external_tool_path_arguments: dict[str, tuple[str, ...]] = {}
         self.trust = TrustStore(self.working_dir)
         self.policy = PolicyLoader(self.working_dir).load()
         self.extensions = ExtensionRegistry()
@@ -443,6 +471,8 @@ class Agent:
                 self.plugin_loader.get_diagnostics_summary(),
             )
 
+        self._register_external_tool_capabilities()
+
         # Load project rules and user preferences
         self._load_rules_and_preferences()
 
@@ -453,6 +483,120 @@ class Agent:
         self.hooks.fire(HookEvent.ON_SESSION_START, HookContext(event=HookEvent.ON_SESSION_START))
 
     # ── Configuration ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _coerce_capabilities(values: Any) -> frozenset[ToolCapability]:
+        aliases = {
+            "filesystem_read": ToolCapability.FS_READ,
+            "filesystem_write": ToolCapability.FS_WRITE,
+            "process": ToolCapability.CMD_EXEC,
+            "command": ToolCapability.CMD_EXEC,
+            "git": ToolCapability.GIT_MUTATION,
+        }
+        capabilities: set[ToolCapability] = set()
+        for raw in values or ():
+            normalized = str(raw).strip().lower().replace("-", "_")
+            if normalized in aliases:
+                capabilities.add(aliases[normalized])
+                continue
+            try:
+                capabilities.add(ToolCapability(normalized))
+            except ValueError:
+                logger.warning("Ignoring unknown tool capability declaration: %s", raw)
+        return frozenset(capabilities)
+
+    def _register_tool_capability(
+        self,
+        name: str,
+        capabilities: frozenset[ToolCapability],
+        description: str = "",
+    ) -> None:
+        existing = self._tool_capabilities.get(name)
+        declaration = ToolCapabilityDeclaration(name, capabilities, description)
+        if existing is not None and existing != declaration:
+            raise ValueError(
+                f"Tool capability conflict for {name}: existing={existing.to_dict()} "
+                f"new={declaration.to_dict()}"
+            )
+        self._tool_capabilities[name] = declaration
+
+    @staticmethod
+    def _filesystem_argument_names(tool: Any) -> tuple[str, ...]:
+        contract = getattr(tool, "filesystem", None) or getattr(
+            tool, "filesystem_capabilities", None
+        )
+        if not isinstance(contract, dict):
+            return ()
+        values: list[str] = []
+        for key in ("read_arguments", "write_arguments"):
+            raw = contract.get(key, [])
+            if isinstance(raw, str):
+                raw = [raw]
+            if isinstance(raw, (list, tuple, set)):
+                values.extend(str(item).strip() for item in raw if str(item).strip())
+        return tuple(dict.fromkeys(values))
+
+    def _register_external_tool_capabilities(self) -> None:
+        """Register capability contracts before external tools are exposed."""
+        for plugin in self.plugin_loader.plugins.values():
+            manifest = getattr(plugin, "_manifest", None)
+            declared = self._coerce_capabilities(getattr(manifest, "capabilities", ()))
+            for definition in plugin.get_tools():
+                function = definition.get("function", definition) if isinstance(definition, dict) else {}
+                name = str(function.get("name", "")) if isinstance(function, dict) else ""
+                if not name:
+                    continue
+                if not declared:
+                    logger.warning(
+                        "Plugin tool %s is hidden because plugin %s declares no capabilities",
+                        name,
+                        getattr(plugin, "name", "unknown"),
+                    )
+                    continue
+                self._register_tool_capability(name, declared, str(function.get("description", "")))
+
+        for extension_tool in self.extensions.loaded("tools"):
+            declared = self._coerce_capabilities(getattr(extension_tool, "capabilities", ()))
+            if not declared:
+                logger.warning(
+                    "Extension tool %s is hidden because it declares no capabilities",
+                    getattr(extension_tool, "name", "unknown"),
+                )
+                continue
+            path_arguments = self._filesystem_argument_names(extension_tool)
+            if declared & {ToolCapability.FS_READ, ToolCapability.FS_WRITE} and not path_arguments:
+                logger.warning(
+                    "Extension tool %s is hidden because filesystem capabilities require "
+                    "a filesystem={read_arguments, write_arguments} contract",
+                    getattr(extension_tool, "name", "unknown"),
+                )
+                continue
+            self._register_tool_capability(
+                extension_tool.name,
+                declared,
+                getattr(extension_tool, "description", ""),
+            )
+            if path_arguments:
+                self._external_tool_path_arguments[extension_tool.name] = path_arguments
+
+        try:
+            for definition in self.mcp.get_all_tool_definitions():
+                function = definition.get("function", {})
+                name = str(function.get("name", ""))
+                if name:
+                    self._register_tool_capability(
+                        name,
+                        frozenset(
+                            {
+                                ToolCapability.NETWORK,
+                                ToolCapability.EXTERNAL_EFFECTS,
+                                ToolCapability.CONFIRMATION_REQUIRED,
+                            }
+                        ),
+                        str(function.get("description", "")),
+                    )
+        except Exception as exc:
+            logger.debug("MCP capability registration unavailable: %s", exc)
 
     def _load_rules_and_preferences(self):
         """Load project rules and user preferences, configuring safety layer."""
@@ -500,24 +644,24 @@ class Agent:
             )
             if addon:
                 prompt += "\n" + addon
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Project-memory prompt context unavailable: %s", exc)
 
         # User memory (persistent preferences)
         try:
             addon = self.user_mem.get_prompt_addon()
             if addon:
                 prompt += "\n" + addon
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("User-memory prompt context unavailable: %s", exc)
 
         # Active skills
         try:
             addon = self.skills.get_combined_prompt()
             if addon:
                 prompt += "\n" + addon
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Skill prompt context unavailable: %s", exc)
 
         # MCP tools description
         try:
@@ -527,8 +671,8 @@ class Agent:
                 for t in mcp_tools:
                     prompt += f"  • {t.server_name}/{t.name} — {t.description}\n"
                 prompt += "[END MCP TOOLS]"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("MCP prompt context unavailable: %s", exc)
 
         # Repository Context
         try:
@@ -539,8 +683,8 @@ class Agent:
                 prompt += "\n\n[REPOSITORY CONTEXT]\n"
                 prompt += json.dumps(summary, indent=2)
                 prompt += "\n[END REPOSITORY CONTEXT]"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Repository prompt context unavailable: %s", exc)
 
         self.system_prompt = prompt
 
@@ -561,8 +705,7 @@ class Agent:
                     attempt_controller=self.budget,
                     attempt_observer=self._record_provider_attempt,
                 )
-                router = FallbackRouter(primary)
-                self.client = BudgetedClient(router, self.budget)
+                self.client = BudgetedClient(primary, self.budget)
             except ValueError:
                 return False
         self.model_key = resolved_key
@@ -630,8 +773,8 @@ class Agent:
         turn_dir: Path | None = None
         try:
             turn_dir = self.run_ledger._require_turn()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("No active run turn while loading final report: %s", exc)
 
         # 2. Fall back to scanning session_dir for the most recently modified turn dir
         if turn_dir is None:
@@ -644,8 +787,8 @@ class Agent:
                 )
                 if turn_dirs:
                     turn_dir = turn_dirs[0]
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Historical run discovery failed: %s", exc)
 
         if turn_dir is None:
             return {
@@ -1083,10 +1226,13 @@ class Agent:
                 passing_checks or passing_behavioral or successful_command_text
             )
         else:
+            review_satisfied = bool(approved_reviews) or (
+                self._is_nova_model() and not self.mode_policy.require_review
+            )
             objective_satisfied = (
                 bool(verified_mutations)
                 and bool(passing_checks or passing_behavioral)
-                and bool(approved_reviews or self._is_nova_model())
+                and review_satisfied
             )
 
         return CriterionResult(
@@ -1094,11 +1240,16 @@ class Agent:
             CriterionStatus.SATISFIED if objective_satisfied else CriterionStatus.UNVERIFIED,
             evidence_ids=[item["id"] for item in objective_evidence],
             detail=(
-                "Verified mutations, deterministic checks, and worker review "
-                "support the requested objective."
+                (
+                    "Verified mutations and deterministic checks support the objective; "
+                    "this local-only run has no independent semantic reviewer."
+                    if self._is_nova_model() and not approved_reviews
+                    else "Verified mutations, deterministic checks, and independent review "
+                    "support the requested objective."
+                )
                 if objective_satisfied
-                else "A mutation alone is insufficient; deterministic checks "
-                "and review evidence are required."
+                else "A mutation alone is insufficient; deterministic checks and the "
+                "review assurance required by this mode must be present."
             ),
         )
 
@@ -1132,6 +1283,61 @@ class Agent:
                 else "No passing security check was recorded."
             ),
         )
+
+    def _apply_verified_workspace(self) -> tuple[bool, str]:
+        """Apply a verified isolated workspace exactly once.
+
+        Automatic application is restricted to modes whose policy explicitly
+        grants ``may_apply``. Review/workspace modes continue to return a diff
+        for human approval. A failed merge is treated as a failed run rather
+        than reporting a false VERIFIED outcome.
+        """
+        if self._workspace_applied:
+            return True, self._workspace_apply_detail or "Workspace already applied."
+        if not self.mode_policy.may_apply:
+            return True, "Execution mode requires manual workspace application."
+        if self.worktree is None or self.worktree.info is None:
+            return True, "No isolated workspace needs application."
+
+        try:
+            pending_diff = self.worktree.diff()
+            if not pending_diff.strip():
+                self._workspace_applied = True
+                self._workspace_apply_detail = "Verified run produced no workspace diff."
+                return True, self._workspace_apply_detail
+            self.worktree.apply()
+        except Exception as exc:
+            detail = f"Verified workspace could not be applied safely: {exc}"
+            self._workspace_apply_detail = detail
+            self.evidence.append(
+                kind="workspace_apply",
+                claim="apply verified isolated workspace to source repository",
+                status="failed",
+                raw_output=detail,
+                metadata={
+                    "source": self.source_working_dir,
+                    "workspace": self.working_dir,
+                },
+            )
+            return False, detail
+
+        self._workspace_applied = True
+        self._workspace_apply_detail = (
+            "Verified isolated workspace was applied to the source repository."
+        )
+        self._permissions_used.add("workspace: apply verified changes")
+        self.evidence.append(
+            kind="workspace_apply",
+            claim="apply verified isolated workspace to source repository",
+            status="verified",
+            raw_output=self._workspace_apply_detail,
+            metadata={
+                "source": self.source_working_dir,
+                "workspace": self.working_dir,
+                "backend": self.worktree.info.backend,
+            },
+        )
+        return True, self._workspace_apply_detail
 
     def _finish_managed_run(
         self,
@@ -1193,6 +1399,14 @@ class Agent:
             if item.get("kind") == "independent_review" and item.get("status") == "verified"
         ]
         passing_checks = [item for item in verification_records if item.get("status") == "verified"]
+        reproduction_evidence = [
+            item
+            for item in command_records
+            if item.get("status") == "failed" or item.get("exit_code") not in (None, 0)
+        ] + [
+            item for item in evidence
+            if item.get("kind") == "verification_check" and item.get("status") == "failed"
+        ]
 
         def matching_checks(criterion: str) -> list[dict[str, Any]]:
             lowered = criterion.lower()
@@ -1264,6 +1478,21 @@ class Agent:
                         successful_command_text,
                     )
                 )
+            elif "reported failure is reproduced" in lowered:
+                results.append(
+                    CriterionResult(
+                        criterion,
+                        CriterionStatus.SATISFIED
+                        if reproduction_evidence
+                        else CriterionStatus.UNVERIFIED,
+                        evidence_ids=[item["id"] for item in reproduction_evidence],
+                        detail=(
+                            "A failing command or verification check reproduced the defect before repair."
+                            if reproduction_evidence
+                            else "No failing reproduction evidence was recorded before the fix."
+                        ),
+                    )
+                )
             elif "security" in lowered or "vulnerab" in lowered:
                 results.append(
                     self._evaluate_security_constraints(
@@ -1272,7 +1501,15 @@ class Agent:
                 )
             elif "verification completed" in lowered or any(
                 term in lowered
-                for term in ("test", "build", "lint", "type", "coverage", "smoke check")
+                for term in (
+                    "test",
+                    "regression",
+                    "build",
+                    "lint",
+                    "type",
+                    "coverage",
+                    "smoke check",
+                )
             ):
                 results.append(
                     self._evaluate_verification_checks(criterion, matching_checks(criterion))
@@ -1324,6 +1561,13 @@ class Agent:
         else:
             run_status = RunStatus.UNVERIFIED
 
+        workspace_apply_error = ""
+        if run_status == RunStatus.VERIFIED and self.mode_policy.may_apply:
+            applied, apply_detail = self._apply_verified_workspace()
+            if not applied:
+                workspace_apply_error = apply_detail
+                run_status = RunStatus.FAILED
+
         checks = [
             {
                 "evidence_id": item.get("id"),
@@ -1343,6 +1587,8 @@ class Agent:
             risks.append(
                 f"{len(self._pending_confirmations)} protected operation(s) still require approval."
             )
+        if workspace_apply_error:
+            risks.append(workspace_apply_error)
 
         if run_status == RunStatus.VERIFIED:
             outcome = "COMPLETED_VERIFIED"
@@ -1462,6 +1708,13 @@ class Agent:
                     item.status == CriterionStatus.UNVERIFIED for item in results
                 ),
                 "rollbacks": event_kind_count("rollback"),
+                "workspace_applied": self._workspace_applied,
+                "workspace_apply_detail": self._workspace_apply_detail,
+                "review_assurance": (
+                    "independent_semantic"
+                    if approved_reviews
+                    else ("deterministic_only" if self._is_nova_model() else "none")
+                ),
             },
         )
         return report
@@ -1505,8 +1758,8 @@ class Agent:
             self.run_ledger.mark_rolled_back(detail)
             try:
                 self.repo_graph.build()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Repository graph refresh after rollback failed: %s", exc)
         return success, detail
 
     def _refresh_final_report_after_approval(self) -> None:
@@ -1538,8 +1791,8 @@ class Agent:
                 f"incremental_reused={stats.reused}"
             )
             return context + graph_context + "\n\n---\n\n"
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Primary repository context initialization failed: %s", exc)
 
         # Fallback to legacy context gathering
         parts = []
@@ -1547,15 +1800,15 @@ class Agent:
             tree = tool_get_project_structure(self.working_dir, max_depth=3)
             if tree and len(tree) > 50:
                 parts.append(f"[AUTO-CONTEXT: Project Structure]\n{tree}")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Project tree fallback context unavailable: %s", exc)
 
         try:
             git_info = tool_git_status(self.working_dir)
             if git_info and "Not a git" not in git_info:
                 parts.append(f"[AUTO-CONTEXT: Git Status]\n{git_info}")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Git fallback context unavailable: %s", exc)
 
         config_files = [
             "package.json",
@@ -1652,8 +1905,8 @@ class Agent:
         # MCP tools
         try:
             tools.extend(self.mcp.get_all_tool_definitions())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("MCP tool definitions unavailable: %s", exc)
 
         configured_allowlist = set(self.allowed_tools)
         step_allowlist: set[str] = set()
@@ -1686,6 +1939,7 @@ class Agent:
             name = str(definition.get("function", {}).get("name", ""))
             return bool(
                 name
+                and name in self._tool_capabilities
                 and (self.mode_policy.allow_shell_command or name != "run_command")
                 and name not in self.disallowed_tools
                 and (not effective_allowlist or name in effective_allowlist)
@@ -1718,7 +1972,7 @@ class Agent:
             report["errors"].append(f"Background process cleanup failed: {exc}")
         if discard_workspace and self.worktree is not None and self.worktree.info is not None:
             try:
-                diff = self.worktree.diff()
+                diff = "" if self._workspace_applied else self.worktree.diff()
                 if diff:
                     if self.run_ledger.turn_dir:
                         patch = self.run_ledger.store_artifact(
@@ -1749,9 +2003,12 @@ class Agent:
     ) -> tuple[str, bool]:
         """Execute a guarded tool and mirror its outcome into the run ledger."""
         started = time.monotonic()
+        from nexus.run_context import run_context_scope
         from nexus.tools import tool_context
 
-        with tool_context(self.working_dir, self.history, self.conversation_id):
+        with run_context_scope(self.run_context), tool_context(
+            self.working_dir, self.history, self.conversation_id
+        ):
             result, success = self._execute_tool_with_safety_impl(
                 name,
                 args,
@@ -1811,8 +2068,8 @@ class Agent:
                 )
                 try:
                     self.repo_graph.update_paths(path for path in raw_paths if path)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Repository graph incremental refresh failed: %s", exc)
                 self.run_ledger.checkpoint(
                     f"verified-{name}",
                     plan=self._active_plan,
@@ -1961,7 +2218,13 @@ class Agent:
                         ),
                     )
                 if policy_decision == PermissionDecision.ASK and (
-                    self.policy.source or extension_asked
+                    self.policy.source
+                    or extension_asked
+                    or (
+                        self.mode_policy.require_review
+                        and policy_capability
+                        in {"command", "package_install", "deployment", "git_push"}
+                    )
                 ):
                     approval_targets.append(policy_target or name)
             policy_requires_approval = approval_targets and not _user_confirmed
@@ -1986,6 +2249,7 @@ class Agent:
                     (
                         "⏸️ PENDING_CONFIRMATION "
                         f"[{confirmation_id}]: {policy_check.reason}. "
+                        "This operation was not executed. "
                         f"Enter /confirm {confirmation_id} or /cancel {confirmation_id}.",
                         False,
                     ),
@@ -2038,8 +2302,16 @@ class Agent:
         package_warning_text = ""
         if name in mutation_tools:
             for package_path, proposed_content in self._dependency_candidates(name, args):
+                try:
+                    current_content = Path(package_path).read_text(encoding="utf-8")
+                except OSError:
+                    current_content = ""
                 package_checks.extend(
-                    self.package_guard.check_file_change(package_path, proposed_content)
+                    self.package_guard.check_file_change(
+                        package_path,
+                        proposed_content,
+                        current_content=current_content,
+                    )
                 )
         elif name in ("run_command", "run_process", "process_run") and command:
             package_checks = self.package_guard.check_command(command)
@@ -2193,6 +2465,32 @@ class Agent:
         from nexus.tools import normalize_tool_arguments
 
         args = normalize_tool_arguments(name, args)
+        declaration = self._tool_capabilities.get(name)
+        if declaration is None:
+            return f"❌ BLOCKED: Tool '{name}' has no capability declaration.", False
+        if (
+            declaration.requires(ToolCapability.CONFIRMATION_REQUIRED)
+            and not _user_confirmed
+        ):
+            capability_check = SafetyCheck(
+                level=SafetyLevel.DANGEROUS,
+                operation=f"external tool: {name}",
+                reason="This tool declares external side effects and requires approval",
+                details=json.dumps(args, ensure_ascii=False, default=str)[:2000],
+                requires_confirmation=True,
+            )
+            confirmation_id = self._queue_confirmation(
+                name=name,
+                args=args,
+                safety_check=capability_check,
+                edit_confirmed=_edit_confirmed,
+            )
+            return (
+                "⏸️ PENDING_CONFIRMATION "
+                f"[{confirmation_id}]: {capability_check.reason}. "
+                f"Enter /confirm {confirmation_id} or /cancel {confirmation_id}.",
+                False,
+            )
         if name == "run_command" and not self.mode_policy.allow_shell_command:
             return (
                 "❌ BLOCKED: shell-string execution is disabled in this mode; use "
@@ -2258,6 +2556,12 @@ class Agent:
             scope_paths.extend(str(item) for item in args.get("paths", []) or [])
         elif name == "browser_check":
             scope_paths.append(str(args.get("screenshot_path", "")))
+        for argument_name in self._external_tool_path_arguments.get(name, ()):
+            value = args.get(argument_name)
+            if isinstance(value, (list, tuple, set)):
+                scope_paths.extend(str(item) for item in value)
+            elif value not in (None, ""):
+                scope_paths.append(str(value))
         scope_paths = list(dict.fromkeys(item for item in scope_paths if item))
 
         # ── 1. Enforce Tool Policy
@@ -2422,6 +2726,7 @@ class Agent:
         if (
             name in ("run_command", "run_process", "process_run")
             and self.mode_policy.require_os_isolation
+            and not _user_confirmed
         ):
             args["require_os_isolation"] = True
 
@@ -2992,8 +3297,8 @@ class Agent:
                 else str(analysis.get("intent", "unknown")),
             )
             self._update_system_prompt()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Automatic skill activation failed: %s", exc)
 
         self.messages.append({"role": "user", "content": user_input})
         events = engine.run_interactive(self._build_messages(), tools=self._get_tools())
@@ -3158,7 +3463,7 @@ class Agent:
             if emit_ui:
                 ui.print_info("📋 Plan complete. Running verification...")
             try:
-                report = self._record_verification_report(self.verifier.run_all())
+                report = self._record_verification_report(self._run_verification_suite())
                 if emit_ui:
                     ui.console.print(report.format_report())
                 if report.all_passed:
@@ -3169,8 +3474,8 @@ class Agent:
                     self.hooks.fire(
                         HookEvent.ON_TEST_FAIL, HookContext(event=HookEvent.ON_TEST_FAIL)
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Plan-completion verification failed: %s", exc)
 
         return content or "", accumulated_events
 
@@ -3407,7 +3712,7 @@ class Agent:
                 }
             )
         if applied or recovered_without_edits:
-            verification_report = self._record_verification_report(self.verifier.run_all())
+            verification_report = self._record_verification_report(self._run_verification_suite())
             if emit_ui:
                 ui.console.print(verification_report.format_report())
             if not verification_report.all_passed:
@@ -3428,7 +3733,7 @@ class Agent:
                 breakdowns.append(repair_result.format_breakdown())
                 if repair_result.review_approved:
                     apply_result(repair_result, "two-node-repair")
-                    rerun = self._record_verification_report(self.verifier.run_all())
+                    rerun = self._record_verification_report(self._run_verification_suite())
                     if emit_ui:
                         ui.console.print(rerun.format_report())
 
@@ -3680,6 +3985,13 @@ class Agent:
             )
         return output, verified, record.id
 
+    def _run_verification_suite(self):
+        """Run verification and discount only identical inherited baseline failures."""
+        report = self.verifier.run_all()
+        if self.worktree is not None and Path(self.source_working_dir) != Path(self.working_dir):
+            report = self.verifier.reconcile_with_baseline(report, self.source_working_dir)
+        return report
+
     def _record_verification_report(self, report):
         """Mirror deterministic project checks into the evidence trail."""
         for index, check in enumerate(report.checks, 1):
@@ -3697,6 +4009,7 @@ class Agent:
                     "duration_ms": check.duration_ms,
                     "check_status": check.status.value,
                     "check_type": check.check_type.value,
+                    "inherited_baseline_failure": check.status.value == "inherited_failure",
                 },
             )
             if self.run_ledger.turn_dir:
@@ -3836,8 +4149,8 @@ class Agent:
                     self.working_dir,
                     self.conversation_id,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Conversation autosave failed: %s", exc)
 
     def save_conversation(self, filepath: str):
         """Save the conversation to a JSON file."""

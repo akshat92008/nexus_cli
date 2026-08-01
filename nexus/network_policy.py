@@ -7,6 +7,7 @@ Request Forgery (SSRF) and network abuse through the agent's web tools.
 from __future__ import annotations
 
 import ipaddress
+import os
 import queue
 import socket
 import threading
@@ -14,6 +15,16 @@ import time
 import urllib.parse
 from dataclasses import dataclass
 from typing import Callable
+
+
+def network_globally_disabled() -> bool:
+    """Return whether the process-level outbound network kill switch is active."""
+    return os.environ.get("NEXUS_DISABLE_NETWORK", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 @dataclass(frozen=True)

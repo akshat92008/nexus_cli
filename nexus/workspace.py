@@ -317,9 +317,20 @@ class GitWorktreeSession:
             if status.stdout.strip():
                 subprocess.run(["git", "add", "-A"], cwd=self.path, check=True)
                 subprocess.run(
-                    ["git", "commit", "-m", "Nexus workspace apply"],
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Nexus",
+                        "-c",
+                        "user.email=nexus@localhost",
+                        "commit",
+                        "-m",
+                        "Nexus workspace apply",
+                    ],
                     cwd=self.path,
                     check=True,
+                    capture_output=True,
+                    text=True,
                 )
 
             # ── Create backup ref before merge ────────────────────────────

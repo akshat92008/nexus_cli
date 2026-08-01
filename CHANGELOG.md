@@ -6,6 +6,104 @@ All notable changes to NexusAI CLI are documented here.
 
 No changes yet.
 
+## [3.2.0] - 2026-08-01
+
+Launch-containment and evidence-integrity release.
+
+### Security
+
+- Made the immutable `RunContext` authoritative at tool-execution boundaries,
+  including absolute-path and symlink containment.
+- Enforced default `ASK` decisions even when no repository policy file exists.
+- Removed the macOS sandbox's global host-filesystem read permission and made
+  command-capable launch modes require verified native isolation.
+- Added pre-spawn rejection for home-directory, credential, traversal, shell
+  expansion, interpreter-literal, and absolute host-path access attempts.
+- Activated per-agent capability declarations for built-ins, extensions, MCP,
+  and isolated plugin tools; undeclared tools are hidden and blocked.
+- Required extension filesystem contracts to declare custom read/write argument
+  names instead of relying on unsafe path-name heuristics.
+
+### Reliability
+
+- Implemented executable isolated-plugin RPC dispatch instead of advertising
+  plugin tools that could only fail as unknown tools.
+- Replaced the false-confidence E2E test with a real isolated-worktree workflow
+  that reproduces, edits, verifies, independently reviews, and applies only a
+  `VERIFIED` result through the normal product path.
+- Added baseline-aware verification so unchanged legacy failures are reported as
+  inherited while new or modified regressions remain blocking.
+- Restricted package-registry checks to newly introduced dependency coordinates,
+  preserving existing private dependencies.
+- Prevented local Nova validation from being represented as independent semantic
+  review; maximum-quality review modes now fail closed without a distinct reviewer.
+- Made verified-workspace application atomic and status-sensitive: merge failures
+  downgrade the run instead of returning a false success.
+
+### Release qualification
+
+- Added a release-blocking, three-trial live long-horizon benchmark executed in
+  verified Bubblewrap isolation, with pass-rate, cost, retry, changed-file,
+  external-verification, consistency, and intervention evidence.
+- Fixed `generate-dashboard` dispatch and removed the unconditional pytest-timeout
+  flag that broke standard test invocation without development extras.
+- Consolidated the public SDK contracts onto the runtime extension interfaces and
+  added executable SDK compatibility tests.
+- Added adversarial containment, plugin RPC, extension capability, baseline
+  verification, Nova assurance, CLI, SDK, and full-workflow regression tests.
+
+### Validation
+
+- 340 deterministic tests pass offline.
+- Python byte-compilation passes across product, scripts, and tests.
+- Wheel build and clean installed-wheel CLI smoke checks pass.
+- Live-provider long-horizon qualification remains intentionally release-blocking
+  and must pass with configured provider credentials before autonomous claims.
+
+## [3.1.2] - 2026-08-01
+
+Provider-contract and release-qualification hardening.
+
+### Added
+
+- A normalized chat-request contract and machine-readable capability matrix
+  for hosted providers and fallback routers.
+- Offline provider-chaos coverage for unsupported options, synchronous
+  failover, pre-stream failover, and mid-stream replay prevention.
+- A configurable concurrent stress matrix that strips provider credentials,
+  activates the hosted/web network kill switch, and runs each check from an
+  isolated repository copy.
+
+### Fixed
+
+- Hosted provider options are validated before transport and forwarded through
+  explicit `NvidiaClient` parameters instead of incompatible arbitrary kwargs.
+- The default hosted agent no longer wraps `NvidiaClient`'s built-in failover
+  in a redundant one-provider router.
+- Fallback routes use their own model ID, retry streams only before the first
+  emitted chunk, and expose the capability intersection across routes.
+- Benchmark dry-runs now exit nonzero for missing fixtures or blocked tasks,
+  and the stale root benchmark manifest points at a shipped fixture.
+- No-mutation verification stages report `not_applicable` instead of a
+  misleading successful-verification state.
+- The release gate uses a writable temporary `uv` cache in restricted CI
+  environments and validates every shipped benchmark manifest.
+- Hosted inference and both web tools honor `NEXUS_DISABLE_NETWORK` before
+  opening a transport; web search now uses DNS pinning and the SSRF policy.
+- `requirements.txt` drift from canonical `pyproject.toml` dependencies now
+  blocks the release gate.
+- Optional prompt, context, MCP, graph, verification, and persistence failures
+  in the agent emit structured debug/warning logs instead of being silently
+  swallowed.
+- Removed the unrelated Pygame Snake application from the production CLI
+  repository.
+
+### Validation
+
+- 313 deterministic tests pass offline.
+- Ruff, byte-compilation, sdist/wheel build, isolated wheel install, CLI smoke
+  checks, benchmark validation, and the concurrent stress matrix pass.
+
 ## [3.1.1] - 2026-08-01
 
 Launch-readiness reliability release.

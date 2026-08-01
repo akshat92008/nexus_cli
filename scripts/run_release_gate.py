@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.util
 import os
@@ -14,6 +15,117 @@ import zipfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
+PROVIDER_SECRET_PREFIXES = (
+    "NVIDIA_API_KEY",
+    "NVIDIA_FALLBACK_API_KEY",
+    "GROQ_API_KEY",
+    "GROQ_FALLBACK_API_KEY",
+    "OPENROUTER_API_KEY",
+)
+PROVIDER_SECRET_NAMES = {"NEXUS_OPENAI_API_KEY", "NEXUS_OPENAI_BASE_URL"}
+
+
+_SOURCE_HASH_IGNORED_PARTS = {
+    ".git",
+    ".venv",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+    "build",
+    "dist",
+    "verification_evidence",
+    "runs",
+}
+
+
+def source_revision(repo: Path = REPO) -> str:
+    """Return Git provenance or a deterministic source-archive fingerprint."""
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        digest = hashlib.sha256()
+        for path in sorted(repo.rglob("*")):
+            if not path.is_file():
+                continue
+            relative = path.relative_to(repo)
+            if any(part in _SOURCE_HASH_IGNORED_PARTS for part in relative.parts):
+                continue
+            if path.suffix in {".pyc", ".whl", ".gz", ".zip"} or path.name.endswith(
+                ".egg-info"
+            ):
+                continue
+            digest.update(relative.as_posix().encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(path.read_bytes())
+            digest.update(b"\0")
+        return f"archive:{digest.hexdigest()}"
+    if not commit:
+        raise RuntimeError("git returned an empty source revision")
+    return f"git:{commit}"
+
+
+def deterministic_env(base: dict[str, str] | None = None) -> dict[str, str]:
+    """Create an offline environment for deterministic release checks."""
+    env = dict(os.environ if base is None else base)
+    for name in list(env):
+        if name in PROVIDER_SECRET_NAMES or name.startswith(PROVIDER_SECRET_PREFIXES):
+            env.pop(name, None)
+    env["NEXUS_DISABLE_NETWORK"] = "1"
+    env.setdefault("UV_CACHE_DIR", str(Path(tempfile.gettempdir()) / "nexus-uv-cache"))
+    env.setdefault("UV_LINK_MODE", "copy")
+    return env
+
+
+def _requirement_name(value: str) -> str:
+    """Normalize a simple PEP 508 requirement to its distribution name."""
+    name = value.strip().split(";", 1)[0].strip().split("[", 1)[0]
+    for separator in ("===", "==", ">=", "<=", "~=", "!=", ">", "<"):
+        name = name.split(separator, 1)[0]
+    return name.strip().lower().replace("_", "-")
+
+
+def assert_dependency_mirror(repo: Path = REPO) -> None:
+    """Require requirements.txt to mirror canonical project dependencies."""
+    pyproject = (repo / "pyproject.toml").read_text(encoding="utf-8")
+    marker = "dependencies ="
+    start = pyproject.find(marker)
+    if start < 0:
+        raise RuntimeError("pyproject.toml has no project dependencies list")
+    list_start = pyproject.find("[", start + len(marker))
+    if list_start < 0:
+        raise RuntimeError("could not parse pyproject.toml project dependencies")
+    dependencies = None
+    for index in range(list_start + 1, len(pyproject)):
+        if pyproject[index] != "]":
+            continue
+        try:
+            candidate = ast.literal_eval(pyproject[list_start : index + 1])
+        except (SyntaxError, ValueError):
+            continue
+        if isinstance(candidate, list):
+            dependencies = candidate
+            break
+    if dependencies is None:
+        raise RuntimeError("could not parse pyproject.toml project dependencies")
+    canonical = {
+        _requirement_name(item)
+        for item in dependencies
+    }
+    mirrored = {
+        _requirement_name(line)
+        for line in (repo / "requirements.txt").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    if canonical != mirrored:
+        raise RuntimeError(
+            "requirements.txt drifted from pyproject.toml: "
+            f"missing={sorted(canonical - mirrored)} extra={sorted(mirrored - canonical)}"
+        )
 
 
 def run(command: list[str], *, cwd: Path = REPO, env: dict[str, str] | None = None) -> None:
@@ -37,10 +149,12 @@ def wheel_install_command(python: str, target: Path, wheel: Path) -> list[str]:
 
 def main() -> int:
     python = sys.executable
-    commit_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
-    run([python, "-m", "ruff", "check", "nexus", "tests", "scripts"])
-    run([python, "-m", "pytest", "-q"])
-    run([python, "-m", "compileall", "-q", "nexus", "tests"])
+    revision = source_revision()
+    offline_env = deterministic_env()
+    assert_dependency_mirror()
+    run([python, "-m", "ruff", "check", "nexus", "tests", "scripts"], env=offline_env)
+    run([python, "-m", "pytest", "-q"], env=offline_env)
+    run([python, "-m", "compileall", "-q", "nexus", "tests"], env=offline_env)
 
     with tempfile.TemporaryDirectory(prefix="nexus-release-gate-") as temp:
         root = Path(temp)
@@ -97,8 +211,12 @@ def main() -> int:
         wheel_sha256 = hashlib.sha256(wheels[0].read_bytes()).hexdigest()
 
         installed = root / "installed"
-        run(wheel_install_command(python, installed, wheels[0]), cwd=build_src)
-        smoke_env = dict(os.environ)
+        run(
+            wheel_install_command(python, installed, wheels[0]),
+            cwd=build_src,
+            env=offline_env,
+        )
+        smoke_env = deterministic_env()
         smoke_env["PYTHONPATH"] = str(installed)
         run(
             [
@@ -121,6 +239,19 @@ def main() -> int:
             env=smoke_env,
         )
         run([python, "-m", "nexus", "--version"], cwd=root, env=smoke_env)
+        run(
+            [
+                python,
+                "-m",
+                "nexus",
+                "benchmark",
+                "--manifest",
+                str(REPO / "benchmark-manifest.json"),
+                "--dry-run",
+            ],
+            cwd=root,
+            env=smoke_env,
+        )
         run(
             [
                 python,
@@ -167,7 +298,7 @@ def main() -> int:
 
         print(
             "\nRelease provenance: "
-            f"commit={commit_sha} wheel={wheels[0].name} sha256={wheel_sha256} "
+            f"source={revision} wheel={wheels[0].name} sha256={wheel_sha256} "
             f"packaged_source_files={len(expected_members)}",
             flush=True,
         )

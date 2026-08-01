@@ -234,7 +234,7 @@ class RepairLoop:
             verification_output = ""
             if mutations and all(e.get("status") == "verified" for e in mutations):
                 verification_report = self._agent._record_verification_report(  # noqa: SLF001
-                    self._agent.verifier.run_all()
+                    self._agent._run_verification_suite()
                 )
                 verification_output = verification_report.format_report()
                 evidence = self._agent.evidence.records()[evidence_start:]

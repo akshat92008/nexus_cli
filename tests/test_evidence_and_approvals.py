@@ -70,3 +70,21 @@ def test_trust_is_invalidated_on_every_config_change(tmp_path):
     assert changed.changed
     assert not changed.approved
     assert "curl evil" in changed.diff
+
+
+def test_package_guard_checks_only_new_dependencies(tmp_path):
+    observed = []
+
+    def resolver(registry, name):
+        observed.append((registry, name))
+        return PackageCheck(name, registry, "verified", "exists")
+
+    guard = PackageGuard(resolver=resolver)
+    checks = guard.check_file_change(
+        str(tmp_path / "requirements.txt"),
+        "company-private-sdk==1.0\nrequests==2.32.0\n",
+        current_content="company-private-sdk==1.0\n",
+    )
+
+    assert [item.name for item in checks] == ["requests"]
+    assert observed == [("pypi", "requests")]

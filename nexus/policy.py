@@ -36,9 +36,15 @@ def get_mode_policy(mode: str) -> ModePolicy:
             require_review=True,
             context_depth="deep",
             verification_level="full",
+            require_os_isolation=True,
         )
     elif mode in ("workspace", "default"):
-        return ModePolicy(may_edit=True, may_apply=False, require_review=True)
+        return ModePolicy(
+            may_edit=True,
+            may_apply=False,
+            require_review=True,
+            require_os_isolation=True,
+        )
     elif mode in ("autonomous", "acceptEdits"):
         return ModePolicy(
             may_edit=True,

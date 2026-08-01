@@ -215,12 +215,13 @@ def test_git_status():
 
 def test_web_search(monkeypatch):
     """web_search should parse deterministic provider output without live network access."""
+    monkeypatch.delenv("NEXUS_DISABLE_NETWORK", raising=False)
     body = """
     <a class="result__a" href="https://example.com/python">Python Guide</a>
     <a class="result__snippet">A practical programming guide.</a>
     """
     monkeypatch.setattr(
-        "urllib.request.urlopen",
+        "nexus.tools._safe_urlopen",
         lambda *_args, **_kwargs: _FakeHTTPResponse(body),
     )
     result = execute_tool("web_search", {"query": "python programming", "max_results": 2})
@@ -230,6 +231,7 @@ def test_web_search(monkeypatch):
 
 def test_web_fetch(monkeypatch):
     """web_fetch should extract deterministic content without live network access."""
+    monkeypatch.delenv("NEXUS_DISABLE_NETWORK", raising=False)
     monkeypatch.setattr(
         "nexus.tools._safe_urlopen",
         lambda *_args, **_kwargs: _FakeHTTPResponse("<h1>Example Domain</h1>"),

@@ -59,6 +59,13 @@ class StageResult:
     duration_ms: int = 0
     metadata: dict[str, Any] = field(default_factory=dict)
     error: str = ""
+    applicable: bool = True
+
+    @property
+    def status(self) -> str:
+        if not self.applicable:
+            return "not_applicable"
+        return "passed" if self.success else "failed"
 
 
 @dataclass
@@ -93,6 +100,8 @@ class PipelineResult:
                 {
                     "stage": s.stage.value,
                     "success": s.success,
+                    "status": s.status,
+                    "applicable": s.applicable,
                     "duration_ms": s.duration_ms,
                     "error": s.error,
                 }
@@ -529,7 +538,7 @@ class ExecutionPipeline:
             engine_checks = [item for item in checks if item.get("tool") == "verification_engine"]
             if mutations and not engine_checks:
                 self._agent._record_verification_report(  # noqa: SLF001
-                    self._agent.verifier.run_all()
+                    self._agent._run_verification_suite()
                 )
                 evidence = self._agent.evidence.records()[
                     getattr(self._agent, "_turn_evidence_start", 0) :
@@ -541,7 +550,23 @@ class ExecutionPipeline:
             verified_checks = bool(checks) and all(
                 item.get("status") == "verified" for item in checks
             )
-            verified = (verified_mutations and verified_checks) if mutations else True
+            if not mutations:
+                return StageResult(
+                    stage=PipelineStage.VERIFICATION,
+                    success=True,
+                    applicable=False,
+                    duration_ms=int((time.monotonic() - t) * 1000),
+                    metadata={
+                        "status": "not_applicable",
+                        "mutations": 0,
+                        "verified": 0,
+                        "checks": len(checks),
+                        "checks_passed": sum(
+                            1 for item in checks if item.get("status") == "verified"
+                        ),
+                    },
+                )
+            verified = verified_mutations and verified_checks
             return StageResult(
                 stage=PipelineStage.VERIFICATION,
                 success=verified,
@@ -614,11 +639,30 @@ class ExecutionPipeline:
                 error="Independent review withheld because deterministic verification failed.",
             )
         if routing_mode == "nova":
+            if self._agent.mode_policy.require_review:
+                return StageResult(
+                    stage=PipelineStage.REVIEW,
+                    success=False,
+                    duration_ms=int((time.monotonic() - t) * 1000),
+                    metadata={
+                        "review_assurance": "deterministic_only",
+                        "local_guardrails": True,
+                    },
+                    error=(
+                        "This execution mode requires an independent semantic reviewer, "
+                        "but the local Nova route provides deterministic validation only. "
+                        "Use local-only/autonomous mode or configure a hosted executor/reviewer."
+                    ),
+                )
             return StageResult(
                 stage=PipelineStage.REVIEW,
                 success=True,
                 duration_ms=int((time.monotonic() - t) * 1000),
-                metadata={"local_guardrails": True},
+                metadata={
+                    "review_assurance": "deterministic_only",
+                    "local_guardrails": True,
+                    "independent_semantic_review": False,
+                },
             )
         if routing_mode == "two_node":
             evidence = self._agent.evidence.records()[

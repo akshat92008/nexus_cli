@@ -1056,23 +1056,33 @@ def _strip_html(html_text: str) -> str:
 
 
 def _resolve_path(path_str: str) -> Path:
-    """
-    Resolve file and directory paths without silently escaping the workspace.
+    """Resolve a path through the active immutable RunContext.
 
-    Absolute paths and explicit ``~`` paths remain supported, but a relative
-    path such as ``desktop/app.py`` is kept relative to the current workspace.
-    Agent-level scope policy then decides whether an absolute path is allowed.
+    Tool operations fail closed when a path escapes the workspace or an
+    explicitly granted additional root.  A context-free fallback is retained
+    only for direct library use and tests outside an Agent run.
     """
+    from nexus.run_context import get_run_context
+
+    run_ctx = get_run_context()
+    if run_ctx is not None:
+        return run_ctx.resolve_path(path_str or ".")
+
     cwd = _tool_working_dir.get()
-    base_dir = Path(cwd) if cwd else Path.cwd()
+    base_dir = Path(cwd).resolve() if cwd else Path.cwd().resolve()
     if not path_str:
         return base_dir
-
-    path_str = str(path_str).strip()
-    p = Path(path_str).expanduser()
-    if p.is_absolute():
-        return p.resolve()
-    return (base_dir / p).resolve()
+    p = Path(str(path_str).strip()).expanduser()
+    resolved = p.resolve() if p.is_absolute() else (base_dir / p).resolve()
+    if cwd is None:
+        # Direct library calls have no run authority; preserve the historical
+        # utility API. Agent executions always install a RunContext above.
+        return resolved
+    try:
+        resolved.relative_to(base_dir)
+    except ValueError:
+        raise ValueError(f"Path {resolved} is outside the active tool workspace {base_dir}") from None
+    return resolved
 
 
 # ── Tool implementations ────────────────────────────────────────────────────
@@ -2436,7 +2446,7 @@ class _PinnedResponse:
 
 def tool_web_fetch(url: str, max_length: int = 10000) -> str:
     """Fetch public HTTP(S) text while blocking SSRF and unsafe redirects."""
-    from nexus.network_policy import NetworkPolicy
+    from nexus.network_policy import NetworkPolicy, network_globally_disabled
 
     if not isinstance(url, str) or not url.strip() or len(url) > 4096:
         return "❌ Network policy blocked URL: URL must contain 1-4096 characters"
@@ -2447,6 +2457,8 @@ def tool_web_fetch(url: str, max_length: int = 10000) -> str:
     violation = policy.check_url_syntax(url)
     if violation:
         return f"❌ Network policy blocked URL ({violation.category}): {violation.reason}"
+    if network_globally_disabled():
+        return "❌ Network policy blocked URL (network_disabled): outbound network is disabled"
     try:
         max_length = max(1, min(int(max_length or 10000), 100_000))
     except (TypeError, ValueError):
@@ -2494,22 +2506,30 @@ def tool_web_fetch(url: str, max_length: int = 10000) -> str:
 
 def tool_web_search(query: str, max_results: int = 5) -> str:
     """Search the web using DuckDuckGo HTML (no API key needed)."""
+    from nexus.network_policy import NetworkPolicy, network_globally_disabled
+
     if not isinstance(query, str) or not query.strip() or len(query) > 500:
         return "❌ Search query must contain 1-500 characters"
     try:
         max_results = max(1, min(int(max_results or 5), 20))
     except (TypeError, ValueError):
         return "❌ max_results must be an integer between 1 and 20"
+    if network_globally_disabled():
+        return "❌ Network policy blocked search (network_disabled): outbound network is disabled"
     try:
         # Use DuckDuckGo HTML search
         encoded_query = urllib.parse.quote_plus(query)
         url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
+        policy = NetworkPolicy(
+            allowed_hosts=frozenset({"html.duckduckgo.com"}),
+            max_response_bytes=200_000,
+        )
         req = urllib.request.Request(
             url,
             headers={"User-Agent": "NexusAI/1.0"},
         )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            html_text = resp.read(200_000).decode("utf-8", errors="replace")
+        with _safe_urlopen(req, timeout=10, policy=policy) as resp:
+            html_text = resp.read(policy.max_response_bytes).decode("utf-8", errors="replace")
 
         # Parse results (simple regex extraction)
         results = []

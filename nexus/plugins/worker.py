@@ -211,6 +211,13 @@ class PluginWorker:
                 print(json.dumps({"ready": True, "name": getattr(instance, 'name', '')}))
                 sys.stdout.flush()
 
+                def _json_safe(value):
+                    try:
+                        json.dumps(value)
+                        return value
+                    except (TypeError, ValueError):
+                        return str(value)
+
                 # RPC loop
                 for line in sys.stdin:
                     try:
@@ -229,9 +236,25 @@ class PluginWorker:
                             args = request.get("args", {})
                             if hasattr(instance, method) and callable(getattr(instance, method)):
                                 result = getattr(instance, method)(**args)
-                                print(json.dumps({"result": str(result) if result else None}))
+                                print(json.dumps({"result": _json_safe(result)}))
                             else:
                                 print(json.dumps({"error": f"Unknown method: {method}"}))
+                        elif action == "execute_tool":
+                            tool_name = request.get("tool_name", "")
+                            args = request.get("arguments", {})
+                            dispatch = (
+                                instance.get_tool_dispatch()
+                                if hasattr(instance, "get_tool_dispatch")
+                                else {}
+                            )
+                            implementation = dispatch.get(tool_name) if isinstance(dispatch, dict) else None
+                            if not callable(implementation):
+                                print(json.dumps({"error": f"Unknown plugin tool: {tool_name}"}))
+                            elif not isinstance(args, dict):
+                                print(json.dumps({"error": "Plugin tool arguments must be an object"}))
+                            else:
+                                result = implementation(**args)
+                                print(json.dumps({"result": _json_safe(result)}))
                         elif action == "get_skills":
                             skills = instance.get_skills() if hasattr(instance, 'get_skills') else []
                             print(json.dumps({"result": [{"name": getattr(s, 'name', '')} for s in skills]}))

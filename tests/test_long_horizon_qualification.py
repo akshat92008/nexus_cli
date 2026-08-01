@@ -281,3 +281,18 @@ def test_live_provider_workflow_is_manual_and_cost_gated():
     assert "--allow-cost" in workflow
     assert "live-provider execution requires --allow-cost" in script
     assert "configured_hosted_credentials" in script
+
+
+def test_release_workflow_blocks_on_three_fresh_long_horizon_trials():
+    root = Path(__file__).parents[1]
+    workflow = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    suite = BenchmarkSuite.load(root / "benchmarks" / "release_long_horizon.json")
+
+    assert suite.profile == "release-long-horizon"
+    assert len(suite.tasks) == 1
+    assert suite.tasks[0].id == "startup-control-plane-from-one-prompt"
+    assert "Install and verify kernel sandbox" in workflow
+    assert "SandboxBackend.BUBBLEWRAP" in workflow
+    assert "benchmarks/release_long_horizon.json" in workflow
+    assert "--trials 3" in workflow
+    assert "--required-pass-rate 1.0" in workflow
