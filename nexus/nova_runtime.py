@@ -51,9 +51,7 @@ def extract_prompt_paths(text: str) -> list[str]:
     candidates = _PROMPT_PATH_RE.findall(text)
     return list(
         dict.fromkeys(
-            item
-            for item in [*explicit, *candidates]
-            if item.lower() not in _TECHNOLOGY_NAMES
+            item for item in [*explicit, *candidates] if item.lower() not in _TECHNOLOGY_NAMES
         )
     )
 
@@ -280,9 +278,7 @@ class NovaOutputParser:
                 result.parse_errors.append("test_command must be a string")
 
         if not (result.files or result.response_text or result.clarification_text):
-            result.parse_errors.append(
-                "JSON protocol requires files, response, or clarification"
-            )
+            result.parse_errors.append("JSON protocol requires files, response, or clarification")
         if result.response_text and result.files:
             result.parse_errors.append("JSON protocol cannot combine response with files")
         if result.clarification_text and result.files:
@@ -325,13 +321,7 @@ class NovaOutputParser:
             errors.append("Missing # action: CREATE or MODIFY in code block")
             return None
 
-        path = (
-            path_match.group(1)
-            .strip()
-            .removesuffix("-->")
-            .removesuffix("*/")
-            .strip("`'\"")
-        )
+        path = path_match.group(1).strip().removesuffix("-->").removesuffix("*/").strip("`'\"")
         for prefix in ("path/to/", "a/", "b/"):
             if path.startswith(prefix):
                 path = path[len(prefix) :]
@@ -552,7 +542,9 @@ class TaskGuardrail:
             expected.update(pattern.findall(prompt or task.description))
         if not expected:
             return self._passed(task, "No explicit function name to verify.")
-        missing = [name for name in sorted(expected) if not re.search(rf"\b{re.escape(name)}\b", output)]
+        missing = [
+            name for name in sorted(expected) if not re.search(rf"\b{re.escape(name)}\b", output)
+        ]
         if missing:
             return self._failed(
                 task,
@@ -604,18 +596,14 @@ class ConstraintExtractor:
     def extract(self, prompt: str) -> list[LiteralConstraint]:
         found: list[LiteralConstraint] = []
         for match in re.finditer(r"(?:return|status)(?:\s+code)?\s+(\d{3})", prompt, re.I):
-            found.append(
-                LiteralConstraint("status_code", match.group(1), match.group(0), prompt)
-            )
+            found.append(LiteralConstraint("status_code", match.group(1), match.group(0), prompt))
         quoted = re.compile(
             r"(?:print|output|status:|return|body|emit|write)"
             r"[^\n,;.!?]{0,80}?(['\"])([^'\"\n]+)\1",
             re.I,
         )
         for match in quoted.finditer(prompt):
-            found.append(
-                LiteralConstraint("string_output", match.group(2), match.group(0), prompt)
-            )
+            found.append(LiteralConstraint("string_output", match.group(2), match.group(0), prompt))
         unquoted = re.compile(
             r"(?:prints?|outputs?|emits?|writes?)\s+exactly\s+"
             r"([A-Za-z0-9_./:+-]+(?: [A-Za-z0-9_./:+-]+)*)",
@@ -628,9 +616,7 @@ class ConstraintExtractor:
                 maxsplit=1,
                 flags=re.I,
             )[0]
-            found.append(
-                LiteralConstraint("string_output", value.strip(), match.group(0), prompt)
-            )
+            found.append(LiteralConstraint("string_output", value.strip(), match.group(0), prompt))
         assignment = re.compile(
             r"set\s+(?:it|[\w_]+)\s+to\s+(?:an?\s+)?"
             r"(empty string|null|true|false|[\w_]+|['\"][^'\"]+['\"])",
@@ -642,9 +628,7 @@ class ConstraintExtractor:
                 value = '""'
             elif value.startswith(("'", '"')):
                 value = value[1:-1]
-            found.append(
-                LiteralConstraint("assignment", value, match.group(0), prompt)
-            )
+            found.append(LiteralConstraint("assignment", value, match.group(0), prompt))
 
         unique: dict[tuple[str, str], LiteralConstraint] = {}
         for item in found:
@@ -701,9 +685,7 @@ class ConstraintVerifier:
         if constraint.type == "string_output" and not any(
             any(marker in line for marker in self.OUTPUT_MARKERS) for line in relevant
         ):
-            return False, (
-                f"Constraint FAILED: '{constraint.value}' is not in an output branch."
-            )
+            return False, (f"Constraint FAILED: '{constraint.value}' is not in an output branch.")
         return True, f"Constraint PASSED: found '{constraint.value}' in a valid branch."
 
     def verify(
@@ -747,11 +729,15 @@ class OllamaClient:
         )
         if not resolved_url.startswith(("http://", "https://")):
             resolved_url = f"http://{resolved_url}"
-        
+
         parsed_host = resolved_url.split("://")[-1].split(":")[0]
-        if parsed_host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get("NEXUS_ALLOW_REMOTE_OLLAMA"):
-            raise ValueError(f"Remote Ollama host '{parsed_host}' is blocked. Set NEXUS_ALLOW_REMOTE_OLLAMA=1 to override.")
-            
+        if parsed_host not in ("127.0.0.1", "localhost", "::1") and not os.environ.get(
+            "NEXUS_ALLOW_REMOTE_OLLAMA"
+        ):
+            raise ValueError(
+                f"Remote Ollama host '{parsed_host}' is blocked. Set NEXUS_ALLOW_REMOTE_OLLAMA=1 to override."
+            )
+
         self.base_url = resolved_url.rstrip("/")
         self.timeout = timeout or int(os.environ.get("NEXUS_OLLAMA_TIMEOUT", "180"))
 
@@ -924,7 +910,10 @@ class InternNode:
                 action.content,
                 flags=re.MULTILINE | re.DOTALL,
             )
-            if any(text.count(left) != text.count(right) for left, right in (("{", "}"), ("(", ")"), ("[", "]"))):
+            if any(
+                text.count(left) != text.count(right)
+                for left, right in (("{", "}"), ("(", ")"), ("[", "]"))
+            ):
                 return True
         return False
 

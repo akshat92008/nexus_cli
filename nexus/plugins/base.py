@@ -13,7 +13,7 @@ from nexus.skills.base import BaseSkill
 class BasePlugin:
     """
     Base class for plugins. Subclass this to define an extension package.
-    
+
     Plugins can provide custom tools, skills, hooks, and commands.
     """
 

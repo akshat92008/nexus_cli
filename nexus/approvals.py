@@ -39,7 +39,10 @@ def preview_mutation(name: str, args: dict[str, Any], working_dir: str) -> tuple
     elif name == "edit_file":
         needle = str(args.get("old_text", ""))
         if not needle or old.count(needle) != 1:
-            return False, f"Cannot preview edit: old_text occurs {old.count(needle)} times in {path}."
+            return (
+                False,
+                f"Cannot preview edit: old_text occurs {old.count(needle)} times in {path}.",
+            )
         new = old.replace(needle, str(args.get("new_text", "")), 1)
     elif name == "patch_file":
         lines = old.splitlines(keepends=True)
@@ -53,17 +56,19 @@ def preview_mutation(name: str, args: dict[str, Any], working_dir: str) -> tuple
         if replacement and not replacement.endswith("\n"):
             replacement_lines[-1] += "\n"
         if end == 0:
-            lines[start - 1:start - 1] = replacement_lines
+            lines[start - 1 : start - 1] = replacement_lines
         else:
-            lines[start - 1:end] = replacement_lines
+            lines[start - 1 : end] = replacement_lines
         new = "".join(lines)
     else:
         return False, f"Unsupported preview tool: {name}"
 
-    diff = "".join(difflib.unified_diff(
-        old.splitlines(keepends=True),
-        new.splitlines(keepends=True),
-        fromfile=f"a/{path}",
-        tofile=f"b/{path}",
-    ))
+    diff = "".join(
+        difflib.unified_diff(
+            old.splitlines(keepends=True),
+            new.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+        )
+    )
     return True, diff or "(no changes)"

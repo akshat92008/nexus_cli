@@ -2,23 +2,25 @@
 
 Provides a unified facade for interactive and DAG execution paths.
 """
+
 from __future__ import annotations
 
 from typing import Callable, Generator
 
 from nexus.planner import ExecutionPlan
+from nexus.providers.base import Provider
 from nexus.run_state import RunLedger
 from nexus.runtime.events import BaseEvent
 from nexus.runtime.kernel import (
     ExecutionKernel,
-    TaskDagKernel,
     ExecutionResult,
-    StepExecutor,
-    StepVerifier,
-    StepRepairer,
     PlanReviewer,
+    StepExecutor,
+    StepRepairer,
+    StepVerifier,
+    TaskDagKernel,
 )
-from nexus.providers.base import Provider
+
 
 class ExecutionSession:
     """Canonical orchestration session for Nexus execution paths."""
@@ -81,7 +83,7 @@ class ExecutionSession:
             kernel.tool_executor = tool_executor
         if event_handler:
             kernel.add_event_handler(event_handler)
-            
+
         yield from kernel.run_interactive(
             messages=messages,
             tools=tools,

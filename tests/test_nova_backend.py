@@ -56,6 +56,7 @@ def test_nova_parser_accepts_versioned_json_patch_protocol():
 
 def test_file_action_modify_without_patch_blocks_falls_back_to_write_file():
     from nexus.nova_runtime import FileAction
+
     backend = NovaPipelineBackend()
     action = FileAction(path="src/app.js", action="MODIFY", content="console.log('hello');")
     proposals = backend._file_action_to_tool_calls(action, "test guardrail summary")
@@ -67,6 +68,7 @@ def test_file_action_modify_without_patch_blocks_falls_back_to_write_file():
 
 def test_file_action_unified_diff_converts_to_edit_file():
     from nexus.nova_runtime import FileAction
+
     backend = NovaPipelineBackend()
     diff_content = (
         "--- a/todo.html\n"
@@ -87,6 +89,7 @@ def test_file_action_unified_diff_converts_to_edit_file():
 
 def test_file_action_unclosed_create_diff_header_stripping():
     from nexus.nova_runtime import FileAction
+
     backend = NovaPipelineBackend()
     content = "<<<<<<<\n# \n=======\nclass Node:\n    pass\n"
     action = FileAction(path="lru_cache.py", action="CREATE", content=content)
@@ -99,8 +102,12 @@ def test_file_action_unclosed_create_diff_header_stripping():
 
 def test_file_action_deduplicates_repetitive_loop_blocks():
     from nexus.nova_runtime import FileAction
+
     backend = NovaPipelineBackend()
-    content = "```python\n# File: api_client.py\n<<<<<<<\n# \n=======\nimport json\nclass APIClient:\n    pass\n>>>>># File: api_client.py\n" * 3
+    content = (
+        "```python\n# File: api_client.py\n<<<<<<<\n# \n=======\nimport json\nclass APIClient:\n    pass\n>>>>># File: api_client.py\n"
+        * 3
+    )
     action = FileAction(path="api_client.py", action="MODIFY", content=content)
     proposals = backend._file_action_to_tool_calls(action, "test summary")
     assert len(proposals) == 1
@@ -111,6 +118,7 @@ def test_file_action_deduplicates_repetitive_loop_blocks():
 
 def test_file_action_ignores_trailing_filename_label_artifacts():
     from nexus.nova_runtime import FileAction
+
     backend = NovaPipelineBackend()
     content = "<<<<<<<\n=======\nconst task = 1;\n>>>>>># File: task_queue.js\n task_queue.js"
     action = FileAction(path="task_queue.js", action="MODIFY", content=content)

@@ -60,7 +60,11 @@ class PackageGuard:
         try:
             parts = shlex.split(command)
         except ValueError:
-            return [PackageCheck("(command)", "unknown", "unverified", "install command could not be parsed")]
+            return [
+                PackageCheck(
+                    "(command)", "unknown", "unverified", "install command could not be parsed"
+                )
+            ]
         if not parts:
             return []
 
@@ -70,18 +74,20 @@ class PackageGuard:
         if executable in {"pip", "pip3"} and "install" in parts:
             registry = "pypi"
             names = self._positional_after(parts, "install")
+        elif executable == "uv" and len(parts) > 2 and parts[1] == "pip" and "install" in parts:
+            registry = "pypi"
+            names = self._positional_after(parts, "install")
         elif (
-            executable == "uv"
-            and len(parts) > 2
-            and parts[1] == "pip"
+            executable in {"python", "python3"}
+            and len(parts) > 3
+            and parts[1:3] == ["-m", "pip"]
             and "install" in parts
         ):
             registry = "pypi"
             names = self._positional_after(parts, "install")
-        elif executable in {"python", "python3"} and len(parts) > 3 and parts[1:3] == ["-m", "pip"] and "install" in parts:
-            registry = "pypi"
-            names = self._positional_after(parts, "install")
-        elif executable in {"npm", "pnpm", "yarn"} and any(x in parts for x in ("install", "add", "i")):
+        elif executable in {"npm", "pnpm", "yarn"} and any(
+            x in parts for x in ("install", "add", "i")
+        ):
             registry = "npm"
             verb = next(x for x in ("install", "add", "i") if x in parts)
             names = self._positional_after(parts, verb)
@@ -127,7 +133,12 @@ class PackageGuard:
             except json.JSONDecodeError:
                 return []
             names = []
-            for key in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
+            for key in (
+                "dependencies",
+                "devDependencies",
+                "peerDependencies",
+                "optionalDependencies",
+            ):
                 names.extend((data.get(key) or {}).keys())
             return names
         if filename == "Cargo.toml":
@@ -135,7 +146,9 @@ class PackageGuard:
             for line in content.splitlines():
                 stripped = line.strip()
                 if stripped.startswith("["):
-                    in_dependencies = "dependencies" in stripped and not stripped.startswith("[package")
+                    in_dependencies = "dependencies" in stripped and not stripped.startswith(
+                        "[package"
+                    )
                 elif in_dependencies and "=" in stripped and not stripped.startswith("#"):
                     names.append(stripped.split("=", 1)[0].strip())
             return names
@@ -158,8 +171,17 @@ class PackageGuard:
     def _positional_after(parts: list[str], verb: str) -> list[str]:
         result = []
         skip_next = False
-        value_flags = {"-r", "--requirement", "-i", "--index-url", "--extra-index-url", "--registry", "-F", "--features"}
-        for item in parts[parts.index(verb) + 1:]:
+        value_flags = {
+            "-r",
+            "--requirement",
+            "-i",
+            "--index-url",
+            "--extra-index-url",
+            "--registry",
+            "-F",
+            "--features",
+        }
+        for item in parts[parts.index(verb) + 1 :]:
             if skip_next:
                 skip_next = False
                 continue
@@ -202,14 +224,22 @@ class PackageGuard:
             metadata = {} if registry == "go" else json.loads(raw.decode("utf-8"))
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
-                return PackageCheck(name, registry, "blocked", "package does not exist in the registry", url)
-            return PackageCheck(name, registry, "unverified", f"registry returned HTTP {exc.code}", url)
+                return PackageCheck(
+                    name, registry, "blocked", "package does not exist in the registry", url
+                )
+            return PackageCheck(
+                name, registry, "unverified", f"registry returned HTTP {exc.code}", url
+            )
         except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-            return PackageCheck(name, registry, "unverified", f"registry could not be verified: {exc}", url)
+            return PackageCheck(
+                name, registry, "unverified", f"registry could not be verified: {exc}", url
+            )
 
         warning = self._risk_warning(registry, metadata)
         if warning:
-            return PackageCheck(name, registry, "warn", warning, url, metadata={"checked_at": time.time()})
+            return PackageCheck(
+                name, registry, "warn", warning, url, metadata={"checked_at": time.time()}
+            )
         return PackageCheck(name, registry, "pass", "package exists in the registry", url)
 
     @staticmethod
@@ -217,18 +247,30 @@ class PackageGuard:
         now = datetime.now(timezone.utc)
         try:
             if registry == "pypi":
-                releases = [item for values in metadata.get("releases", {}).values() for item in values]
-                dates = [datetime.fromisoformat(item["upload_time_iso_8601"].replace("Z", "+00:00")) for item in releases if item.get("upload_time_iso_8601")]
+                releases = [
+                    item for values in metadata.get("releases", {}).values() for item in values
+                ]
+                dates = [
+                    datetime.fromisoformat(item["upload_time_iso_8601"].replace("Z", "+00:00"))
+                    for item in releases
+                    if item.get("upload_time_iso_8601")
+                ]
                 if dates and (now - min(dates)).days < 30:
                     return "package exists but was first published less than 30 days ago"
             elif registry == "npm":
                 created = metadata.get("time", {}).get("created")
-                if created and (now - datetime.fromisoformat(created.replace("Z", "+00:00"))).days < 30:
+                if (
+                    created
+                    and (now - datetime.fromisoformat(created.replace("Z", "+00:00"))).days < 30
+                ):
                     return "package exists but was first published less than 30 days ago"
             elif registry == "crates":
                 crate = metadata.get("crate", {})
                 created = crate.get("created_at")
-                if created and (now - datetime.fromisoformat(created.replace("Z", "+00:00"))).days < 30:
+                if (
+                    created
+                    and (now - datetime.fromisoformat(created.replace("Z", "+00:00"))).days < 30
+                ):
                     return "crate exists but was first published less than 30 days ago"
                 if int(crate.get("downloads", 0)) < 100:
                     return "crate exists but has fewer than 100 downloads"

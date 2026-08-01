@@ -9,47 +9,52 @@ def test_rollback_manager_no_run(tmp_path: Path):
     assert not success
     assert "Could not resolve run" in msg
 
+
 def test_rollback_manager_successful_rollback(tmp_path: Path, monkeypatch):
     # Mock nexus_home
     monkeypatch.setattr("nexus.run_catalog.nexus_home", lambda: tmp_path)
     monkeypatch.setattr("nexus.paths.nexus_home", lambda: tmp_path)
     monkeypatch.setattr("nexus.run_state.nexus_home", lambda: tmp_path)
     monkeypatch.setattr("nexus.history.nexus_home", lambda: tmp_path)
-    
+
     # Create a fake session
     session_id = "test-session-001"
     run_id = "turn-0001"
-    
+
     # Create the run state directory
     turn_dir = tmp_path / "runs" / session_id / run_id
     turn_dir.mkdir(parents=True)
-    
+
     # Create the request.json to be discoverable
     request_file = turn_dir / "request.json"
-    request_file.write_text('{"schema_version": "nexus.run.v1", "session_id": "test-session-001", "turn_id": "turn-0001"}')
-    
+    request_file.write_text(
+        '{"schema_version": "nexus.run.v1", "session_id": "test-session-001", "turn_id": "turn-0001"}'
+    )
+
     # Create final_report
     final_report = turn_dir / "final_report.json"
-    final_report.write_text('{"metadata": {"history_start": 0, "history_end": 1}, "request": {"working_dir": "/tmp"}}')
-    
+    final_report.write_text(
+        '{"metadata": {"history_start": 0, "history_end": 1}, "request": {"working_dir": "/tmp"}}'
+    )
+
     # Create FileHistory
     hist = FileHistory(session_id)
     # create a dummy file
     dummy_file = tmp_path / "target.txt"
     dummy_file.write_text("before")
-    
+
     snap_path = hist.snapshot_before_write(str(dummy_file))
-    
+
     dummy_file.write_text("after")
-    
+
     hist.record_change(str(dummy_file), "write_file", snapshot_path=snap_path)
-    
+
     # Call RollbackManager
     # Note: RollbackManager uses RunCatalog to resolve "turn-0001".
     # RunCatalog looks in all sessions for turn-0001. Since we set nexus_home, it will find it.
-    
+
     success, msg = RollbackManager.rollback(run_id)
-    
+
     assert success, msg
     assert "Restored target.txt to previous version" in msg
     assert dummy_file.read_text() == "before"

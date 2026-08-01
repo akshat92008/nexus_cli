@@ -1,6 +1,7 @@
 """
 Tests for the history module — file change tracking, undo, and diff.
 """
+
 import sys
 import tempfile
 import time

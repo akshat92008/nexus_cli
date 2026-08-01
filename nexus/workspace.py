@@ -195,20 +195,26 @@ class GitWorktreeSession:
         else:
             # Python-native unified diff — cross-platform, no Unix diff required
             import difflib
+
             lines: list[str] = []
             src = self.path
             dst = self.repository
             _ignore = {
-                ".git", ".nexusai", ".pytest_cache", "__pycache__",
-                "node_modules", ".venv", "venv", "dist", "build",
+                ".git",
+                ".nexusai",
+                ".pytest_cache",
+                "__pycache__",
+                "node_modules",
+                ".venv",
+                "venv",
+                "dist",
+                "build",
             }
 
             def _collect_files(base: "Path") -> list["Path"]:
                 out = []
                 for entry in base.rglob("*"):
-                    if entry.is_file() and not any(
-                        part in _ignore for part in entry.parts
-                    ):
+                    if entry.is_file() and not any(part in _ignore for part in entry.parts):
                         out.append(entry)
                 return out
 
@@ -218,13 +224,24 @@ class GitWorktreeSession:
             for rel in sorted(src_files | dst_files):
                 src_f = src / rel
                 dst_f = dst / rel
-                src_lines = src_f.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True) if src_f.exists() else []
-                dst_lines = dst_f.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True) if dst_f.exists() else []
-                diff_lines = list(difflib.unified_diff(
-                    dst_lines, src_lines,
-                    fromfile=f"a/{rel}",
-                    tofile=f"b/{rel}",
-                ))
+                src_lines = (
+                    src_f.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+                    if src_f.exists()
+                    else []
+                )
+                dst_lines = (
+                    dst_f.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True)
+                    if dst_f.exists()
+                    else []
+                )
+                diff_lines = list(
+                    difflib.unified_diff(
+                        dst_lines,
+                        src_lines,
+                        fromfile=f"a/{rel}",
+                        tofile=f"b/{rel}",
+                    )
+                )
                 lines.extend(diff_lines)
 
             return "".join(lines)
@@ -320,17 +337,25 @@ class GitWorktreeSession:
             backup = Path(str(self.path) + "_backup")
 
             _ignore = {
-                ".git", ".nexusai", ".pytest_cache", ".ruff_cache",
-                "__pycache__", "node_modules", ".venv", "venv", "dist", "build",
+                ".git",
+                ".nexusai",
+                ".pytest_cache",
+                ".ruff_cache",
+                "__pycache__",
+                "node_modules",
+                ".venv",
+                "venv",
+                "dist",
+                "build",
             }
-            
+
             def _collect_files(base: "Path") -> list["Path"]:
                 out = []
                 for entry in base.rglob("*"):
                     if entry.is_file() and not any(part in _ignore for part in entry.parts):
                         out.append(entry)
                 return out
-                
+
             def _check_concurrent_changes(base: Path, current: Path) -> bool:
                 if not base.exists() or not current.exists():
                     return False
@@ -345,20 +370,24 @@ class GitWorktreeSession:
                     except OSError:
                         return True
                 return False
-                
+
             if baseline.exists() and _check_concurrent_changes(baseline, dst):
                 raise WorktreeError(
                     "Concurrent changes detected in source repository. "
                     "Refusing to apply non-Git temporary copy to prevent data loss."
                 )
-                
+
             if not backup.exists():
                 try:
+
                     def _ignore_func(_d: str, names: list[str]) -> set[str]:
                         return {n for n in names if n in _ignore}
+
                     _shutil.copytree(dst, backup, ignore=_ignore_func)
                 except OSError as exc:
-                    raise WorktreeError(f"Could not create backup of source repository: {exc}") from exc
+                    raise WorktreeError(
+                        f"Could not create backup of source repository: {exc}"
+                    ) from exc
 
             def _sync(src_dir: "Path", dst_dir: "Path") -> None:
                 dst_dir.mkdir(parents=True, exist_ok=True)
@@ -414,16 +443,16 @@ class GitWorktreeSession:
 
 class WorkspaceManager:
     """Manages global isolation sessions for Nexus."""
-    
+
     def __init__(self, state_root: str | Path | None = None):
         root = Path(state_root).expanduser().resolve() if state_root else nexus_home()
         self.worktrees_dir = root / "worktrees"
-        
+
     def list_worktrees(self) -> list[WorktreeInfo]:
         """List all active isolated worktrees."""
         if not self.worktrees_dir.exists():
             return []
-        
+
         results = []
         for p in self.worktrees_dir.glob("*.json"):
             try:
@@ -431,17 +460,17 @@ class WorkspaceManager:
                 results.append(WorktreeInfo(**data))
             except Exception:
                 pass
-        
+
         # Sort by creation time descending
         results.sort(key=lambda w: w.created_at, reverse=True)
         return results
-        
+
     def resolve_worktree(self, session_id: str) -> GitWorktreeSession | None:
         """Resolve a specific session ID to an active worktree session."""
         info_path = self.worktrees_dir / f"{session_id}.json"
         if not info_path.exists():
             return None
-            
+
         try:
             data = json.loads(info_path.read_text(encoding="utf-8"))
             info = WorktreeInfo(**data)

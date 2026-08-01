@@ -1,6 +1,7 @@
 """
 Tests for the memory module — conversation persistence and compaction.
 """
+
 import sys
 from pathlib import Path
 

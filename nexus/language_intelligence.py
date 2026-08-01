@@ -25,12 +25,8 @@ DEFAULT_SERVERS: dict[str, tuple[LanguageServerSpec, ...]] = {
         LanguageServerSpec("python", ("pyright-langserver", "--stdio")),
         LanguageServerSpec("python", ("pylsp",)),
     ),
-    "typescript": (
-        LanguageServerSpec("typescript", ("typescript-language-server", "--stdio")),
-    ),
-    "javascript": (
-        LanguageServerSpec("javascript", ("typescript-language-server", "--stdio")),
-    ),
+    "typescript": (LanguageServerSpec("typescript", ("typescript-language-server", "--stdio")),),
+    "javascript": (LanguageServerSpec("javascript", ("typescript-language-server", "--stdio")),),
     "go": (LanguageServerSpec("go", ("gopls",)),),
     "rust": (LanguageServerSpec("rust", ("rust-analyzer",)),),
 }
@@ -286,9 +282,7 @@ class TreeSitterAdapter:
 
     def symbols(self, source: str, language: str) -> list[dict[str, Any]]:
         if not self._get_parser:
-            raise LSPError(
-                "Tree-sitter support is unavailable; install nexusai-cli[intelligence]"
-            )
+            raise LSPError("Tree-sitter support is unavailable; install nexusai-cli[intelligence]")
         parser = self._get_parser(language)
         tree = parser.parse(source.encode("utf-8"))
         encoded = source.encode("utf-8")
@@ -334,3 +328,30 @@ class LanguageServicePool:
         for client in self._clients.values():
             client.close()
         self._clients.clear()
+
+
+def type_check(path: str = ".") -> str:
+    """
+    Run static type checking using pyright (or mypy as fallback) on the given path.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(["pyright", path], capture_output=True, text=True, timeout=30)
+        return (
+            result.stdout
+            if result.stdout
+            else (result.stderr or "✅ No type errors found (pyright).")
+        )
+    except FileNotFoundError:
+        try:
+            result = subprocess.run(["mypy", path], capture_output=True, text=True, timeout=30)
+            return (
+                result.stdout
+                if result.stdout
+                else (result.stderr or "✅ No type errors found (mypy).")
+            )
+        except FileNotFoundError:
+            return "❌ No type checker found (pyright or mypy not installed)."
+    except subprocess.TimeoutExpired:
+        return "❌ Type check timed out after 30 seconds."

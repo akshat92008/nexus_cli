@@ -17,6 +17,7 @@ PREFS_FILE = nexus_home() / "user_prefs.json"
 @dataclass
 class UserPreferences:
     """Persistent user preferences."""
+
     preferred_model: str = ""
     preferred_language: str = ""
     coding_style: dict[str, str] = field(default_factory=dict)
@@ -97,10 +98,9 @@ class UserMemory:
             try:
                 with open(PREFS_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                self._prefs = UserPreferences(**{
-                    k: v for k, v in data.items()
-                    if k in UserPreferences.__dataclass_fields__
-                })
+                self._prefs = UserPreferences(
+                    **{k: v for k, v in data.items() if k in UserPreferences.__dataclass_fields__}
+                )
             except (json.JSONDecodeError, OSError, TypeError):
                 self._prefs = UserPreferences()
         else:
@@ -148,11 +148,13 @@ class UserMemory:
     def record_correction(self, lesson: str, context: str = ""):
         """Record a user correction for future reference."""
         prefs = self.load()
-        prefs.corrections.append({
-            "lesson": lesson,
-            "context": context,
-            "timestamp": datetime.now().isoformat(),
-        })
+        prefs.corrections.append(
+            {
+                "lesson": lesson,
+                "context": context,
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
         # Keep last 100 corrections
         if len(prefs.corrections) > 100:
             prefs.corrections = prefs.corrections[-100:]

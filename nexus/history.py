@@ -143,7 +143,9 @@ class FileHistory:
             messages.append(message)
         if not messages:
             return False, "No changes to undo."
-        return all_ok, f"Undid {len(messages)} operation(s):\n" + "\n".join(f"  {m}" for m in messages)
+        return all_ok, f"Undid {len(messages)} operation(s):\n" + "\n".join(
+            f"  {m}" for m in messages
+        )
 
     def get_recent_diffs(self, count: int = 10) -> str:
         """Render diffs for the most recent operations without changing history."""
@@ -151,7 +153,7 @@ class FileHistory:
             return "No file changes in this session."
         original = self.changes
         rendered = []
-        for change in original[-max(1, count):]:
+        for change in original[-max(1, count) :]:
             self.changes = [change]
             rendered.append(self.get_last_diff() or "(diff unavailable)")
         self.changes = original
@@ -224,6 +226,3 @@ class FileHistory:
             lines.append(f"  {i}. [{ts}] {action} {p.name} via {tool}")
 
         return "\n".join(lines)
-
-
-

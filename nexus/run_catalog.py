@@ -134,10 +134,7 @@ class RunCatalog:
 
     @staticmethod
     def _validate_identifier(value: str) -> None:
-        if (
-            value in {"", ".", ".."}
-            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value)
-        ):
+        if value in {"", ".", ".."} or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
             raise FileNotFoundError(f"Invalid Nexus run identifier: {value}")
 
     @staticmethod

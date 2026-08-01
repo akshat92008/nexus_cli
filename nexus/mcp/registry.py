@@ -9,7 +9,7 @@ from nexus.mcp.client import MCPClient
 class MCPToolRegistry:
     """
     Integrates dynamic MCP tools into the main agent tool registry.
-    
+
     Allows the agent to view and execute MCP tools just like built-in tools.
     """
 

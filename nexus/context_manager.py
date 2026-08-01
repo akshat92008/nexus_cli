@@ -19,6 +19,7 @@ from pathlib import Path
 @dataclass
 class FileContext:
     """Tracked context about a file."""
+
     path: str
     last_accessed: str = ""
     access_count: int = 0
@@ -38,9 +39,10 @@ class FileContext:
 @dataclass
 class ArchitectureMap:
     """High-level understanding of the project structure."""
+
     project_root: str = ""
-    project_type: str = ""          # python, javascript, rust, go, etc.
-    framework: str = ""             # fastapi, next.js, django, etc.
+    project_type: str = ""  # python, javascript, rust, go, etc.
+    framework: str = ""  # fastapi, next.js, django, etc.
     entry_points: list[str] = field(default_factory=list)
     config_files: list[str] = field(default_factory=list)
     test_directories: list[str] = field(default_factory=list)
@@ -63,29 +65,47 @@ class ArchitectureMap:
 # ── Language Detection ───────────────────────────────────────────────────────
 
 _EXTENSION_LANGUAGE = {
-    ".py": "python", ".pyx": "python", ".pyi": "python",
-    ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript",
-    ".ts": "typescript", ".tsx": "typescript",
+    ".py": "python",
+    ".pyx": "python",
+    ".pyi": "python",
+    ".js": "javascript",
+    ".jsx": "javascript",
+    ".mjs": "javascript",
+    ".ts": "typescript",
+    ".tsx": "typescript",
     ".rs": "rust",
     ".go": "go",
     ".java": "java",
-    ".kt": "kotlin", ".kts": "kotlin",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
     ".swift": "swift",
-    ".c": "c", ".h": "c",
-    ".cpp": "cpp", ".hpp": "cpp", ".cc": "cpp",
+    ".c": "c",
+    ".h": "c",
+    ".cpp": "cpp",
+    ".hpp": "cpp",
+    ".cc": "cpp",
     ".cs": "csharp",
     ".rb": "ruby",
     ".php": "php",
     ".dart": "dart",
-    ".ex": "elixir", ".exs": "elixir",
+    ".ex": "elixir",
+    ".exs": "elixir",
     ".scala": "scala",
-    ".r": "r", ".R": "r",
-    ".sh": "bash", ".bash": "bash", ".zsh": "bash",
+    ".r": "r",
+    ".R": "r",
+    ".sh": "bash",
+    ".bash": "bash",
+    ".zsh": "bash",
     ".sql": "sql",
-    ".html": "html", ".htm": "html",
-    ".css": "css", ".scss": "scss", ".sass": "sass",
-    ".json": "json", ".jsonc": "json",
-    ".yaml": "yaml", ".yml": "yaml",
+    ".html": "html",
+    ".htm": "html",
+    ".css": "css",
+    ".scss": "scss",
+    ".sass": "sass",
+    ".json": "json",
+    ".jsonc": "json",
+    ".yaml": "yaml",
+    ".yml": "yaml",
     ".toml": "toml",
     ".md": "markdown",
     ".xml": "xml",
@@ -126,12 +146,39 @@ _FRAMEWORK_INDICATORS = {
 }
 
 IGNORE_DIRS = {
-    ".git", "__pycache__", "node_modules", ".next", ".venv", "venv",
-    "dist", "build", ".cache", ".tox", ".mypy_cache", ".pytest_cache",
-    "env", ".env", ".idea", ".vscode", "target", "coverage",
-    ".nexusai", ".ruff_cache", ".nuxt", ".output", ".turbo",
-    "Library", "Applications", "Pictures", "Music", "Movies", "Downloads",
-    "System", "Volumes", ".Trash", ".DocumentRevisions-V100",
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".next",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".cache",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    "env",
+    ".env",
+    ".idea",
+    ".vscode",
+    "target",
+    "coverage",
+    ".nexusai",
+    ".ruff_cache",
+    ".nuxt",
+    ".output",
+    ".turbo",
+    "Library",
+    "Applications",
+    "Pictures",
+    "Music",
+    "Movies",
+    "Downloads",
+    "System",
+    "Volumes",
+    ".Trash",
+    ".DocumentRevisions-V100",
 }
 
 
@@ -307,7 +354,9 @@ class ContextManager:
                 parts.append(f"functions: {', '.join(functions[:8])}")
 
         elif lang in ("javascript", "typescript"):
-            exports = re.findall(r"export\s+(?:default\s+)?(?:function|class|const|let|var)\s+(\w+)", content)
+            exports = re.findall(
+                r"export\s+(?:default\s+)?(?:function|class|const|let|var)\s+(\w+)", content
+            )
             if exports:
                 parts.append(f"exports: {', '.join(exports[:8])}")
 
@@ -352,8 +401,13 @@ class ContextManager:
 
         # Config files are important
         if ctx.basename in (
-            "package.json", "pyproject.toml", "Cargo.toml", "go.mod",
-            "tsconfig.json", "Dockerfile", "docker-compose.yml",
+            "package.json",
+            "pyproject.toml",
+            "Cargo.toml",
+            "go.mod",
+            "tsconfig.json",
+            "Dockerfile",
+            "docker-compose.yml",
         ):
             score += 2.0
 
@@ -410,9 +464,20 @@ class ContextManager:
 
         # Find entry points
         entry_candidates = [
-            "main.py", "app.py", "run.py", "manage.py", "__main__.py",
-            "index.js", "index.ts", "main.js", "main.ts", "app.js", "app.ts",
-            "main.rs", "main.go", "Program.cs",
+            "main.py",
+            "app.py",
+            "run.py",
+            "manage.py",
+            "__main__.py",
+            "index.js",
+            "index.ts",
+            "main.js",
+            "main.ts",
+            "app.js",
+            "app.ts",
+            "main.rs",
+            "main.go",
+            "Program.cs",
         ]
         for candidate in entry_candidates:
             if (root / candidate).exists():
@@ -423,10 +488,19 @@ class ContextManager:
 
         # Find config files
         config_candidates = [
-            "package.json", "pyproject.toml", "Cargo.toml", "go.mod",
-            "tsconfig.json", "Dockerfile", "docker-compose.yml",
-            ".eslintrc.json", ".prettierrc", "tailwind.config.js",
-            "vite.config.ts", "next.config.js", "webpack.config.js",
+            "package.json",
+            "pyproject.toml",
+            "Cargo.toml",
+            "go.mod",
+            "tsconfig.json",
+            "Dockerfile",
+            "docker-compose.yml",
+            ".eslintrc.json",
+            ".prettierrc",
+            "tailwind.config.js",
+            "vite.config.ts",
+            "next.config.js",
+            "webpack.config.js",
         ]
         for cfg in config_candidates:
             if (root / cfg).exists():
@@ -446,11 +520,21 @@ class ContextManager:
             if src_path.is_dir():
                 try:
                     for item in src_path.iterdir():
-                        if item.is_dir() and item.name not in IGNORE_DIRS and not item.name.startswith("."):
+                        if (
+                            item.is_dir()
+                            and item.name not in IGNORE_DIRS
+                            and not item.name.startswith(".")
+                        ):
                             try:
-                                files = [f.name for f in item.iterdir() if f.is_file() and f.suffix in _EXTENSION_LANGUAGE]
+                                files = [
+                                    f.name
+                                    for f in item.iterdir()
+                                    if f.is_file() and f.suffix in _EXTENSION_LANGUAGE
+                                ]
                                 if files:
-                                    arch.modules[item.name] = files[:10]  # Cap at 10 files per module
+                                    arch.modules[item.name] = files[
+                                        :10
+                                    ]  # Cap at 10 files per module
                             except (PermissionError, OSError):
                                 pass
                 except (PermissionError, OSError):
@@ -472,7 +556,9 @@ class ContextManager:
             except (PermissionError, OSError):
                 return
 
-            entries = [e for e in entries if e.name not in IGNORE_DIRS and not e.name.startswith(".")]
+            entries = [
+                e for e in entries if e.name not in IGNORE_DIRS and not e.name.startswith(".")
+            ]
             for i, entry in enumerate(entries[:30]):
                 if len(lines) >= 100:
                     break
@@ -491,17 +577,24 @@ class ContextManager:
     def _get_git_info(self) -> str:
         """Get compact git info."""
         import subprocess
+
         try:
             branch = subprocess.run(
                 ["git", "branch", "--show-current"],
-                capture_output=True, text=True, cwd=self.working_dir, timeout=5,
+                capture_output=True,
+                text=True,
+                cwd=self.working_dir,
+                timeout=5,
             )
             if branch.returncode != 0:
                 return ""
 
             status = subprocess.run(
                 ["git", "status", "--porcelain"],
-                capture_output=True, text=True, cwd=self.working_dir, timeout=5,
+                capture_output=True,
+                text=True,
+                cwd=self.working_dir,
+                timeout=5,
             )
             changed = len(status.stdout.strip().split("\n")) if status.stdout.strip() else 0
 
@@ -535,7 +628,9 @@ class ContextManager:
 
         if suffix in (".py", ".pyx", ".pyi"):
             # Python imports
-            for match in re.finditer(r"^(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))", content, re.MULTILINE):
+            for match in re.finditer(
+                r"^(?:from\s+([\w.]+)\s+import|import\s+([\w.]+))", content, re.MULTILINE
+            ):
                 imp = match.group(1) or match.group(2)
                 if imp:
                     imports.append(imp)

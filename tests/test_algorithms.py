@@ -1,6 +1,7 @@
 """
 Tests for nexus.algorithms — covers binary_search with edge cases.
 """
+
 import sys
 from pathlib import Path
 

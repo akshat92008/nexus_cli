@@ -30,8 +30,8 @@ from pathlib import Path
 
 from nexus.paths import nexus_home
 
-_tool_working_dir = contextvars.ContextVar('tool_working_dir', default=None)
-_tool_history = contextvars.ContextVar('tool_history', default=None)
+_tool_working_dir = contextvars.ContextVar("tool_working_dir", default=None)
+_tool_history = contextvars.ContextVar("tool_history", default=None)
 
 
 @contextmanager
@@ -47,12 +47,15 @@ def tool_context(working_dir: str, history=None):
         if token_hist is not None:
             _tool_history.reset(token_hist)
 
+
 def get_history():
     history = _tool_history.get()
     if history is None:
         from nexus.history import FileHistory
+
         return FileHistory()
     return history
+
 
 # ── Tool definitions (OpenAI function-calling format) ────────────────────────
 
@@ -402,9 +405,7 @@ TOOL_DEFINITIONS = [
                     },
                     "require_os_isolation": {
                         "type": "boolean",
-                        "description": (
-                            "Fail closed unless a native OS sandbox is available."
-                        ),
+                        "description": ("Fail closed unless a native OS sandbox is available."),
                         "default": False,
                     },
                 },
@@ -823,113 +824,165 @@ TOOL_DEFINITIONS.extend(
     ],
 )
 
-TOOL_DEFINITIONS.extend([
-    {
-        "type": "function",
-        "function": {
-            "name": "github_list_issues",
-            "description": "List open issues in the GitHub repository.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum number of issues to list."
-                    }
-                },
-                "required": []
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "github_view_issue",
-            "description": "View a specific GitHub issue and its comments.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "number": {
-                        "type": "string",
-                        "description": "The issue number to view."
-                    }
-                },
-                "required": ["number"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "github_create_pr",
-            "description": "Create a Pull Request on GitHub for the current branch. DANGEROUS: Always verify tests pass before calling this.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "title": {
-                        "type": "string",
-                        "description": "The title of the PR."
+TOOL_DEFINITIONS.extend(
+    [
+        {
+            "type": "function",
+            "function": {
+                "name": "github_list_issues",
+                "description": "List open issues in the GitHub repository.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "limit": {
+                            "type": "integer",
+                            "description": "Maximum number of issues to list.",
+                        }
                     },
-                    "body": {
-                        "type": "string",
-                        "description": "The description body of the PR."
-                    },
-                    "base": {
-                        "type": "string",
-                        "description": "The base branch to merge into (optional, defaults to repo default)."
-                    }
+                    "required": [],
                 },
-                "required": ["title", "body"]
-            }
-        }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_dashboard",
-            "description": "Generate an HTML regression dashboard from a benchmark JSON result file.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "input_path": {
-                        "type": "string",
-                        "description": "Path to the JSON benchmark result file."
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "github_view_issue",
+                "description": "View a specific GitHub issue and its comments.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "number": {"type": "string", "description": "The issue number to view."}
                     },
-                    "output_path": {
-                        "type": "string",
-                        "description": "Path where the HTML dashboard should be written."
-                    }
+                    "required": ["number"],
                 },
-                "required": ["input_path", "output_path"]
-            }
-        }
-    }
-])
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "github_create_pr",
+                "description": "Create a Pull Request on GitHub for the current branch. DANGEROUS: Always verify tests pass before calling this.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string", "description": "The title of the PR."},
+                        "body": {
+                            "type": "string",
+                            "description": "The description body of the PR.",
+                        },
+                        "base": {
+                            "type": "string",
+                            "description": "The base branch to merge into (optional, defaults to repo default).",
+                        },
+                    },
+                    "required": ["title", "body"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "generate_dashboard",
+                "description": "Generate an HTML regression dashboard from a benchmark JSON result file.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "input_path": {
+                            "type": "string",
+                            "description": "Path to the JSON benchmark result file.",
+                        },
+                        "output_path": {
+                            "type": "string",
+                            "description": "Path where the HTML dashboard should be written.",
+                        },
+                    },
+                    "required": ["input_path", "output_path"],
+                },
+            },
+        },
+    ]
+)
 
 # ── Ignore patterns ─────────────────────────────────────────────────────────
 
 IGNORE_DIRS = {
-    ".git", "__pycache__", "node_modules", ".next", ".venv", "venv",
-    "dist", "build", ".cache", ".tox", ".mypy_cache", ".pytest_cache",
-    "env", ".env", ".idea", ".vscode", "target", "coverage",
-    ".nexusai", ".ruff_cache", ".nuxt", ".output", ".turbo",
-    "Library", "Applications", "Pictures", "Music", "Movies", "Downloads",
-    "System", "Volumes", ".Trash", ".DocumentRevisions-V100",
+    ".git",
+    "__pycache__",
+    "node_modules",
+    ".next",
+    ".venv",
+    "venv",
+    "dist",
+    "build",
+    ".cache",
+    ".tox",
+    ".mypy_cache",
+    ".pytest_cache",
+    "env",
+    ".env",
+    ".idea",
+    ".vscode",
+    "target",
+    "coverage",
+    ".nexusai",
+    ".ruff_cache",
+    ".nuxt",
+    ".output",
+    ".turbo",
+    "Library",
+    "Applications",
+    "Pictures",
+    "Music",
+    "Movies",
+    "Downloads",
+    "System",
+    "Volumes",
+    ".Trash",
+    ".DocumentRevisions-V100",
 }
 
 IGNORE_EXTENSIONS = {
-    ".pyc", ".pyo", ".so", ".dylib", ".dll", ".exe",
-    ".o", ".a", ".class", ".jar",
-    ".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp",
-    ".woff", ".woff2", ".ttf", ".eot",
-    ".zip", ".tar", ".gz", ".bz2", ".7z",
-    ".pdf", ".doc", ".docx",
+    ".pyc",
+    ".pyo",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".exe",
+    ".o",
+    ".a",
+    ".class",
+    ".jar",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".svg",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
+    ".zip",
+    ".tar",
+    ".gz",
+    ".bz2",
+    ".7z",
+    ".pdf",
+    ".doc",
+    ".docx",
 }
 
 
 def _should_ignore(path: Path) -> bool:
     """Check if a path should be ignored."""
-    if path.name.startswith(".") and path.name not in (".env", ".gitignore", ".eslintrc", ".prettierrc", ".nexusai"):
+    if path.name.startswith(".") and path.name not in (
+        ".env",
+        ".gitignore",
+        ".eslintrc",
+        ".prettierrc",
+        ".nexusai",
+    ):
         return True
     if path.is_dir() and path.name in IGNORE_DIRS:
         return True
@@ -972,16 +1025,16 @@ def _run_git(args: list[str], cwd: str | None = None) -> tuple[bool, str]:
 def _strip_html(html_text: str) -> str:
     """Very simple HTML-to-text converter."""
     # Remove script and style elements
-    text = re.sub(r'<(script|style)[^>]*>.*?</\1>', '', html_text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html_text, flags=re.DOTALL | re.IGNORECASE)
     # Remove HTML tags
-    text = re.sub(r'<[^>]+>', ' ', text)
+    text = re.sub(r"<[^>]+>", " ", text)
     # Decode HTML entities
     text = html.unescape(text)
     # Collapse whitespace
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r"\s+", " ", text)
     # Trim lines
-    lines = [line.strip() for line in text.split('\n')]
-    text = '\n'.join(line for line in lines if line)
+    lines = [line.strip() for line in text.split("\n")]
+    text = "\n".join(line for line in lines if line)
     return text.strip()
 
 
@@ -1006,6 +1059,7 @@ def _resolve_path(path_str: str) -> Path:
 
 
 # ── Tool implementations ────────────────────────────────────────────────────
+
 
 def tool_read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
     """Read file contents with line numbers."""
@@ -1109,8 +1163,7 @@ def tool_edit_file(path: str, old_text: str, new_text: str) -> str:
             similar = [
                 f"L{index + 1}: {line.strip()[:80]}"
                 for index, line in enumerate(content_lines)
-                if first_line.strip() in line.strip()
-                or line.strip() in first_line.strip()
+                if first_line.strip() in line.strip() or line.strip() in first_line.strip()
             ]
             hint = f"\nSimilar lines in {p.name}:\n" + "\n".join(similar[:5]) if similar else ""
             return f"❌ Text not found in {p.name}. Make sure old_text matches exactly.{hint}"
@@ -1203,18 +1256,18 @@ def tool_multi_edit(edits: list[dict]) -> str:
         path = edit.get("path", "")
         old_text = edit.get("old_text", "")
         if not path:
-            return f"❌ Multi-edit aborted: edit #{i+1} is missing 'path'. No files changed."
+            return f"❌ Multi-edit aborted: edit #{i + 1} is missing 'path'. No files changed."
         try:
             p = _resolve_path(path)
         except Exception as exc:
-            return f"❌ Multi-edit aborted: edit #{i+1} path error — {exc}. No files changed."
+            return f"❌ Multi-edit aborted: edit #{i + 1} path error — {exc}. No files changed."
         if not p.exists():
-            return f"❌ Multi-edit aborted: edit #{i+1} file not found: {path}. No files changed."
+            return f"❌ Multi-edit aborted: edit #{i + 1} file not found: {path}. No files changed."
         content = p.read_text(encoding="utf-8")
         if old_text and old_text not in content:
             first_line = old_text.splitlines()[0][:60] if old_text.strip() else old_text[:60]
             return (
-                f"❌ Multi-edit aborted: edit #{i+1} old_text not found in {p.name} "
+                f"❌ Multi-edit aborted: edit #{i + 1} old_text not found in {p.name} "
                 f"(starts with: {first_line!r}). No files changed."
             )
 
@@ -1233,6 +1286,7 @@ def tool_multi_edit(edits: list[dict]) -> str:
         if result.startswith("❌"):
             # Roll back every applied change by restoring from snapshot
             import shutil as _shutil
+
             for applied_path in applied_paths:
                 snap = snapshots.get(applied_path)
                 if snap and Path(str(snap)).exists():
@@ -1241,12 +1295,12 @@ def tool_multi_edit(edits: list[dict]) -> str:
                     except Exception:
                         pass
             return (
-                f"❌ Multi-edit aborted at edit #{i+1}: {result}. "
+                f"❌ Multi-edit aborted at edit #{i + 1}: {result}. "
                 f"All {len(applied_paths)} preceding edits have been rolled back."
             )
         applied_paths.append(str(p))
         history.record_change(str(p), "multi_edit", snapshots.get(str(p)))
-        results.append(f"  {i+1}. {result}")
+        results.append(f"  {i + 1}. {result}")
 
     success_count = sum(1 for r in results if "✅" in r)
     header = f"📝 Multi-edit: {success_count}/{len(edits)} succeeded"
@@ -1265,7 +1319,9 @@ def tool_file_info(path: str) -> str:
         info.append(f"  Type:      {'directory' if p.is_dir() else 'file'}")
         info.append(f"  Path:      {p}")
         info.append(f"  Size:      {_format_size(stat.st_size)}")
-        info.append(f"  Modified:  {datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')}")
+        info.append(
+            f"  Modified:  {datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')}"
+        )
         info.append(f"  Perms:     {oct(stat.st_mode)[-3:]}")
 
         if p.is_file():
@@ -1308,7 +1364,8 @@ def tool_diff_files(file_a: str, file_b: str) -> str:
             lines_b = f.readlines()
 
         diff = difflib.unified_diff(
-            lines_a, lines_b,
+            lines_a,
+            lines_b,
             fromfile=str(pa.name),
             tofile=str(pb.name),
         )
@@ -1378,6 +1435,7 @@ def tool_run_process(
 # Background processes tracking
 _bg_processes: dict[int, dict] = {}
 
+
 def tool_process_run(
     command: str,
     cwd: str | None = None,
@@ -1425,8 +1483,9 @@ def tool_process_run(
             or key.startswith("NEXUS_")
         }
         safe_env["NEXUS_SANDBOX"] = "restricted-background"
-        
+
         from nexus.sandbox import CommandSpec, SandboxBackend, SandboxRunner
+
         sandbox = SandboxRunner(Path(work_dir))
         spec = CommandSpec.create(argv, work_dir, timeout_seconds=0, network=network)
         backend = sandbox.backend()
@@ -1514,7 +1573,9 @@ def tool_process_stop(pid: int) -> str:
         return f"❌ PID {pid} did not terminate within 5 seconds"
 
 
-def tool_search_code(pattern: str, directory: str | None = None, file_pattern: str | None = None) -> str:
+def tool_search_code(
+    pattern: str, directory: str | None = None, file_pattern: str | None = None
+) -> str:
     """Search for a pattern across files."""
     try:
         search_dir = _resolve_path(directory or _tool_working_dir.get() or os.getcwd())
@@ -1563,7 +1624,9 @@ def tool_search_code(pattern: str, directory: str | None = None, file_pattern: s
         return f"❌ Error searching: {e}"
 
 
-def tool_list_directory(path: str | None = None, recursive: bool = False, max_depth: int = 3) -> str:
+def tool_list_directory(
+    path: str | None = None, recursive: bool = False, max_depth: int = 3
+) -> str:
     """List directory contents."""
     try:
         dir_path = _resolve_path(path or _tool_working_dir.get() or os.getcwd())
@@ -1713,10 +1776,7 @@ def tool_repo_impact(paths: list[str]) -> str:
 
         graph = RepoGraph(_tool_working_dir.get() or os.getcwd())
         graph.build()
-        dependencies = {
-            str(path): graph.dependencies(path)
-            for path in paths
-        }
+        dependencies = {str(path): graph.dependencies(path) for path in paths}
         return "🧭 Repository impact analysis\n" + json.dumps(
             {
                 "paths": paths,
@@ -1813,9 +1873,7 @@ def tool_repo_navigate(
                     "engine": "unavailable",
                     "operation": operation,
                     "error": str(lsp_error),
-                    "guidance": (
-                        f"Install a {language} language server for precise {operation}."
-                    ),
+                    "guidance": (f"Install a {language} language server for precise {operation}."),
                 },
                 indent=2,
             )
@@ -1938,6 +1996,7 @@ def tool_browser_check(
 
 # ─── GIT TOOL IMPLEMENTATIONS ───────────────────────────────────────────
 
+
 def tool_git_status(cwd: str | None = None) -> str:
     """Show comprehensive git status."""
     work_dir = str(_resolve_path(cwd or _tool_working_dir.get() or os.getcwd()))
@@ -2033,7 +2092,11 @@ def tool_git_diff(
 
     # Truncate if massive
     if len(full_diff) > 15000:
-        full_diff = full_diff[:7000] + f"\n\n... ({len(full_diff) - 14000} chars truncated) ...\n\n" + full_diff[-7000:]
+        full_diff = (
+            full_diff[:7000]
+            + f"\n\n... ({len(full_diff) - 14000} chars truncated) ...\n\n"
+            + full_diff[-7000:]
+        )
 
     parts = []
     if stat_output:
@@ -2127,6 +2190,7 @@ def tool_git_branch(
 
 # ─── WEB TOOL IMPLEMENTATIONS ───────────────────────────────────────────
 
+
 class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Revalidate every redirect before urllib follows it."""
 
@@ -2144,9 +2208,7 @@ class _PolicyRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 
 def _safe_urlopen(request: urllib.request.Request, *, timeout: float, policy):
-    opener = urllib.request.build_opener(
-        _PolicyRedirectHandler(policy, request.full_url)
-    )
+    opener = urllib.request.build_opener(_PolicyRedirectHandler(policy, request.full_url))
     return opener.open(request, timeout=timeout)
 
 
@@ -2236,7 +2298,9 @@ def tool_web_search(query: str, max_results: int = 5) -> str:
                 actual_url = link
 
             if title and actual_url:
-                results.append(f"  {len(results)+1}. {title}\n     {actual_url}\n     {snippet}\n")
+                results.append(
+                    f"  {len(results) + 1}. {title}\n     {actual_url}\n     {snippet}\n"
+                )
 
         if not results:
             return f"🔍 No results found for: {query}"
@@ -2250,9 +2314,11 @@ def tool_web_search(query: str, max_results: int = 5) -> str:
 
 # ── GitHub Tools ─────────────────────────────────────────────────────────────
 
+
 def tool_github_list_issues(limit: int = 10) -> str:
     try:
         from nexus.github import GitHubIntegration
+
         issues = GitHubIntegration.list_issues(limit=limit)
         if not issues:
             return "No open issues found."
@@ -2263,9 +2329,11 @@ def tool_github_list_issues(limit: int = 10) -> str:
     except Exception as e:
         return f"❌ GitHub Error: {e}"
 
+
 def tool_github_view_issue(number: str) -> str:
     try:
         from nexus.github import GitHubIntegration
+
         issue = GitHubIntegration.view_issue(number)
         if not issue:
             return f"❌ Issue #{number} not found."
@@ -2283,21 +2351,26 @@ def tool_github_view_issue(number: str) -> str:
     except Exception as e:
         return f"❌ GitHub Error: {e}"
 
+
 def tool_generate_dashboard(input_path: str, output_path: str) -> str:
     try:
         from nexus.dashboard import RegressionDashboard
+
         RegressionDashboard.generate(input_path, output_path)
         return f"✅ Dashboard successfully generated at {output_path}"
     except Exception as e:
         return f"❌ Failed to generate dashboard: {e}"
 
+
 def tool_github_create_pr(title: str, body: str, base: str = "") -> str:
     try:
         from nexus.github import GitHubIntegration
+
         url = GitHubIntegration.create_pull_request(title, body, base)
         return f"✅ Pull request created successfully: {url}"
     except Exception as e:
         return f"❌ GitHub Error: {e}"
+
 
 TOOL_DISPATCH = {
     # File tools
@@ -2346,6 +2419,7 @@ TOOL_DISPATCH = {
     "generate_dashboard": tool_generate_dashboard,
 }
 
+
 def normalize_tool_arguments(name: str, args: dict) -> dict:
     """Normalize common tool parameter name variations from LLMs."""
     args = dict(args)
@@ -2358,9 +2432,20 @@ def normalize_tool_arguments(name: str, args: dict) -> dict:
         if "path" in args and isinstance(args["path"], str):
             p = args["path"]
             import getpass
+
             curr_user = getpass.getuser()
-            p = re.sub(r"^/Users/\[?(?:username|user|yourname|name)\]?/", f"/Users/{curr_user}/", p, flags=re.I)
-            p = re.sub(r"^/home/\[?(?:username|user|yourname|name)\]?/", f"/home/{curr_user}/", p, flags=re.I)
+            p = re.sub(
+                r"^/Users/\[?(?:username|user|yourname|name)\]?/",
+                f"/Users/{curr_user}/",
+                p,
+                flags=re.I,
+            )
+            p = re.sub(
+                r"^/home/\[?(?:username|user|yourname|name)\]?/",
+                f"/home/{curr_user}/",
+                p,
+                flags=re.I,
+            )
             args["path"] = p
     elif name in ("run_command", "process_run"):
         if "command" not in args:
@@ -2394,7 +2479,6 @@ def normalize_tool_arguments(name: str, args: dict) -> dict:
                     args["query"] = args.pop(alt)
                     break
     return args
-
 
 
 def execute_tool(name: str, arguments: dict) -> str:

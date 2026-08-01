@@ -178,11 +178,7 @@ class SandboxRunner:
         selected = SandboxBackend.RESTRICTED
         if system == "linux" and shutil.which("bwrap") and self._probe_bubblewrap():
             selected = SandboxBackend.BUBBLEWRAP
-        elif (
-            system == "darwin"
-            and shutil.which("sandbox-exec")
-            and self._probe_macos_sandbox()
-        ):
+        elif system == "darwin" and shutil.which("sandbox-exec") and self._probe_macos_sandbox():
             selected = SandboxBackend.MACOS
         type(self)._backend_cache = selected
         return selected
@@ -293,11 +289,7 @@ class SandboxRunner:
     ) -> CommandResult:
         """Compatibility path for a reviewed shell string."""
         shell = "/bin/sh" if os.name != "nt" else "cmd.exe"
-        argv = (
-            [shell, "-c", command]
-            if os.name != "nt"
-            else [shell, "/d", "/s", "/c", command]
-        )
+        argv = [shell, "-c", command] if os.name != "nt" else [shell, "/d", "/s", "/c", command]
         result = self.run(
             CommandSpec.create(
                 argv,
@@ -348,14 +340,14 @@ class SandboxRunner:
             command.extend(["--tmpfs", "/tmp"])
         command.extend(
             [
-            "--bind",
-            str(self.workspace),
-            str(self.workspace),
-            "--chdir",
-            str(cwd),
-            "--setenv",
-            "HOME",
-            str(self.workspace),
+                "--bind",
+                str(self.workspace),
+                str(self.workspace),
+                "--chdir",
+                str(cwd),
+                "--setenv",
+                "HOME",
+                str(self.workspace),
             ]
         )
         if not spec.network:

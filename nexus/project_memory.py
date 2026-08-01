@@ -30,6 +30,7 @@ from pathlib import Path
 @dataclass
 class ProjectRules:
     """Parsed project rules from NEXUS.md."""
+
     raw_content: str = ""
     conventions: list[str] = field(default_factory=list)
     safety_rules: dict = field(default_factory=dict)

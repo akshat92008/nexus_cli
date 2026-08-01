@@ -23,7 +23,7 @@ class FinalReportGenerator:
 
         status = data.get("status", "UNKNOWN")
         objective = data.get("objective", "No objective provided")
-        
+
         lines = []
         lines.append("# Nexus Run Report")
         lines.append(f"**Status:** {status}")
@@ -73,23 +73,23 @@ class FinalReportGenerator:
         # Analytics
         lines.append("## Trace & Analytics")
         costs = data.get("costs", {})
-        
+
         total_usd = costs.get("estimated_cost_usd", 0.0)
-        
+
         lines.append(f"- **Cost:** ${total_usd:.4f}")
-        
+
         providers = data.get("model_providers", [])
         if providers:
             lines.append(f"- **Models:** {', '.join(providers)}")
-            
+
         network = data.get("network_calls", [])
         if network:
             lines.append(f"- **Network Calls:** {len(network)}")
-            
+
         perms = data.get("permissions_used", [])
         if perms:
             lines.append(f"- **Permissions:** {', '.join(perms)}")
-            
+
         lines.append("")
 
         # Risks

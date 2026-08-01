@@ -1,9 +1,7 @@
-import pytest
 import sys
-import os
-import time
-from pathlib import Path
-from nexus.mcp.client import MCPConnection, MCPServerConfig, MCPTool
+
+from nexus.mcp.client import MCPConnection, MCPServerConfig
+
 
 def test_mcp_actual_subprocess(tmp_path):
     # Create a real python script that implements a minimal MCP server
@@ -58,22 +56,23 @@ for line in sys.stdin:
 """)
 
     config = MCPServerConfig(
-        name="actual_test_server", 
-        command=[sys.executable, str(server_script)]
+        name="actual_test_server", command=[sys.executable, str(server_script)]
     )
     conn = MCPConnection(config)
-    
+
     assert conn.connect() is True
     assert conn.connected is True
-    
+
     # Check that it actually discovered the tool via the subprocess stdout
     assert len(conn.tools) == 1
     assert conn.tools[0].name == "actual_tool"
-    
+
     # Actually call the tool and get the result
     res = conn.call_tool("actual_tool", {})
-    assert "Actual tool execution result!" in res.get("text", "") or "Actual tool execution result!" in str(res)
-    
+    assert "Actual tool execution result!" in res.get(
+        "text", ""
+    ) or "Actual tool execution result!" in str(res)
+
     # Cleanup
     if conn._process:
         conn._process.terminate()

@@ -86,10 +86,11 @@ def _is_allowed_web_origin(origin: str | None) -> bool:
     if not origin:
         return True
     parsed = urlparse(origin)
-    return (
-        parsed.scheme in {"http", "https"}
-        and parsed.hostname in {"127.0.0.1", "::1", "localhost"}
-    )
+    return parsed.scheme in {"http", "https"} and parsed.hostname in {
+        "127.0.0.1",
+        "::1",
+        "localhost",
+    }
 
 
 def _get_agent(session_id: str) -> Agent:
@@ -124,22 +125,27 @@ def _run_agent_locked(session_id: str, agent: Agent, message: str):
 
 # ─── HTTP Endpoints ──────────────────────────────────────────────────────────
 
+
 async def index(request):
     """Serve the main web UI."""
     static_dir = Path(__file__).parent / "static"
     html = (static_dir / "index.html").read_text(encoding="utf-8")
-    html = html.replace("<head>", f'<head>\\n    <script>window.CSRF_TOKEN="{_web_token}";</script>')
+    html = html.replace(
+        "<head>", f'<head>\\n    <script>window.CSRF_TOKEN="{_web_token}";</script>'
+    )
     return HTMLResponse(html)
 
 
 async def api_models(request):
     """List all available models."""
     models = list_models()
-    return JSONResponse({
-        "models": models,
-        "default": _default_model,
-        "aliases": ALIASES,
-    })
+    return JSONResponse(
+        {
+            "models": models,
+            "default": _default_model,
+            "aliases": ALIASES,
+        }
+    )
 
 
 async def api_history(request):
@@ -158,7 +164,17 @@ async def api_files(request):
             return JSONResponse({"error": "Not a directory"}, status_code=400)
 
         items = []
-        ignore_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv", ".next", "dist", "build", ".nexusai"}
+        ignore_dirs = {
+            ".git",
+            "__pycache__",
+            "node_modules",
+            ".venv",
+            "venv",
+            ".next",
+            "dist",
+            "build",
+            ".nexusai",
+        }
 
         for entry in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
             if entry.name.startswith(".") and entry.name != ".gitignore":
@@ -177,11 +193,13 @@ async def api_files(request):
                 item["size"] = entry.stat().st_size
             items.append(item)
 
-        return JSONResponse({
-            "path": str(p),
-            "parent": str(p.parent) if str(p) != str(p.parent) else None,
-            "items": items,
-        })
+        return JSONResponse(
+            {
+                "path": str(p),
+                "parent": str(p.parent) if str(p) != str(p.parent) else None,
+                "items": items,
+            }
+        )
     except PermissionError as e:
         return JSONResponse({"error": str(e)}, status_code=403)
     except Exception as e:
@@ -204,13 +222,15 @@ async def api_file_content(request):
             return JSONResponse({"error": "File too large"}, status_code=400)
 
         content = p.read_text(encoding="utf-8", errors="replace")
-        return JSONResponse({
-            "path": str(p),
-            "name": p.name,
-            "content": content,
-            "size": p.stat().st_size,
-            "lines": content.count("\n") + 1,
-        })
+        return JSONResponse(
+            {
+                "path": str(p),
+                "name": p.name,
+                "content": content,
+                "size": p.stat().st_size,
+                "lines": content.count("\n") + 1,
+            }
+        )
     except PermissionError as e:
         return JSONResponse({"error": str(e)}, status_code=403)
     except Exception as e:
@@ -247,11 +267,13 @@ async def api_chat(request):
         None, _run_agent_locked, session_id, agent, message
     )
 
-    return JSONResponse({
-        "content": content,
-        "events": events,
-        "model": agent.model_cfg["name"],
-    })
+    return JSONResponse(
+        {
+            "content": content,
+            "events": events,
+            "model": agent.model_cfg["name"],
+        }
+    )
 
 
 async def api_tools(request):
@@ -259,17 +281,21 @@ async def api_tools(request):
     tools = []
     for td in TOOL_DEFINITIONS:
         fn = td["function"]
-        tools.append({
-            "name": fn["name"],
-            "description": fn["description"],
-        })
+        tools.append(
+            {
+                "name": fn["name"],
+                "description": fn["description"],
+            }
+        )
     return JSONResponse({"tools": tools, "count": len(tools)})
 
 
 async def api_pending_edits(request):
     session_id = request.query_params.get("session_id", "default")
     agent = _get_agent(session_id)
-    return JSONResponse({"summary": agent.pending_edits_summary(), "ids": list(agent._pending_edits)})
+    return JSONResponse(
+        {"summary": agent.pending_edits_summary(), "ids": list(agent._pending_edits)}
+    )
 
 
 async def api_edit_decision(request):
@@ -291,6 +317,7 @@ async def api_edit_decision(request):
 
 
 # ─── WebSocket Endpoint ─────────────────────────────────────────────────────
+
 
 async def ws_chat(websocket: WebSocket):
     """WebSocket endpoint for real-time streaming chat."""
@@ -333,13 +360,17 @@ async def ws_chat(websocket: WebSocket):
                 model = data.get("model", "")
                 agent = _get_agent(session_id)
                 if agent.set_model(model):
-                    await websocket.send_json({
-                        "type": "model_set",
-                        "model": agent.model_cfg["name"],
-                        "model_id": agent.model_cfg["id"],
-                    })
+                    await websocket.send_json(
+                        {
+                            "type": "model_set",
+                            "model": agent.model_cfg["name"],
+                            "model_id": agent.model_cfg["id"],
+                        }
+                    )
                 else:
-                    await websocket.send_json({"type": "error", "content": f"Unknown model: {model}"})
+                    await websocket.send_json(
+                        {"type": "error", "content": f"Unknown model: {model}"}
+                    )
                 continue
 
             if msg_type == "clear":
@@ -356,7 +387,9 @@ async def ws_chat(websocket: WebSocket):
                     result, success = agent.reject_pending_edit(data.get("edit_id", ""))
                 else:
                     result, success = agent.pending_edits_summary(), True
-                await websocket.send_json({"type": "edit_decision", "content": result, "success": success})
+                await websocket.send_json(
+                    {"type": "edit_decision", "content": result, "success": success}
+                )
                 continue
 
             if msg_type == "new_chat":
@@ -365,6 +398,7 @@ async def ws_chat(websocket: WebSocket):
                     del _agents[session_id]
                     _agent_locks.pop(session_id, None)
                 import time
+
                 session_id = f"ws_{int(time.time())}"
                 await websocket.send_json({"type": "new_session", "session_id": session_id})
                 continue
@@ -390,20 +424,24 @@ async def ws_chat(websocket: WebSocket):
                     if event.get("type") == "model_trace":
                         await websocket.send_json(event)
                     else:
-                        await websocket.send_json({
-                            "type": "tool_call",
-                            "name": event.get("name", "unknown"),
-                            "args": event.get("args", {}),
-                            "result": event.get("result", ""),
-                            "success": event.get("success", False),
-                        })
+                        await websocket.send_json(
+                            {
+                                "type": "tool_call",
+                                "name": event.get("name", "unknown"),
+                                "args": event.get("args", {}),
+                                "result": event.get("result", ""),
+                                "success": event.get("success", False),
+                            }
+                        )
 
                 # Send final response
-                await websocket.send_json({
-                    "type": "response",
-                    "content": content,
-                    "model": agent.model_cfg["name"],
-                })
+                await websocket.send_json(
+                    {
+                        "type": "response",
+                        "content": content,
+                        "model": agent.model_cfg["name"],
+                    }
+                )
 
     except WebSocketDisconnect:
         pass
@@ -415,6 +453,7 @@ async def ws_chat(websocket: WebSocket):
 
 
 # ─── App Factory ─────────────────────────────────────────────────────────────
+
 
 def create_app(
     api_key: str,
@@ -455,7 +494,11 @@ def create_app(
         Route("/api/chat", api_chat, methods=["POST"]),
         Route("/api/tools", api_tools),
         Route("/api/pending-edits", api_pending_edits),
-        Route("/api/edits/{session_id:str}/{edit_id:str}/{action:str}", api_edit_decision, methods=["POST"]),
+        Route(
+            "/api/edits/{session_id:str}/{edit_id:str}/{action:str}",
+            api_edit_decision,
+            methods=["POST"],
+        ),
         WebSocketRoute("/ws", ws_chat),
         Mount("/static", StaticFiles(directory=str(static_dir)), name="static"),
     ]
@@ -465,7 +508,12 @@ def create_app(
     # Add CORS middleware for cross-origin access
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://127.0.0.1", "http://localhost", "http://127.0.0.1:3000", "http://localhost:3000"],
+        allow_origins=[
+            "http://127.0.0.1",
+            "http://localhost",
+            "http://127.0.0.1:3000",
+            "http://localhost:3000",
+        ],
         allow_methods=["*"],
         allow_headers=["*"],
     )

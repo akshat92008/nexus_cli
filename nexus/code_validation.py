@@ -42,10 +42,14 @@ class GeneratedCodeValidator:
             try:
                 path.relative_to(self.workspace_dir)
             except ValueError:
-                checks.append(CodeCheck(action.path, [], False, "path escapes verification workspace", None))
+                checks.append(
+                    CodeCheck(action.path, [], False, "path escapes verification workspace", None)
+                )
                 continue
             if not path.is_file():
-                checks.append(CodeCheck(action.path, [], False, "candidate file was not written", None))
+                checks.append(
+                    CodeCheck(action.path, [], False, "candidate file was not written", None)
+                )
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
             truncation = self._truncation_reason(path, text)
@@ -68,7 +72,9 @@ class GeneratedCodeValidator:
         if suffix == ".py":
             try:
                 ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-                return CodeCheck(str(path), ["python", "ast.parse"], True, "Python AST parse succeeded", 0)
+                return CodeCheck(
+                    str(path), ["python", "ast.parse"], True, "Python AST parse succeeded", 0
+                )
             except SyntaxError as exc:
                 return CodeCheck(str(path), ["python", "ast.parse"], False, str(exc), 1)
         if suffix == ".json":
@@ -88,13 +94,35 @@ class GeneratedCodeValidator:
         elif suffix == ".c" and shutil.which("cc"):
             command = ["cc", "-fsyntax-only", str(path)]
         elif suffix == ".rs" and shutil.which("rustc"):
-            output_path = str(Path(tempfile.gettempdir()) / f"nexus-{os.getpid()}-{path.stem}.rmeta")
-            command = ["rustc", "--crate-type", "lib", "--emit=metadata", "-o", output_path, str(path)]
+            output_path = str(
+                Path(tempfile.gettempdir()) / f"nexus-{os.getpid()}-{path.stem}.rmeta"
+            )
+            command = [
+                "rustc",
+                "--crate-type",
+                "lib",
+                "--emit=metadata",
+                "-o",
+                output_path,
+                str(path),
+            ]
         elif suffix in {".ts", ".tsx"}:
             # TypeScript needs project/module context; fail closed only on obvious truncation.
-            return CodeCheck(str(path), [], True, "No standalone TypeScript compiler context; structural checks passed", None)
+            return CodeCheck(
+                str(path),
+                [],
+                True,
+                "No standalone TypeScript compiler context; structural checks passed",
+                None,
+            )
         else:
-            return CodeCheck(str(path), [], True, "No compiler required or available; structural checks passed", None)
+            return CodeCheck(
+                str(path),
+                [],
+                True,
+                "No compiler required or available; structural checks passed",
+                None,
+            )
 
         try:
             result = subprocess.run(
@@ -108,13 +136,21 @@ class GeneratedCodeValidator:
             output = (result.stdout + result.stderr).strip() or "compiler produced no output"
             return CodeCheck(str(path), command, result.returncode == 0, output, result.returncode)
         except subprocess.TimeoutExpired:
-            return CodeCheck(str(path), command, False, f"compiler timed out after {self.timeout}s", None)
+            return CodeCheck(
+                str(path), command, False, f"compiler timed out after {self.timeout}s", None
+            )
         except OSError as exc:
             return CodeCheck(str(path), command, False, f"compiler could not run: {exc}", None)
 
     @staticmethod
     def _entrypoint_reason(path: Path, text: str, prompt: str) -> str:
-        needs_main = bool(re.search(r"\b(executable|standalone|entry\s*point|cli|server|program|main\s+function)\b", prompt, re.I))
+        needs_main = bool(
+            re.search(
+                r"\b(executable|standalone|entry\s*point|cli|server|program|main\s+function)\b",
+                prompt,
+                re.I,
+            )
+        )
         if not needs_main:
             return ""
         suffix = path.suffix.lower()
@@ -173,7 +209,19 @@ class GeneratedCodeValidator:
         if text.rstrip().endswith(("...", "…")):
             return "candidate ends with an ellipsis and appears truncated"
         suffix = path.suffix.lower()
-        if suffix in {".js", ".jsx", ".ts", ".tsx", ".go", ".rs", ".cpp", ".cc", ".cxx", ".c", ".java"}:
+        if suffix in {
+            ".js",
+            ".jsx",
+            ".ts",
+            ".tsx",
+            ".go",
+            ".rs",
+            ".cpp",
+            ".cc",
+            ".cxx",
+            ".c",
+            ".java",
+        }:
             scrubbed = re.sub(
                 r"//.*?$|/\*.*?\*/|'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|"
                 r"`(?:\\.|[^`\\])*`",
@@ -230,13 +278,17 @@ class GeneratedCodeValidator:
             ):
                 return "exact-output check failed: requested trailing newline is not emitted"
 
-        if suffix in {".js", ".mjs", ".cjs"} and re.search(r"\brecurs(?:ive|ively|ion)\b", prompt, re.I):
+        if suffix in {".js", ".mjs", ".cjs"} and re.search(
+            r"\brecurs(?:ive|ively|ion)\b", prompt, re.I
+        ):
             recursive_function: tuple[list[str], str] | None = None
             for match in re.finditer(r"function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{", text):
                 name = match.group(1)
-                signature = text[match.start():match.end()]
+                signature = text[match.start() : match.end()]
                 arg_text = signature.split("(", 1)[1].rsplit(")", 1)[0]
-                args = [item.split("=", 1)[0].strip() for item in arg_text.split(",") if item.strip()]
+                args = [
+                    item.split("=", 1)[0].strip() for item in arg_text.split(",") if item.strip()
+                ]
                 depth = 1
                 index = match.end()
                 while index < len(text) and depth:
@@ -245,7 +297,7 @@ class GeneratedCodeValidator:
                     elif text[index] == "}":
                         depth -= 1
                     index += 1
-                body = text[match.end():index - 1]
+                body = text[match.end() : index - 1]
                 if re.search(rf"\b{re.escape(name)}\s*\(", body):
                     recursive_function = (args, body)
                     break

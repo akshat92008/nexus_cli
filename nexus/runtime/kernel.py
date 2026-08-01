@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 # Shared outcome types (used by both engines and exported via nexus.execution)
 # ---------------------------------------------------------------------------
 
+
 class FailureKind(str, Enum):
     """Deterministic failure classes used to focus repair prompts."""
 
@@ -101,6 +102,7 @@ PlanReviewer = Callable[[ExecutionPlan], ReviewOutcome]
 # ExecutionKernel — interactive agentic loop
 # ---------------------------------------------------------------------------
 
+
 class ExecutionKernel:
     """The canonical interactive execution engine for the Nexus agent.
 
@@ -153,7 +155,9 @@ class ExecutionKernel:
         self.plan = plan
         self.ledger = ledger
         configured = int(plan.retry_policy.get("total_repairs", 5)) if plan else 5
-        self.max_total_repairs = max(0, configured if max_total_repairs is None else max_total_repairs)
+        self.max_total_repairs = max(
+            0, configured if max_total_repairs is None else max_total_repairs
+        )
         self.repairs = 0
 
     # ------------------------------------------------------------------
@@ -208,14 +212,10 @@ class ExecutionKernel:
         Yields events as they happen, and also calls registered event handlers.
         """
         if not self.state_machine.transition_to(RunState.EXECUTING):
-            yield self._create_and_emit(
-                ErrorEvent(message="Cannot start run from current state")
-            )
+            yield self._create_and_emit(ErrorEvent(message="Cannot start run from current state"))
             return
 
-        yield self._create_and_emit(
-            RunStarted(conversation_id=self.run_id, model=self.model_id)
-        )
+        yield self._create_and_emit(RunStarted(conversation_id=self.run_id, model=self.model_id))
 
         iteration = 0
         current_messages = list(messages)
@@ -347,9 +347,7 @@ class ExecutionKernel:
                 self.max_turns,
             )
             self.state_machine.transition_to(RunState.FAILED)
-            yield self._create_and_emit(
-                RunFailed(error=f"Max turns ({self.max_turns}) exhausted")
-            )
+            yield self._create_and_emit(RunFailed(error=f"Max turns ({self.max_turns}) exhausted"))
             return
 
         self.state_machine.transition_to(RunState.COMPLETED)
@@ -409,6 +407,7 @@ class ExecutionKernel:
 # TaskDagKernel — dependency-aware, resumable DAG executor
 # ---------------------------------------------------------------------------
 
+
 class TaskDagKernel:
     """Run a typed task DAG with checkpointed state and bounded repairs.
 
@@ -427,7 +426,9 @@ class TaskDagKernel:
         self.plan = plan
         self.ledger = ledger
         configured = int(plan.retry_policy.get("total_repairs", 5))
-        self.max_total_repairs = max(0, configured if max_total_repairs is None else max_total_repairs)
+        self.max_total_repairs = max(
+            0, configured if max_total_repairs is None else max_total_repairs
+        )
         self.repairs = 0
 
     # Preserve the old public name for existing callers (e.g. agent.py two-node path)
@@ -475,9 +476,13 @@ class TaskDagKernel:
         blocked = [step.id for step in self.plan.steps if step.status == TaskStatus.BLOCKED]
 
         review_result = None
-        if not failed and not blocked and all(
-            step.status in (TaskStatus.COMPLETED, TaskStatus.SKIPPED)
-            for step in self.plan.steps
+        if (
+            not failed
+            and not blocked
+            and all(
+                step.status in (TaskStatus.COMPLETED, TaskStatus.SKIPPED)
+                for step in self.plan.steps
+            )
         ):
             if reviewer is not None:
                 review_result = reviewer(self.plan)
@@ -661,7 +666,10 @@ class TaskDagKernel:
 _FAILURE_PATTERNS: tuple[tuple[FailureKind, tuple[str, ...]], ...] = (
     (FailureKind.TIMEOUT, ("timed out", "timeout", "deadline exceeded")),
     (FailureKind.SYNTAX, ("syntaxerror", "parse error", "unexpected token", "syntax error")),
-    (FailureKind.IMPORT, ("modulenotfound", "importerror", "cannot find module", "unresolved import")),
+    (
+        FailureKind.IMPORT,
+        ("modulenotfound", "importerror", "cannot find module", "unresolved import"),
+    ),
     (FailureKind.TYPE, ("typeerror", "type error", "mypy", "ts2322", "incompatible type")),
     (FailureKind.TEST, ("assertionerror", "failed test", "tests failed", "assert ")),
     (FailureKind.DEPENDENCY, ("dependency conflict", "no matching distribution", "eresolve")),

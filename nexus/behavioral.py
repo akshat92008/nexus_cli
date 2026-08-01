@@ -189,9 +189,7 @@ class BrowserVerifier:
                 page.on(
                     "console",
                     lambda message: (
-                        console_errors.append(message.text)
-                        if message.type == "error"
-                        else None
+                        console_errors.append(message.text) if message.type == "error" else None
                     ),
                 )
                 page.on(
@@ -403,9 +401,7 @@ class SecurityScanner:
         (
             "medium",
             "unsafe-cors",
-            re.compile(
-                r"(?i)(?:allow_origins|access-control-allow-origin).{0,20}(?:\*|all)"
-            ),
+            re.compile(r"(?i)(?:allow_origins|access-control-allow-origin).{0,20}(?:\*|all)"),
         ),
         (
             "medium",
@@ -471,9 +467,7 @@ class SecurityScanner:
                     ):
                         continue
                     line_number = content.count("\n", 0, match.start()) + 1
-                    surrounding = "\n".join(
-                        lines[max(0, line_number - 3) : line_number + 1]
-                    )
+                    surrounding = "\n".join(lines[max(0, line_number - 3) : line_number + 1])
                     if "re.compile" in surrounding:
                         continue
                     findings.append(

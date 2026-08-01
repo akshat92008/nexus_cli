@@ -13,14 +13,16 @@ Usage::
 from nexus.runtime.kernel import (  # noqa: F401
     ExecutionResult,
     FailureKind,
+    PlanReviewer,
     ReviewOutcome,
     StepExecutor,
     StepRepairer,
     StepVerifier,
-    PlanReviewer,
-    TaskDagKernel as ExecutionEngine,
     TaskOutcome,
     classify_failure,
+)
+from nexus.runtime.kernel import (
+    TaskDagKernel as ExecutionEngine,
 )
 
 __all__ = [

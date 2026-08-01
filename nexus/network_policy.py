@@ -15,40 +15,56 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class NetworkViolation:
     """A single network policy violation."""
+
     url: str
     reason: str
     category: str  # "private_range", "metadata", "loopback", "blocked_scheme", etc.
 
 
 # Cloud metadata endpoints (AWS, GCP, Azure, DigitalOcean, Oracle, Alibaba)
-_METADATA_IPS = frozenset({
-    "169.254.169.254",   # AWS / GCP / Azure / most clouds
-    "100.100.100.200",   # Alibaba Cloud
-    "192.0.0.192",       # Oracle Cloud
-})
+_METADATA_IPS = frozenset(
+    {
+        "169.254.169.254",  # AWS / GCP / Azure / most clouds
+        "100.100.100.200",  # Alibaba Cloud
+        "192.0.0.192",  # Oracle Cloud
+    }
+)
 
-_METADATA_HOSTS = frozenset({
-    "metadata.google.internal",
-    "metadata.goog",
-    "metadata.azure.com",
-    "metadata.oraclecloud.com",
-})
+_METADATA_HOSTS = frozenset(
+    {
+        "metadata.google.internal",
+        "metadata.goog",
+        "metadata.azure.com",
+        "metadata.oraclecloud.com",
+    }
+)
 
-_BLOCKED_SCHEMES = frozenset({
-    "file", "ftp", "gopher", "data", "javascript", "vbscript",
-    "jar", "netdoc", "mailto",
-})
+_BLOCKED_SCHEMES = frozenset(
+    {
+        "file",
+        "ftp",
+        "gopher",
+        "data",
+        "javascript",
+        "vbscript",
+        "jar",
+        "netdoc",
+        "mailto",
+    }
+)
 
 _ALLOWED_SCHEMES = frozenset({"http", "https"})
 
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB default limit
 
-_DANGEROUS_CONTENT_TYPES = frozenset({
-    "application/x-executable",
-    "application/x-sharedlib",
-    "application/x-mach-binary",
-    "application/x-dosexec",
-})
+_DANGEROUS_CONTENT_TYPES = frozenset(
+    {
+        "application/x-executable",
+        "application/x-sharedlib",
+        "application/x-mach-binary",
+        "application/x-dosexec",
+    }
+)
 
 
 class NetworkPolicy:

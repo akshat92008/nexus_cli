@@ -11,9 +11,10 @@ from dataclasses import dataclass, field
 @dataclass
 class SkillTrigger:
     """Defines when a skill should auto-activate."""
+
     keywords: list[str] = field(default_factory=list)
     file_patterns: list[str] = field(default_factory=list)  # e.g., ["*.tsx", "*.jsx"]
-    intent_types: list[str] = field(default_factory=list)    # e.g., ["build", "fix"]
+    intent_types: list[str] = field(default_factory=list)  # e.g., ["build", "fix"]
     priority: int = 50  # 0 = lowest, 100 = highest
 
 
@@ -98,6 +99,7 @@ class BaseSkill:
         # Keyword matching
         if self.trigger.keywords:
             import re
+
             keyword_hits = 0
             for kw in self.trigger.keywords:
                 if re.search(r"\b" + re.escape(kw.lower()) + r"\b", text):
@@ -108,6 +110,7 @@ class BaseSkill:
         # File pattern matching
         if file_path and self.trigger.file_patterns:
             import fnmatch
+
             for pattern in self.trigger.file_patterns:
                 if fnmatch.fnmatch(file_path.lower(), pattern.lower()):
                     score += 0.3

@@ -15,6 +15,7 @@ from pathlib import Path
 
 class HookEvent(str, Enum):
     """Lifecycle events that can trigger hooks."""
+
     BEFORE_FILE_EDIT = "before_file_edit"
     AFTER_FILE_EDIT = "after_file_edit"
     BEFORE_FILE_CREATE = "before_file_create"
@@ -39,23 +40,26 @@ class HookEvent(str, Enum):
 
 class HookType(str, Enum):
     """Types of hook actions."""
-    SHELL = "shell"       # Run a shell command (as argv, NOT a shell string)
-    PROMPT = "prompt"     # Inject a prompt into the agent
-    TOOL = "tool"         # Call a specific tool
-    NOTIFY = "notify"     # Show a notification
-    BLOCK = "block"       # Block the operation
+
+    SHELL = "shell"  # Run a shell command (as argv, NOT a shell string)
+    PROMPT = "prompt"  # Inject a prompt into the agent
+    TOOL = "tool"  # Call a specific tool
+    NOTIFY = "notify"  # Show a notification
+    BLOCK = "block"  # Block the operation
 
 
 class HookFailurePolicy(str, Enum):
     """What happens when a hook fails."""
-    WARN = "warn"         # Log warning, continue operation
-    BLOCK = "block"       # Block the triggering operation
+
+    WARN = "warn"  # Log warning, continue operation
+    BLOCK = "block"  # Block the triggering operation
     ROLLBACK = "rollback"  # Roll back the triggering operation
 
 
 @dataclass
 class HookContext:
     """Context passed to hooks when they fire."""
+
     event: HookEvent
     file_path: str = ""
     file_content: str = ""
@@ -72,6 +76,7 @@ class HookContext:
 @dataclass
 class HookResult:
     """Result of a hook execution."""
+
     hook_name: str
     event: HookEvent
     success: bool
@@ -139,6 +144,7 @@ class BaseHook:
         # File pattern matching
         if self.file_pattern and context.file_path:
             import fnmatch
+
             if not fnmatch.fnmatch(context.file_path, self.file_pattern):
                 return False
 

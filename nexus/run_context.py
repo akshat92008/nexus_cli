@@ -58,9 +58,7 @@ class RunContext:
     permission_policy: PermissionPolicy = field(default_factory=PermissionPolicy)
     budget: BudgetLimitsSnapshot = field(default_factory=BudgetLimitsSnapshot)
     environment_grants: Mapping[str, str] = field(default_factory=dict)
-    created_at: str = field(
-        default_factory=lambda: datetime.now(timezone.utc).isoformat()
-    )
+    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     model_key: str = ""
     workspace_isolated: bool = False
 
@@ -142,8 +140,8 @@ class RunContext:
 
 # ── ContextVar for thread-safe run isolation ────────────────────────────────
 
-_current_run_context: contextvars.ContextVar[RunContext | None] = (
-    contextvars.ContextVar("_current_run_context", default=None)
+_current_run_context: contextvars.ContextVar[RunContext | None] = contextvars.ContextVar(
+    "_current_run_context", default=None
 )
 
 

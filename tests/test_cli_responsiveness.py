@@ -41,7 +41,7 @@ def test_non_interactive_command_env():
 def test_agent_handle_stream_tool_drafting():
     """Verify Agent._handle_stream updates LiveStatus as tool call deltas arrive."""
     agent = Agent(api_key="nvapi-mock-key")
-    
+
     class MockDeltaFunction:
         def __init__(self, name=None, arguments=None):
             self.name = name

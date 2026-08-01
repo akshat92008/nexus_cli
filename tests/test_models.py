@@ -1,6 +1,7 @@
 """
 Tests for the models module — model registry, aliases, and resolution.
 """
+
 import sys
 from pathlib import Path
 
@@ -23,7 +24,9 @@ def test_models_registry():
         for field in required_fields:
             assert field in cfg, f"Model '{key}' missing field '{field}'"
         assert isinstance(cfg["context"], int), f"Model '{key}' context should be int"
-        assert isinstance(cfg["supports_tools"], bool), f"Model '{key}' supports_tools should be bool"
+        assert isinstance(cfg["supports_tools"], bool), (
+            f"Model '{key}' supports_tools should be bool"
+        )
 
 
 def test_default_model_exists():

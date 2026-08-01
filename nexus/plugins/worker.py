@@ -254,6 +254,7 @@ class PluginWorker:
 
         # Build filtered environment
         import os
+
         env = {
             "PATH": os.environ.get("PATH", ""),
             "LANG": os.environ.get("LANG", "en_US.UTF-8"),
@@ -265,8 +266,13 @@ class PluginWorker:
 
         try:
             self._process = subprocess.Popen(
-                [sys.executable, "-c", worker_script,
-                 str(self.plugin_dir), self.manifest.entry_point],
+                [
+                    sys.executable,
+                    "-c",
+                    worker_script,
+                    str(self.plugin_dir),
+                    self.manifest.entry_point,
+                ],
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -277,6 +283,7 @@ class PluginWorker:
 
             # Wait for ready signal
             import select
+
             ready, _, _ = select.select([self._process.stdout], [], [], self.timeout)
             if not ready:
                 self.stop()
@@ -312,6 +319,7 @@ class PluginWorker:
             self._process.stdin.flush()
 
             import select
+
             ready, _, _ = select.select([self._process.stdout], [], [], self.timeout)
             if not ready:
                 return PluginWorkerResult(False, error="Worker call timed out")

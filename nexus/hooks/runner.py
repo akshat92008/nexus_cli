@@ -128,15 +128,19 @@ class HookRunner:
             except Exception as e:
                 logger.warning(
                     "Hook %s failed with error: %s (event=%s)",
-                    hook.name, e, event.value,
+                    hook.name,
+                    e,
+                    event.value,
                 )
-                results.append(HookResult(
-                    hook_name=hook.name,
-                    event=event,
-                    success=False,
-                    output=f"Hook error: {e}",
-                    failure_policy=hook.failure_policy,
-                ))
+                results.append(
+                    HookResult(
+                        hook_name=hook.name,
+                        event=event,
+                        success=False,
+                        output=f"Hook error: {e}",
+                        failure_policy=hook.failure_policy,
+                    )
+                )
 
         return results
 
@@ -175,7 +179,8 @@ class HookRunner:
                     if not validate_hook_path(arg, context.workspace_root):
                         logger.warning(
                             "Hook %s references path outside workspace: %s",
-                            hook.name, arg,
+                            hook.name,
+                            arg,
                         )
                         return HookResult(
                             hook_name=hook.name,
@@ -189,7 +194,7 @@ class HookRunner:
         try:
             result = subprocess.run(
                 command,
-                shell=False,   # SECURITY: Never use shell=True
+                shell=False,  # SECURITY: Never use shell=True
                 capture_output=True,
                 text=True,
                 cwd=cwd,

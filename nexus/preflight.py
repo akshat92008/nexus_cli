@@ -7,10 +7,10 @@ import os
 import time
 import urllib.error
 import urllib.request
-from urllib.parse import urlparse
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
@@ -57,14 +57,15 @@ def _probe_ollama_cached(model: str, base_url: str, cache_bucket: int) -> Backen
             backend="ollama",
             code="endpoint_unreachable",
             detail=f"Ollama is not reachable at {base_url}: {exc}",
-            remediation=("Start Ollama with `ollama serve`.", "Run `ollama list` to inspect installed models."),
+            remediation=(
+                "Start Ollama with `ollama serve`.",
+                "Run `ollama list` to inspect installed models.",
+            ),
             metadata={"base_url": base_url, "model": model},
         )
 
     installed = {
-        str(item.get("name", ""))
-        for item in payload.get("models", [])
-        if isinstance(item, dict)
+        str(item.get("name", "")) for item in payload.get("models", []) if isinstance(item, dict)
     }
     normalized = {name.split(":", 1)[0] for name in installed}
     requested = model.split(":", 1)[0]
@@ -74,7 +75,9 @@ def _probe_ollama_cached(model: str, base_url: str, cache_bucket: int) -> Backen
             backend="ollama",
             code="model_missing",
             detail=f"Ollama is running, but model '{model}' is not installed.",
-            remediation=(f"Install or create the model, then verify with `ollama run {model} \"hello\"`.",),
+            remediation=(
+                f'Install or create the model, then verify with `ollama run {model} "hello"`.',
+            ),
             metadata={"base_url": base_url, "model": model, "installed": sorted(installed)},
         )
     return BackendProbe(

@@ -243,9 +243,7 @@ class BudgetedClient:
     def _record_response_usage(self, response: Any, prompt_estimate: int) -> None:
         usage = getattr(response, "usage", None)
         prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0) if usage else 0
-        completion_tokens = (
-            int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
-        )
+        completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0) if usage else 0
         if prompt_tokens or completion_tokens:
             self._budget_controller.record_usage(
                 prompt_tokens or prompt_estimate,

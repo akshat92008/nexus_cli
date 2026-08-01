@@ -30,6 +30,7 @@ _MCP_TOOL_CALL_TIMEOUT = 60.0  # seconds
 @dataclass
 class MCPTool:
     """A tool discovered from an MCP server."""
+
     name: str
     description: str
     input_schema: dict = field(default_factory=dict)
@@ -50,6 +51,7 @@ class MCPTool:
 @dataclass
 class MCPServerConfig:
     """Configuration for an MCP server."""
+
     name: str
     command: list[str]
     env: dict[str, str] = field(default_factory=dict)
@@ -76,10 +78,12 @@ class MCPConnection:
         """Start the MCP server process and initialize the connection."""
         try:
             import os
+
             # SECURITY: Minimal environment. PYTHONPATH is deliberately excluded
             # to prevent code injection into the MCP server process.
             safe_env = {
-                k: v for k, v in os.environ.items()
+                k: v
+                for k, v in os.environ.items()
                 if k in ("PATH", "USER", "HOME", "LANG", "LC_ALL", "TMPDIR", "NODE_ENV")
             }
             env = {**safe_env, **self.config.env}
@@ -93,11 +97,14 @@ class MCPConnection:
             )
 
             # Initialize
-            init_response = self._send_request("initialize", {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {"tools": {}},
-                "clientInfo": {"name": "NexusAI", "version": "3.0"},
-            })
+            init_response = self._send_request(
+                "initialize",
+                {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {"tools": {}},
+                    "clientInfo": {"name": "NexusAI", "version": "3.0"},
+                },
+            )
 
             if not init_response or "error" in init_response:
                 return False
@@ -109,12 +116,14 @@ class MCPConnection:
             tools_response = self._send_request("tools/list", {})
             if tools_response and "result" in tools_response:
                 for tool_data in tools_response["result"].get("tools", []):
-                    self.tools.append(MCPTool(
-                        name=tool_data["name"],
-                        description=tool_data.get("description", ""),
-                        input_schema=tool_data.get("inputSchema", {}),
-                        server_name=self.config.name,
-                    ))
+                    self.tools.append(
+                        MCPTool(
+                            name=tool_data["name"],
+                            description=tool_data.get("description", ""),
+                            input_schema=tool_data.get("inputSchema", {}),
+                            server_name=self.config.name,
+                        )
+                    )
 
             self.connected = True
             return True
@@ -129,28 +138,30 @@ class MCPConnection:
 
         logger.info(
             "MCP tool call: server=%s tool=%s",
-            self.config.name, tool_name,
+            self.config.name,
+            tool_name,
         )
 
-        response = self._send_request("tools/call", {
-            "name": tool_name,
-            "arguments": arguments,
-        })
+        response = self._send_request(
+            "tools/call",
+            {
+                "name": tool_name,
+                "arguments": arguments,
+            },
+        )
 
         if response and "result" in response:
             content = response["result"].get("content", [])
-            text_parts = [
-                c.get("text", "")
-                for c in content
-                if c.get("type") == "text"
-            ]
+            text_parts = [c.get("text", "") for c in content if c.get("type") == "text"]
             result_text = "\n".join(text_parts)
             # SECURITY: Bound output size
             if len(result_text) > _MAX_MCP_OUTPUT_BYTES:
                 result_text = result_text[:_MAX_MCP_OUTPUT_BYTES]
                 logger.warning(
                     "MCP tool %s/%s output truncated to %d bytes",
-                    self.config.name, tool_name, _MAX_MCP_OUTPUT_BYTES,
+                    self.config.name,
+                    tool_name,
+                    _MAX_MCP_OUTPUT_BYTES,
                 )
             return {"result": result_text, "success": True}
 
@@ -159,7 +170,9 @@ class MCPConnection:
             error_msg = response.get("error", {}).get("message", "Unknown error")
         logger.warning(
             "MCP tool call failed: server=%s tool=%s error=%s",
-            self.config.name, tool_name, error_msg,
+            self.config.name,
+            tool_name,
+            error_msg,
         )
         return {"error": error_msg, "success": False}
 
@@ -195,6 +208,7 @@ class MCPConnection:
 
                 # Read response
                 import select
+
                 ready, _, _ = select.select([self._process.stdout], [], [], 30.0)
                 if not ready:
                     return None
@@ -349,7 +363,7 @@ class MCPClient:
         for server_name, conn in self._connections.items():
             prefix = f"mcp_{server_name}_"
             if prefixed_name.startswith(prefix):
-                tool_name = prefixed_name[len(prefix):]
+                tool_name = prefixed_name[len(prefix) :]
                 result = conn.call_tool(tool_name, arguments)
                 if result.get("success"):
                     return result.get("result", "")

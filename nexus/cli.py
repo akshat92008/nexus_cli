@@ -65,7 +65,8 @@ Environment:
         help="Run installation and backend diagnostics, then exit",
     )
     parser.add_argument(
-        "--model", "-m",
+        "--model",
+        "-m",
         default=os.environ.get("NEXUS_MODEL", DEFAULT_MODEL),
         help=f"Model to use (default: {DEFAULT_MODEL}). Use --list-models to see all.",
     )
@@ -75,7 +76,8 @@ Environment:
         help="Override the provider model ID; required for --model custom",
     )
     parser.add_argument(
-        "--api-key", "-k",
+        "--api-key",
+        "-k",
         help="Hosted provider API key (prefer an environment variable to avoid shell history)",
     )
     parser.add_argument(
@@ -84,11 +86,13 @@ Environment:
         help="Custom OpenAI-compatible base URL",
     )
     parser.add_argument(
-        "--working-dir", "-d",
+        "--working-dir",
+        "-d",
         help="Working directory (default: current directory)",
     )
     parser.add_argument(
-        "--list-models", "-l",
+        "--list-models",
+        "-l",
         action="store_true",
         help="List all available models and exit",
     )
@@ -117,11 +121,13 @@ Environment:
         help="Load explicitly trusted local plugins in isolated workers",
     )
     parser.add_argument(
-        "--system", "-s",
+        "--system",
+        "-s",
         help="Custom system prompt",
     )
     parser.add_argument(
-        "--web", "-w",
+        "--web",
+        "-w",
         action="store_true",
         help="Launch the web interface instead of CLI",
     )
@@ -132,15 +138,27 @@ Environment:
         help="Port for web interface (default: 3000)",
     )
     parser.add_argument(
-        "--resume", "-r",
+        "--resume",
+        "-r",
         help="Resume a previous conversation by ID",
     )
     parser.add_argument(
         "--resume-run",
         help="Continue an interrupted durable run from its latest checkpoint",
     )
-    parser.add_argument("--continue", dest="continue_last", action="store_true", help="Resume the most recent conversation for this directory")
-    parser.add_argument("--print", "-p", dest="print_mode", action="store_true", help="Run non-interactively and exit")
+    parser.add_argument(
+        "--continue",
+        dest="continue_last",
+        action="store_true",
+        help="Resume the most recent conversation for this directory",
+    )
+    parser.add_argument(
+        "--print",
+        "-p",
+        dest="print_mode",
+        action="store_true",
+        help="Run non-interactively and exit",
+    )
     parser.add_argument(
         "--output-format",
         "--output",
@@ -149,7 +167,9 @@ Environment:
         default="text",
     )
     parser.add_argument("--max-turns", type=int, default=50)
-    parser.add_argument("--permission-mode", choices=("default", "acceptEdits", "plan"), default="default")
+    parser.add_argument(
+        "--permission-mode", choices=("default", "acceptEdits", "plan"), default="default"
+    )
     parser.add_argument(
         "--mode",
         choices=(
@@ -182,7 +202,9 @@ Environment:
     )
     parser.add_argument("--allowed-tools", nargs="*", default=[])
     parser.add_argument("--disallowed-tools", nargs="*", default=[])
-    parser.add_argument("--add-dir", action="append", default=[], help="Authorize an additional existing directory")
+    parser.add_argument(
+        "--add-dir", action="append", default=[], help="Authorize an additional existing directory"
+    )
     parser.add_argument(
         "--workspace",
         action="store_true",
@@ -267,20 +289,23 @@ def _handle_workspace_commands() -> bool:
     if len(sys.argv) < 3 or sys.argv[2] not in {"list", "status", "diff", "apply", "discard"}:
         print("Usage: nexus workspace {list|status|diff|apply|discard} [session_id]")
         return True
-    
+
     command = sys.argv[2]
     from nexus.workspace import WorkspaceManager
+
     manager = WorkspaceManager()
-    
+
     if command == "list":
         worktrees = manager.list_worktrees()
         if not worktrees:
             print("No active workspaces.")
         else:
             for w in worktrees:
-                print(f"[{w.created_at}] {Path(w.path).name} - {w.backend} - {w.branch or 'N/A'} (Source: {w.source_repository})")
+                print(
+                    f"[{w.created_at}] {Path(w.path).name} - {w.backend} - {w.branch or 'N/A'} (Source: {w.source_repository})"
+                )
         return True
-        
+
     session_id = sys.argv[3] if len(sys.argv) > 3 else None
     if not session_id:
         cwd = os.getcwd()
@@ -292,11 +317,11 @@ def _handle_workspace_commands() -> bool:
         session = manager.resolve_worktree(Path(worktrees[0].path).name)
     else:
         session = manager.resolve_worktree(session_id)
-        
+
     if not session or not session.info:
         print("Workspace not found.")
         return True
-        
+
     if command == "status":
         print(json.dumps(session.status(), indent=2))
     elif command == "diff":
@@ -309,15 +334,18 @@ def _handle_workspace_commands() -> bool:
         try:
             session.apply()
             from nexus.ui import print_success
+
             print_success("Workspace changes applied successfully.")
         except Exception as e:
             from nexus.ui import print_error
+
             print_error(f"Apply failed: {e}")
     elif command == "discard":
         session.discard()
         from nexus.ui import print_success
+
         print_success("Workspace discarded.")
-        
+
     return True
 
 
@@ -341,10 +369,7 @@ def _handle_run_management() -> bool:
             print("No durable Nexus runs exist for this directory.")
         else:
             for item in records:
-                print(
-                    f"{item.session_id}/{item.turn_id}  {item.status:<20} "
-                    f"{item.request[:80]}"
-                )
+                print(f"{item.session_id}/{item.turn_id}  {item.status:<20} {item.request[:80]}")
         return True
 
     run_id = sys.argv[2] if len(sys.argv) > 2 else ""
@@ -356,6 +381,7 @@ def _handle_run_management() -> bool:
                 print(json.dumps(event, ensure_ascii=False))
         else:
             from nexus.recovery import RollbackManager
+
             success, detail = RollbackManager.rollback(run_id)
             if not success:
                 raise RuntimeError(detail)
@@ -366,27 +392,31 @@ def _handle_run_management() -> bool:
     return True
 
 
-
 def _handle_generate_dashboard() -> bool:
     """Resolve ``nexus generate-dashboard --input <json> --output <html_path>``."""
     if len(sys.argv) < 2 or sys.argv[1] != "generate-dashboard":
         return False
     import argparse
+
     parser = argparse.ArgumentParser(prog="nexus generate-dashboard")
     parser.add_argument("--input", required=True, help="Path to benchmark-result JSON")
     parser.add_argument("--output", required=True, help="Path to write the HTML dashboard")
     args = parser.parse_args(sys.argv[2:])
-    
+
     from nexus.dashboard import RegressionDashboard
+
     try:
         RegressionDashboard.generate(args.input, args.output)
         from nexus.ui import print_success
+
         print_success(f"Dashboard generated successfully at {args.output}")
     except Exception as e:
         from nexus.ui import print_error
+
         print_error(f"Failed to generate dashboard: {e}")
         sys.exit(1)
     return True
+
 
 def _handle_benchmark() -> bool:
     """Run or validate a versioned public benchmark manifest."""
@@ -438,16 +468,17 @@ def _solve_issue_prompt() -> bool:
     if len(sys.argv) < 3 or not sys.argv[2].isdigit():
         raise SystemExit("Usage: nexus solve-issue <issue-number> [options]")
     issue_number = sys.argv[2]
-    
+
     try:
         from nexus.github import GitHubIntegration
+
         issue = GitHubIntegration.view_issue(issue_number)
     except Exception as exc:
         raise SystemExit(str(exc)) from exc
-        
+
     if not issue:
         raise SystemExit(f"Issue #{issue_number} not found or could not be parsed.")
-        
+
     comments = "\\n".join(
         f"- {item.get('author', {}).get('login', 'unknown')}: {item.get('body', '')}"
         for item in issue.get("comments", [])
@@ -507,7 +538,9 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
             if agent.set_model(model_name):
                 ui.print_model_info(agent.model_key, agent.model_cfg)
             else:
-                ui.print_error(f"Unknown model: '{model_name}'. Use /models to see available options.")
+                ui.print_error(
+                    f"Unknown model: '{model_name}'. Use /models to see available options."
+                )
         else:
             ui.print_models_table()
 
@@ -562,7 +595,9 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
         if not arg:
             ui.print_error("Usage: /run <shell command>")
         else:
-            result, success = agent._execute_tool_with_safety("run_command", {"command": arg, "cwd": agent.working_dir})
+            result, success = agent._execute_tool_with_safety(
+                "run_command", {"command": arg, "cwd": agent.working_dir}
+            )
             ui.print_tool_result(result, success)
 
     # ─── NEW COMMANDS ────────────────────────────────────────────────
@@ -580,6 +615,7 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
         diff = history.get_last_diff()
         if diff:
             from rich.syntax import Syntax
+
             ui.console.print(Syntax(diff, "diff", theme="monokai", line_numbers=False))
         else:
             ui.print_info("No file changes to show.")
@@ -630,19 +666,24 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
             return True
         if agent.load_conversation(arg.strip()):
             ui.print_success(f"Resumed conversation: {arg.strip()}")
-            ui.print_info(f"Loaded {len(agent.messages)} messages. Model: {agent.model_cfg['name']}")
+            ui.print_info(
+                f"Loaded {len(agent.messages)} messages. Model: {agent.model_cfg['name']}"
+            )
         else:
             ui.print_error(f"Could not find conversation: {arg}")
 
     elif command == "/compact":
         removed = agent.compact_conversation()
         if removed > 0:
-            ui.print_success(f"Compacted conversation: removed {removed} old messages, keeping recent context.")
+            ui.print_success(
+                f"Compacted conversation: removed {removed} old messages, keeping recent context."
+            )
         else:
             ui.print_info("Conversation is already compact.")
 
     elif command == "/git":
         from nexus.tools import tool_git_status
+
         result = tool_git_status(agent.working_dir)
         ui.console.print(result)
 
@@ -659,7 +700,9 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
 
     elif command == "/subagent":
         if not arg:
-            ui.print_error("Usage: /subagent <template> <task>  (e.g., /subagent security Scan for hardcoded passwords)")
+            ui.print_error(
+                "Usage: /subagent <template> <task>  (e.g., /subagent security Scan for hardcoded passwords)"
+            )
             return True
         sub_parts = arg.strip().split(maxsplit=1)
         if len(sub_parts) < 2:
@@ -697,17 +740,25 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
         if not trust_parts or not trust_parts[0]:
             ui.console.print(agent.get_trust_summary())
         elif len(trust_parts) == 2 and trust_parts[0] in ("approve", "reject"):
-            decision = agent.trust.approve(trust_parts[1]) if trust_parts[0] == "approve" else agent.trust.reject(trust_parts[1])
+            decision = (
+                agent.trust.approve(trust_parts[1])
+                if trust_parts[0] == "approve"
+                else agent.trust.reject(trust_parts[1])
+            )
             agent.project_mem.reload()
             agent._load_rules_and_preferences()
             agent._update_system_prompt()
-            ui.print_success(f"{trust_parts[0].title()}d exact config digest: {decision.path} {decision.digest}")
+            ui.print_success(
+                f"{trust_parts[0].title()}d exact config digest: {decision.path} {decision.digest}"
+            )
         else:
             ui.print_error("Usage: /trust [approve|reject] <path>")
 
     elif command == "/init":
         path = agent.project_mem.create_default_rules()
-        ui.print_info(f"Created {path}. Review it, then run /trust approve {path} before Nexus loads it.")
+        ui.print_info(
+            f"Created {path}. Review it, then run /trust approve {path} before Nexus loads it."
+        )
 
     elif command == "/context":
         ui.console.print(agent.context_mgr.get_architecture_context())
@@ -760,9 +811,7 @@ def run_interactive(agent: Agent):
         ui.console.print(f"\n  [bold green]Workspace Active:[/] {agent.worktree.info.path}")
         if agent.worktree.info.branch:
             ui.console.print(f"  [bold green]Branch:[/] {agent.worktree.info.branch}")
-    ui.console.print(
-        f"\n  [{ui.DIM}]Type your request, or /help for commands. /exit to quit.[/]\n"
-    )
+    ui.console.print(f"\n  [{ui.DIM}]Type your request, or /help for commands. /exit to quit.[/]\n")
 
     while True:
         try:
@@ -795,7 +844,17 @@ def run_interactive(agent: Agent):
             break
 
 
-def run_web(api_key: str, model: str, port: int, working_dir: str | None, model_id_override: str | None = None, local_intern_mode: str = "off", enable_nova_fallback: bool = False, plugins_enabled: bool = False, tools_enabled: bool = True):
+def run_web(
+    api_key: str,
+    model: str,
+    port: int,
+    working_dir: str | None,
+    model_id_override: str | None = None,
+    local_intern_mode: str = "off",
+    enable_nova_fallback: bool = False,
+    plugins_enabled: bool = False,
+    tools_enabled: bool = True,
+):
     """Launch the web interface."""
     try:
         import uvicorn
@@ -809,14 +868,14 @@ def run_web(api_key: str, model: str, port: int, working_dir: str | None, model_
         )
 
         app = create_app(
-            api_key=api_key, 
-            model=model, 
+            api_key=api_key,
+            model=model,
             working_dir=working_dir,
             model_id_override=model_id_override,
             local_intern_mode=local_intern_mode,
             enable_nova_fallback=enable_nova_fallback,
             plugins_enabled=plugins_enabled,
-            tools_enabled=tools_enabled
+            tools_enabled=tools_enabled,
         )
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
@@ -861,8 +920,7 @@ def start_background_web_server(api_key: str, model: str, port: int, working_dir
 def non_interactive_exit_code(content: str, events: list[dict]) -> int:
     """Return a machine-meaningful status for one-shot CLI execution."""
     if any(
-        event.get("type") == "tool_call" and not event.get("success", False)
-        for event in events
+        event.get("type") == "tool_call" and not event.get("success", False) for event in events
     ):
         return 2
     lowered = (content or "").strip().lower()
@@ -923,10 +981,10 @@ def main():
     }
     if args.permission_mode == "default":
         args.permission_mode = mode_permissions[args.mode]
-        
+
     if args.mode == "local-only" or args.mode == "budget":
         args.model = "nova_codex"
-    
+
     if args.mode == "budget":
         if args.max_cost_usd is None:
             args.max_cost_usd = 0.10
@@ -965,6 +1023,7 @@ def main():
         sys.exit(1)
 
     from nexus.api import _load_env_file
+
     _load_env_file()
     api_key = args.api_key or os.environ.get("NVIDIA_API_KEY")
     has_hosted_key = bool(
@@ -992,6 +1051,7 @@ def main():
         sys.exit(1)
 
     from nexus.preflight import probe_model
+
     selected_probe = probe_model(model_cfg, model_name=args.model)
     if not selected_probe.ready:
         ui.print_error(selected_probe.detail)
@@ -1002,9 +1062,9 @@ def main():
     # Web mode
     if args.web:
         run_web(
-            api_key, 
-            args.model, 
-            args.port, 
+            api_key,
+            args.model,
+            args.port,
             args.working_dir,
             model_id_override=args.model_id,
             local_intern_mode=args.local_intern,
@@ -1032,9 +1092,7 @@ def main():
             disallowed_tools=args.disallowed_tools,
             additional_dirs=args.add_dir,
             max_turns=args.max_turns,
-            workspace_isolation=(
-                (args.workspace or automatic_workspace) and not args.no_workspace
-            ),
+            workspace_isolation=((args.workspace or automatic_workspace) and not args.no_workspace),
             max_hosted_calls=args.max_hosted_calls,
             max_prompt_tokens=args.max_prompt_tokens,
             max_completion_tokens=args.max_completion_tokens,
@@ -1053,7 +1111,11 @@ def main():
 
     # Resume conversation
     if args.continue_last:
-        candidates = [item for item in agent.memory.list_conversations(limit=100) if item.get("working_dir") == agent.working_dir]
+        candidates = [
+            item
+            for item in agent.memory.list_conversations(limit=100)
+            if item.get("working_dir") == agent.working_dir
+        ]
         if not candidates or not agent.load_conversation(candidates[0]["id"]):
             ui.print_error("No resumable conversation found for this directory.")
             sys.exit(1)
@@ -1107,7 +1169,16 @@ def main():
                 "run_command", {"command": command, "cwd": agent.working_dir}
             )
             if args.output_format in ("json", "jsonl", "stream-json"):
-                print(json.dumps({"type": "tool_call", "name": "run_command", "result": result, "success": success}))
+                print(
+                    json.dumps(
+                        {
+                            "type": "tool_call",
+                            "name": "run_command",
+                            "result": result,
+                            "success": success,
+                        }
+                    )
+                )
             else:
                 print(result)
             sys.exit(0 if success else 2)
@@ -1153,6 +1224,7 @@ def main():
                 print("\\n")
                 try:
                     from nexus.report import FinalReportGenerator
+
                     final_report_path = agent.run_ledger._require_turn() / "final_report.json"
                     print(FinalReportGenerator.generate(final_report_path))
                 except Exception:
@@ -1172,9 +1244,10 @@ def main():
                 exit_code = 3
             elif status == "VERIFIED":
                 exit_code = 0
-                
+
             try:
                 from nexus.report import FinalReportGenerator
+
                 final_report_path = agent.run_ledger._require_turn() / "final_report.json"
                 print("\\n")
                 print(FinalReportGenerator.generate(final_report_path))

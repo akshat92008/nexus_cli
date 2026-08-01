@@ -167,9 +167,7 @@ class RunLedger:
         if plan is not None:
             self.record_plan(plan)
             plan_steps = (
-                getattr(plan, "steps", [])
-                if not isinstance(plan, dict)
-                else plan.get("steps", [])
+                getattr(plan, "steps", []) if not isinstance(plan, dict) else plan.get("steps", [])
             )
             self.record_tasks(plan_steps)
         else:
@@ -481,9 +479,7 @@ class RunLedger:
         events_path = turn_dir / "events.jsonl"
         try:
             self._event_counter = sum(
-                1
-                for line in events_path.read_text(encoding="utf-8").splitlines()
-                if line.strip()
+                1 for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()
             )
         except OSError:
             self._event_counter = 0
@@ -557,9 +553,7 @@ class RunLedger:
         path = turn_dir / filename
         count = 0
         try:
-            count = sum(
-                1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
-            )
+            count = sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
         except OSError:
             pass
         record_id = f"{prefix}-{count + 1:06d}"

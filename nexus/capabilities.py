@@ -14,17 +14,17 @@ from typing import FrozenSet
 class ToolCapability(str, Enum):
     """Capabilities a tool may require."""
 
-    FS_READ = "fs_read"                 # Read files from the workspace
-    FS_WRITE = "fs_write"               # Create or modify files
-    CMD_EXEC = "cmd_exec"               # Execute commands/processes
-    NETWORK = "network"                 # Make outbound network requests
-    SECRET_ACCESS = "secret_access"     # Access credentials or secrets
-    DEPLOYMENT = "deployment"           # Deploy to production/staging
-    PKG_INSTALL = "pkg_install"         # Install system or language packages
-    GIT_MUTATION = "git_mutation"       # Modify Git state (commit, push, branch)
-    GIT_READ = "git_read"              # Read Git state (status, log, diff)
+    FS_READ = "fs_read"  # Read files from the workspace
+    FS_WRITE = "fs_write"  # Create or modify files
+    CMD_EXEC = "cmd_exec"  # Execute commands/processes
+    NETWORK = "network"  # Make outbound network requests
+    SECRET_ACCESS = "secret_access"  # Access credentials or secrets
+    DEPLOYMENT = "deployment"  # Deploy to production/staging
+    PKG_INSTALL = "pkg_install"  # Install system or language packages
+    GIT_MUTATION = "git_mutation"  # Modify Git state (commit, push, branch)
+    GIT_READ = "git_read"  # Read Git state (status, log, diff)
     EXTERNAL_EFFECTS = "external_effects"  # Side effects outside the workspace
-    REPO_INDEX = "repo_index"           # Build or query repo graph index
+    REPO_INDEX = "repo_index"  # Build or query repo graph index
     CONFIRMATION_REQUIRED = "confirmation_required"  # Needs user confirmation
 
 
@@ -56,139 +56,164 @@ class ToolCapabilityDeclaration:
 TOOL_CAPABILITIES: dict[str, ToolCapabilityDeclaration] = {
     # File tools
     "read_file": ToolCapabilityDeclaration(
-        "read_file", frozenset({ToolCapability.FS_READ}),
+        "read_file",
+        frozenset({ToolCapability.FS_READ}),
         "Read file contents",
     ),
     "write_file": ToolCapabilityDeclaration(
-        "write_file", frozenset({ToolCapability.FS_WRITE}),
+        "write_file",
+        frozenset({ToolCapability.FS_WRITE}),
         "Create or overwrite files",
     ),
     "edit_file": ToolCapabilityDeclaration(
-        "edit_file", frozenset({ToolCapability.FS_READ, ToolCapability.FS_WRITE}),
+        "edit_file",
+        frozenset({ToolCapability.FS_READ, ToolCapability.FS_WRITE}),
         "Surgical find-and-replace editing",
     ),
     "patch_file": ToolCapabilityDeclaration(
-        "patch_file", frozenset({ToolCapability.FS_READ, ToolCapability.FS_WRITE}),
+        "patch_file",
+        frozenset({ToolCapability.FS_READ, ToolCapability.FS_WRITE}),
         "Line-range based editing",
     ),
     "multi_edit": ToolCapabilityDeclaration(
-        "multi_edit", frozenset({ToolCapability.FS_READ, ToolCapability.FS_WRITE}),
+        "multi_edit",
+        frozenset({ToolCapability.FS_READ, ToolCapability.FS_WRITE}),
         "Batch edits across multiple files",
     ),
     "file_info": ToolCapabilityDeclaration(
-        "file_info", frozenset({ToolCapability.FS_READ}),
+        "file_info",
+        frozenset({ToolCapability.FS_READ}),
         "File metadata",
     ),
     "diff_files": ToolCapabilityDeclaration(
-        "diff_files", frozenset({ToolCapability.FS_READ}),
+        "diff_files",
+        frozenset({ToolCapability.FS_READ}),
         "Unified diff between two files",
     ),
-
     # Search tools
     "search_code": ToolCapabilityDeclaration(
-        "search_code", frozenset({ToolCapability.FS_READ}),
+        "search_code",
+        frozenset({ToolCapability.FS_READ}),
         "Regex search across codebase",
     ),
     "list_directory": ToolCapabilityDeclaration(
-        "list_directory", frozenset({ToolCapability.FS_READ}),
+        "list_directory",
+        frozenset({ToolCapability.FS_READ}),
         "List directory contents",
     ),
     "find_files": ToolCapabilityDeclaration(
-        "find_files", frozenset({ToolCapability.FS_READ}),
+        "find_files",
+        frozenset({ToolCapability.FS_READ}),
         "Glob-based file finder",
     ),
     "get_project_structure": ToolCapabilityDeclaration(
-        "get_project_structure", frozenset({ToolCapability.FS_READ}),
+        "get_project_structure",
+        frozenset({ToolCapability.FS_READ}),
         "Tree view of project",
     ),
-
     # Repo intelligence tools
     "repo_index": ToolCapabilityDeclaration(
-        "repo_index", frozenset({ToolCapability.FS_READ, ToolCapability.REPO_INDEX}),
+        "repo_index",
+        frozenset({ToolCapability.FS_READ, ToolCapability.REPO_INDEX}),
         "Build or refresh repo graph",
     ),
     "repo_symbols": ToolCapabilityDeclaration(
-        "repo_symbols", frozenset({ToolCapability.FS_READ, ToolCapability.REPO_INDEX}),
+        "repo_symbols",
+        frozenset({ToolCapability.FS_READ, ToolCapability.REPO_INDEX}),
         "Find declarations and callers",
     ),
     "repo_impact": ToolCapabilityDeclaration(
-        "repo_impact", frozenset({ToolCapability.FS_READ, ToolCapability.REPO_INDEX}),
+        "repo_impact",
+        frozenset({ToolCapability.FS_READ, ToolCapability.REPO_INDEX}),
         "Find reverse dependencies and impacted tests",
     ),
     "repo_context": ToolCapabilityDeclaration(
-        "repo_context", frozenset({ToolCapability.FS_READ, ToolCapability.REPO_INDEX}),
+        "repo_context",
+        frozenset({ToolCapability.FS_READ, ToolCapability.REPO_INDEX}),
         "Rank task-relevant files",
     ),
     "repo_routes": ToolCapabilityDeclaration(
-        "repo_routes", frozenset({ToolCapability.FS_READ, ToolCapability.REPO_INDEX}),
+        "repo_routes",
+        frozenset({ToolCapability.FS_READ, ToolCapability.REPO_INDEX}),
         "Inspect application routes",
     ),
     "repo_models": ToolCapabilityDeclaration(
-        "repo_models", frozenset({ToolCapability.FS_READ, ToolCapability.REPO_INDEX}),
+        "repo_models",
+        frozenset({ToolCapability.FS_READ, ToolCapability.REPO_INDEX}),
         "Inspect database models",
     ),
-
     # Shell tools
     "run_command": ToolCapabilityDeclaration(
-        "run_command", frozenset({ToolCapability.CMD_EXEC}),
+        "run_command",
+        frozenset({ToolCapability.CMD_EXEC}),
         "Shell command execution",
     ),
     "run_process": ToolCapabilityDeclaration(
-        "run_process", frozenset({ToolCapability.CMD_EXEC}),
+        "run_process",
+        frozenset({ToolCapability.CMD_EXEC}),
         "Sandboxed process execution",
     ),
     "process_run": ToolCapabilityDeclaration(
-        "process_run", frozenset({ToolCapability.CMD_EXEC}),
+        "process_run",
+        frozenset({ToolCapability.CMD_EXEC}),
         "Background process execution",
     ),
-
     # Git tools
     "git_status": ToolCapabilityDeclaration(
-        "git_status", frozenset({ToolCapability.GIT_READ}),
+        "git_status",
+        frozenset({ToolCapability.GIT_READ}),
         "Repository status",
     ),
     "git_diff": ToolCapabilityDeclaration(
-        "git_diff", frozenset({ToolCapability.GIT_READ}),
+        "git_diff",
+        frozenset({ToolCapability.GIT_READ}),
         "View diffs",
     ),
     "git_log": ToolCapabilityDeclaration(
-        "git_log", frozenset({ToolCapability.GIT_READ}),
+        "git_log",
+        frozenset({ToolCapability.GIT_READ}),
         "View commit history",
     ),
     "git_commit": ToolCapabilityDeclaration(
-        "git_commit", frozenset({ToolCapability.GIT_MUTATION}),
+        "git_commit",
+        frozenset({ToolCapability.GIT_MUTATION}),
         "Stage and commit changes",
     ),
     "git_branch": ToolCapabilityDeclaration(
-        "git_branch", frozenset({ToolCapability.GIT_READ, ToolCapability.GIT_MUTATION}),
+        "git_branch",
+        frozenset({ToolCapability.GIT_READ, ToolCapability.GIT_MUTATION}),
         "Branch operations",
     ),
-
     # Web tools
     "web_fetch": ToolCapabilityDeclaration(
-        "web_fetch", frozenset({ToolCapability.NETWORK}),
+        "web_fetch",
+        frozenset({ToolCapability.NETWORK}),
         "Fetch and read URLs",
     ),
     "web_search": ToolCapabilityDeclaration(
-        "web_search", frozenset({ToolCapability.NETWORK}),
+        "web_search",
+        frozenset({ToolCapability.NETWORK}),
         "Web search via DuckDuckGo",
     ),
-
     # Behavioral verification tools
     "api_check": ToolCapabilityDeclaration(
-        "api_check", frozenset({ToolCapability.NETWORK, ToolCapability.CMD_EXEC}),
+        "api_check",
+        frozenset({ToolCapability.NETWORK, ToolCapability.CMD_EXEC}),
         "Validate local HTTP contract",
     ),
     "database_check": ToolCapabilityDeclaration(
-        "database_check", frozenset({ToolCapability.FS_READ}),
+        "database_check",
+        frozenset({ToolCapability.FS_READ}),
         "Validate SQLite integrity",
     ),
     "browser_check": ToolCapabilityDeclaration(
-        "browser_check", frozenset({ToolCapability.NETWORK, ToolCapability.CMD_EXEC}),
+        "browser_check",
+        frozenset({ToolCapability.NETWORK, ToolCapability.CMD_EXEC}),
         "Run Playwright workflow",
     ),
     "security_scan": ToolCapabilityDeclaration(
-        "security_scan", frozenset({ToolCapability.FS_READ}),
+        "security_scan",
+        frozenset({ToolCapability.FS_READ}),
         "Deterministic security scan",
     ),
 }

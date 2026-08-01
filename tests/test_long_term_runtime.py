@@ -74,9 +74,7 @@ def test_budget_controller_blocks_calls_and_currency_without_prices():
 
 
 def test_budgeted_client_accounts_provider_usage():
-    response = SimpleNamespace(
-        usage=SimpleNamespace(prompt_tokens=120, completion_tokens=30)
-    )
+    response = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=120, completion_tokens=30))
 
     class Client:
         def chat(self, *args, **kwargs):
@@ -101,9 +99,7 @@ def test_budgeted_client_accounts_provider_usage():
 
 def test_budgeted_client_caps_completion_before_provider_call():
     captured = {}
-    response = SimpleNamespace(
-        usage=SimpleNamespace(prompt_tokens=2, completion_tokens=4)
-    )
+    response = SimpleNamespace(usage=SimpleNamespace(prompt_tokens=2, completion_tokens=4))
 
     class Client:
         def chat(self, *args, **kwargs):
@@ -161,16 +157,13 @@ def test_planner_creates_acceptance_criteria_and_task_contract(tmp_path, monkeyp
 
 def test_repo_graph_indexes_symbols_callers_and_impacted_tests(tmp_path):
     (tmp_path / "app.py").write_text(
-        "def calculate(value):\n"
-        "    return value + 1\n",
+        "def calculate(value):\n    return value + 1\n",
         encoding="utf-8",
     )
     tests = tmp_path / "tests"
     tests.mkdir()
     (tests / "test_app.py").write_text(
-        "from app import calculate\n\n"
-        "def test_calculate():\n"
-        "    assert calculate(1) == 2\n",
+        "from app import calculate\n\ndef test_calculate():\n    assert calculate(1) == 2\n",
         encoding="utf-8",
     )
     graph = RepoGraph(tmp_path, state_root=tmp_path / "state")
@@ -186,8 +179,7 @@ def test_repo_graph_indexes_symbols_callers_and_impacted_tests(tmp_path):
     second = graph.build()
     assert second.reused == 2
     (tmp_path / "app.py").write_text(
-        "def calculate(value):\n"
-        "    return value + 2\n",
+        "def calculate(value):\n    return value + 2\n",
         encoding="utf-8",
     )
     updated = graph.update_paths(["app.py"])
@@ -296,9 +288,7 @@ def test_agent_run_ledger_tracks_verified_tools_and_complete_rollback(
         {
             "path": "test_calculator.py",
             "content": (
-                "from calculator import add\n\n"
-                "def test_add():\n"
-                "    assert add(2, 3) == 5\n"
+                "from calculator import add\n\ndef test_add():\n    assert add(2, 3) == 5\n"
             ),
         },
     )
@@ -326,6 +316,5 @@ def test_agent_run_ledger_tracks_verified_tools_and_complete_rollback(
     assert not (tmp_path / "calculator.py").exists()
     assert not (tmp_path / "test_calculator.py").exists()
     assert (
-        agent.run_ledger.resume_summary()["final_report"]["status"]
-        == RunStatus.ROLLED_BACK.value
+        agent.run_ledger.resume_summary()["final_report"]["status"] == RunStatus.ROLLED_BACK.value
     )

@@ -17,15 +17,15 @@ console = Console()
 
 # ── Color palette ────────────────────────────────────────────────────────────
 
-CYAN    = "#00f0ff"  # Neon Electric Cyan
+CYAN = "#00f0ff"  # Neon Electric Cyan
 MAGENTA = "#d946ef"  # Deep Fuchsia
-GREEN   = "#10b981"  # Emerald Mint Green
-ORANGE  = "#f59e0b"  # Warm Amber Orange
-RED     = "#f43f5e"  # Rose Coral Red
-DIM     = "#64748b"  # Slate Grey
-WHITE   = "#f8fafc"  # Off-White
-GOLD    = "#fbbf24"  # Gold Yellow
-PURPLE  = "#8b5cf6"  # Electric Violet
+GREEN = "#10b981"  # Emerald Mint Green
+ORANGE = "#f59e0b"  # Warm Amber Orange
+RED = "#f43f5e"  # Rose Coral Red
+DIM = "#64748b"  # Slate Grey
+WHITE = "#f8fafc"  # Off-White
+GOLD = "#fbbf24"  # Gold Yellow
+PURPLE = "#8b5cf6"  # Electric Violet
 
 
 def print_banner():
@@ -49,7 +49,11 @@ def print_banner():
 
 def print_model_info(model_key: str, model_cfg: dict):
     """Print current model info inside a premium rounded panel."""
-    tools_str = f"[bold {GREEN}]Enabled[/]" if model_cfg.get("supports_tools") else f"[bold {RED}]Disabled[/]"
+    tools_str = (
+        f"[bold {GREEN}]Enabled[/]"
+        if model_cfg.get("supports_tools")
+        else f"[bold {RED}]Disabled[/]"
+    )
     content = (
         f"  [bold {WHITE}]{model_cfg['name']}[/]  [dim]•[/]  [italic {DIM}]{model_cfg['id']}[/]\n"
         f"  [bold {DIM}]Desc:[/] {model_cfg['description']}\n\n"
@@ -83,7 +87,10 @@ def print_help():
     commands = [
         ("/help", "Show this command helper menu"),
         ("/models", "List available Ceiling models and the local Nova Intern option"),
-        ("/model <name>", "Switch the active Ceiling model (e.g. /model kimi; /model nova_codex for local-only Nova)"),
+        (
+            "/model <name>",
+            "Switch the active Ceiling model (e.g. /model kimi; /model nova_codex for local-only Nova)",
+        ),
         ("/tools", "List all 38 built-in developer tools"),
         ("/clear", "Clear session conversation history"),
         ("/reset", "Reset the conversation session and clear terminal"),
@@ -271,6 +278,7 @@ def print_conversation_list(conversations: list[dict]):
 
 class LiveStatus:
     """Stream-safe live status manager to show active model thinking & tool drafting."""
+
     def __init__(self, console_obj=None):
         self.console = console_obj or console
         self._status = None
@@ -316,7 +324,7 @@ def print_tool_call(name: str, args: dict):
             v_display = str(v).replace("\n", "\\n")
         v_display = escape(v_display)
         args_list.append(f"[bold {DIM}]{k}=[/][#bbf7ff]{v_display}[/]")
-    
+
     extra = ""
     if name in ("write_file", "edit_file", "patch_file"):
         content = args.get("content", "") or args.get("new_text", "") or args.get("new_content", "")
@@ -335,9 +343,15 @@ def print_tool_result(result: str, success: bool = True):
         if not display:
             console.print(f"    [bold {GREEN}]✓ Success[/] [dim](no output returned)[/]")
             return
-        
-        if display.startswith("✅ Wrote") or display.startswith("✅ Edited") or display.startswith("✅ Patched"):
-            console.print(f"    [bold {GREEN}]✓ Success:[/] [bold {WHITE}]{escape(display.replace('✅ ', ''))}[/]")
+
+        if (
+            display.startswith("✅ Wrote")
+            or display.startswith("✅ Edited")
+            or display.startswith("✅ Patched")
+        ):
+            console.print(
+                f"    [bold {GREEN}]✓ Success:[/] [bold {WHITE}]{escape(display.replace('✅ ', ''))}[/]"
+            )
             return
 
         lines = display.splitlines()
@@ -347,7 +361,7 @@ def print_tool_result(result: str, success: bool = True):
             preview = "\n".join(lines[:8])
             if len(lines) > 8:
                 preview += f"\n[bold {DIM}]... ({len(lines) - 8} more lines of output) ...[/]"
-            
+
             console.print(
                 Panel(
                     escape(preview),
@@ -357,7 +371,9 @@ def print_tool_result(result: str, success: bool = True):
                 )
             )
     else:
-        console.print(f"    [bold {RED}]✗ Tool Error:[/] [italic {RED}]{escape(str(result).strip())}[/]")
+        console.print(
+            f"    [bold {RED}]✗ Tool Error:[/] [italic {RED}]{escape(str(result).strip())}[/]"
+        )
 
 
 def print_streaming_start():
@@ -404,7 +420,12 @@ def print_token_usage(prompt_tokens: int, completion_tokens: int, total_tokens: 
     table.add_row("Completion tokens", f"{completion_tokens:,}")
     table.add_row("Total tokens", f"[bold {GREEN}]{total_tokens:,}[/]")
     console.print(
-        Panel(table, title=f" [bold {GOLD}]📊 Session Token Usage[/] ", border_style=DIM, padding=(0, 1))
+        Panel(
+            table,
+            title=f" [bold {GOLD}]📊 Session Token Usage[/] ",
+            border_style=DIM,
+            padding=(0, 1),
+        )
     )
 
 
@@ -429,9 +450,9 @@ def get_prompt(model_name: str) -> str:
         console.print(
             f" [bold {CYAN}]nexusai[/] [dim]•[/] [bold {PURPLE}]{model_name}[/] [dim]•[/] [bold {GREEN}]{pwd}[/]"
         )
-        
+
         # Use HTML formatting in prompt_toolkit for consistent cyan color
-        return _prompt_session.prompt(HTML('<ansicyan> ❯ </ansicyan>'))
+        return _prompt_session.prompt(HTML("<ansicyan> ❯ </ansicyan>"))
 
     except ImportError:
         # Fallback to standard input if prompt_toolkit isn't loaded

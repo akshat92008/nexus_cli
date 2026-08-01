@@ -7,7 +7,7 @@ must preserve both the synchronous and streaming forms and forward kwargs.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Iterator
+from typing import Any
 
 
 class Provider(ABC):

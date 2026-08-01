@@ -43,9 +43,7 @@ def test_hosted_agent_does_not_require_nova(tmp_path):
 def test_auto_local_intern_activates_only_after_successful_probe(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "nexus.preflight.probe_ollama",
-        lambda *_args, **_kwargs: BackendProbe(
-            True, "ollama", "ready", "available"
-        ),
+        lambda *_args, **_kwargs: BackendProbe(True, "ollama", "ready", "available"),
     )
     agent = Agent(
         api_key="test",
@@ -89,7 +87,6 @@ def test_budget_estimates_usage_when_provider_omits_it():
     assert usage["completion_tokens"] > 0
 
 
-
 def test_custom_openai_compatible_model_initializes(tmp_path, monkeypatch):
     monkeypatch.setenv("NEXUS_OPENAI_BASE_URL", "https://provider.example/v1")
     monkeypatch.setenv("NEXUS_OPENAI_API_KEY", "test-key")
@@ -107,6 +104,7 @@ def test_no_tools_is_applied_inside_agent_configuration(tmp_path):
     )
     assert agent.model_cfg["supports_tools"] is False
     assert agent._get_tools() is None
+
 
 def test_benchmark_reports_local_backend_preflight_failure(
     tmp_path: Path,

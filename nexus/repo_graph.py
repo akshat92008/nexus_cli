@@ -153,11 +153,7 @@ class RepoGraph:
             except OSError:
                 continue
             prior = old.get(relative)
-            if (
-                prior
-                and prior.mtime_ns == stat.st_mtime_ns
-                and prior.size == stat.st_size
-            ):
+            if prior and prior.mtime_ns == stat.st_mtime_ns and prior.size == stat.st_size:
                 updated[relative] = prior
                 stats.reused += 1
                 continue
@@ -277,7 +273,11 @@ class RepoGraph:
                 if candidate.path in visited:
                     continue
                 deps = self.dependencies(candidate.path)["imports"]
-                if any(self._import_matches(dep, target, self._module_names(target)) for dep in deps for target in frontier):
+                if any(
+                    self._import_matches(dep, target, self._module_names(target))
+                    for dep in deps
+                    for target in frontier
+                ):
                     if candidate.is_test:
                         impacted.add(candidate.path)
                     else:
@@ -491,11 +491,7 @@ class RepoGraph:
 
     def frameworks(self) -> list[str]:
         """Detect common frameworks from indexed imports and config files."""
-        imports = {
-            item.lower()
-            for record in self.files.values()
-            for item in record.imports
-        }
+        imports = {item.lower() for record in self.files.values() for item in record.imports}
         paths = set(self.files)
         detected = []
         mapping = (
@@ -627,9 +623,7 @@ class RepoGraph:
 
             def visit_ClassDef(self, node: ast.ClassDef) -> None:
                 qualified = ".".join([*parents, node.name])
-                symbols.append(
-                    SymbolRecord(node.name, "class", relative, node.lineno, qualified)
-                )
+                symbols.append(SymbolRecord(node.name, "class", relative, node.lineno, qualified))
                 parents.append(node.name)
                 self.generic_visit(node)
                 parents.pop()
@@ -637,9 +631,7 @@ class RepoGraph:
             def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
                 qualified = ".".join([*parents, node.name])
                 kind = "method" if parents else "function"
-                symbols.append(
-                    SymbolRecord(node.name, kind, relative, node.lineno, qualified)
-                )
+                symbols.append(SymbolRecord(node.name, kind, relative, node.lineno, qualified))
                 parents.append(node.name)
                 self.generic_visit(node)
                 parents.pop()
@@ -689,8 +681,7 @@ class RepoGraph:
                     elif isinstance(base, ast.Attribute):
                         base_names.append(base.attr)
                 if any(
-                    name in {"Base", "Model", "Document", "DeclarativeBase"}
-                    for name in base_names
+                    name in {"Base", "Model", "Document", "DeclarativeBase"} for name in base_names
                 ):
                     models.append(node.name)
         return routes, models
@@ -723,9 +714,7 @@ class RepoGraph:
         for kind, pattern in declarations:
             for match in re.finditer(pattern, source):
                 line = source.count("\n", 0, match.start()) + 1
-                symbols.append(
-                    SymbolRecord(match.group(1), kind, relative, line, match.group(1))
-                )
+                symbols.append(SymbolRecord(match.group(1), kind, relative, line, match.group(1)))
 
         declared = {item.name for item in symbols}
         call_names = re.findall(r"\b([A-Za-z_$][\w$]*)\s*\(", source)

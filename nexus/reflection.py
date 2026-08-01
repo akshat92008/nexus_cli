@@ -13,21 +13,23 @@ from enum import Enum
 
 class ReflectionVerdict(str, Enum):
     """Outcome of a reflection check."""
-    SUCCESS = "success"         # Action succeeded, continue
-    RETRY = "retry"             # Action failed, try again (possibly differently)
-    ROLLBACK = "rollback"       # Action caused damage, undo it
-    ESCALATE = "escalate"       # Can't fix automatically, ask user
-    CONTINUE = "continue"       # Partial success, keep going
-    SKIP = "skip"               # Non-critical failure, skip and move on
+
+    SUCCESS = "success"  # Action succeeded, continue
+    RETRY = "retry"  # Action failed, try again (possibly differently)
+    ROLLBACK = "rollback"  # Action caused damage, undo it
+    ESCALATE = "escalate"  # Can't fix automatically, ask user
+    CONTINUE = "continue"  # Partial success, keep going
+    SKIP = "skip"  # Non-critical failure, skip and move on
 
 
 @dataclass
 class ReflectionResult:
     """Result of a reflection analysis."""
+
     verdict: ReflectionVerdict
     reason: str
     suggestion: str = ""
-    confidence: float = 1.0     # 0.0 to 1.0
+    confidence: float = 1.0  # 0.0 to 1.0
     retry_count: int = 0
     max_retries: int = 3
 
@@ -68,7 +70,6 @@ _ERROR_PATTERNS = {
         "verdict": ReflectionVerdict.RETRY,
         "suggestion": "File is too large to read entirely. Use start_line/end_line parameters or search_code instead.",
     },
-
     # Command execution errors
     r"exit code [1-9]": {
         "verdict": ReflectionVerdict.RETRY,
@@ -82,7 +83,6 @@ _ERROR_PATTERNS = {
         "verdict": ReflectionVerdict.ESCALATE,
         "suggestion": "Required tool is not installed. Ask the user to install it.",
     },
-
     # Git errors
     r"not a git repository": {
         "verdict": ReflectionVerdict.CONTINUE,
@@ -96,7 +96,6 @@ _ERROR_PATTERNS = {
         "verdict": ReflectionVerdict.CONTINUE,
         "suggestion": "No changes to commit. This is fine, continue with the next step.",
     },
-
     # Build/test errors
     r"SyntaxError|IndentationError|TabError": {
         "verdict": ReflectionVerdict.RETRY,
@@ -114,7 +113,6 @@ _ERROR_PATTERNS = {
         "verdict": ReflectionVerdict.RETRY,
         "suggestion": "Test failure. Read the test output, understand what's expected, and fix the code.",
     },
-
     # Network errors
     r"ConnectionError|ConnectionRefused|ECONNREFUSED": {
         "verdict": ReflectionVerdict.RETRY,
@@ -152,7 +150,7 @@ class ReflectionEngine:
 
     def __init__(self):
         self._retry_counters: dict[str, int] = {}  # tool_call_key -> retry count
-        self._action_history: list[dict] = []       # Recent actions for pattern detection
+        self._action_history: list[dict] = []  # Recent actions for pattern detection
 
     def reflect(
         self,
@@ -174,12 +172,14 @@ class ReflectionEngine:
             ReflectionResult with verdict and suggestions
         """
         # Track action history
-        self._action_history.append({
-            "tool": tool_name,
-            "args": tool_args,
-            "output_preview": tool_output[:200],
-            "success": not tool_output.startswith("❌"),
-        })
+        self._action_history.append(
+            {
+                "tool": tool_name,
+                "args": tool_args,
+                "output_preview": tool_output[:200],
+                "success": not tool_output.startswith("❌"),
+            }
+        )
 
         # Keep history manageable
         if len(self._action_history) > 50:
@@ -212,8 +212,7 @@ class ReflectionEngine:
 
         # Check for repeated failures (same tool, same args)
         recent_failures = [
-            a for a in self._action_history[-5:]
-            if a["tool"] == tool_name and not a["success"]
+            a for a in self._action_history[-5:] if a["tool"] == tool_name and not a["success"]
         ]
         if len(recent_failures) >= 3:
             return ReflectionResult(

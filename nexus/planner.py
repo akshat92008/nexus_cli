@@ -19,15 +19,18 @@ from nexus.paths import nexus_home
 
 # ── Plan Types ───────────────────────────────────────────────────────────────
 
+
 class PlanType(str, Enum):
     """Whether to execute directly or plan first."""
-    DIRECT = "direct"       # Simple, execute immediately
-    PLANNED = "planned"     # Complex, create a plan first
-    RESEARCH = "research"   # Needs investigation before acting
+
+    DIRECT = "direct"  # Simple, execute immediately
+    PLANNED = "planned"  # Complex, create a plan first
+    RESEARCH = "research"  # Needs investigation before acting
 
 
 class TaskStatus(str, Enum):
     """Status of a plan step."""
+
     PENDING = "pending"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
@@ -38,25 +41,27 @@ class TaskStatus(str, Enum):
 
 class IntentType(str, Enum):
     """High-level user intent classification."""
-    BUILD = "build"           # Create something new
-    FIX = "fix"               # Debug / fix a bug
-    REFACTOR = "refactor"     # Improve existing code
-    REVIEW = "review"         # Code review
-    EXPLAIN = "explain"       # Explain code
-    DEPLOY = "deploy"         # Deployment tasks
-    TEST = "test"             # Write or run tests
-    DOCS = "docs"             # Documentation
-    SEARCH = "search"         # Find information
-    MIGRATE = "migrate"       # Migration tasks
-    OPTIMIZE = "optimize"     # Performance optimization
-    SECURITY = "security"     # Security audit
-    CONFIGURE = "configure"   # Configuration tasks
-    CHAT = "chat"             # General conversation
+
+    BUILD = "build"  # Create something new
+    FIX = "fix"  # Debug / fix a bug
+    REFACTOR = "refactor"  # Improve existing code
+    REVIEW = "review"  # Code review
+    EXPLAIN = "explain"  # Explain code
+    DEPLOY = "deploy"  # Deployment tasks
+    TEST = "test"  # Write or run tests
+    DOCS = "docs"  # Documentation
+    SEARCH = "search"  # Find information
+    MIGRATE = "migrate"  # Migration tasks
+    OPTIMIZE = "optimize"  # Performance optimization
+    SECURITY = "security"  # Security audit
+    CONFIGURE = "configure"  # Configuration tasks
+    CHAT = "chat"  # General conversation
     UNKNOWN = "unknown"
 
 
 class TaskType(str, Enum):
     """Broad categorization of tasks for verification boundaries."""
+
     READ_ONLY = "read_only"
     MUTATION = "mutation"
     OPERATIONAL = "operational"
@@ -72,18 +77,21 @@ def get_task_type(intent: IntentType) -> TaskType:
 
 class Difficulty(str, Enum):
     """Estimated task difficulty."""
-    TRIVIAL = "trivial"     # < 1 tool call
-    SIMPLE = "simple"       # 1-3 tool calls
-    MODERATE = "moderate"   # 4-10 tool calls
-    COMPLEX = "complex"     # 10-25 tool calls
-    MASSIVE = "massive"     # 25+ tool calls
+
+    TRIVIAL = "trivial"  # < 1 tool call
+    SIMPLE = "simple"  # 1-3 tool calls
+    MODERATE = "moderate"  # 4-10 tool calls
+    COMPLEX = "complex"  # 10-25 tool calls
+    MASSIVE = "massive"  # 25+ tool calls
 
 
 # ── Data Classes ─────────────────────────────────────────────────────────────
 
+
 @dataclass
 class PlanStep:
     """A single step in an execution plan."""
+
     id: int
     title: str
     description: str
@@ -114,6 +122,7 @@ class PlanStep:
 @dataclass
 class ExecutionPlan:
     """A structured execution plan for a complex task."""
+
     id: str
     goal: str
     intent: IntentType
@@ -353,10 +362,7 @@ def estimate_difficulty(user_input: str, intent: IntentType) -> Difficulty:
         r"\b(frontend|backend|fullstack|full.stack)\b",
     ]
 
-    complexity_score = sum(
-        len(re.findall(p, text, re.IGNORECASE))
-        for p in complexity_signals
-    )
+    complexity_score = sum(len(re.findall(p, text, re.IGNORECASE)) for p in complexity_signals)
 
     if complexity_score >= 5 or word_count > 100:
         return Difficulty.MASSIVE
@@ -390,20 +396,156 @@ def should_plan(difficulty: Difficulty, intent: IntentType) -> PlanType:
 # ── Skills Detection ─────────────────────────────────────────────────────────
 
 _SKILL_KEYWORDS: dict[str, list[str]] = {
-    "frontend": ["react", "vue", "angular", "svelte", "next.js", "nextjs", "css", "html", "ui", "component", "jsx", "tsx", "tailwind"],
-    "backend": ["api", "server", "endpoint", "route", "middleware", "fastapi", "express", "django", "flask", "nestjs", "rest", "graphql"],
-    "database": ["database", "sql", "postgres", "mysql", "mongo", "redis", "prisma", "drizzle", "migration", "schema", "query", "index"],
-    "security": ["security", "vulnerability", "xss", "csrf", "injection", "auth", "permission", "encrypt", "hash", "secret", "cve"],
-    "devops": ["docker", "kubernetes", "k8s", "ci/cd", "github actions", "deploy", "nginx", "terraform", "helm", "container"],
-    "testing": ["test", "jest", "pytest", "mocha", "cypress", "playwright", "coverage", "mock", "stub", "e2e", "unit test"],
-    "performance": ["performance", "optimize", "speed", "cache", "lazy", "bundle", "memory", "cpu", "profil", "benchmark"],
-    "refactoring": ["refactor", "clean", "extract", "split", "rename", "restructure", "dry", "solid", "pattern"],
-    "api_design": ["api design", "rest", "graphql", "openapi", "swagger", "endpoint", "schema", "contract"],
-    "debugging": ["debug", "error", "crash", "exception", "stack trace", "breakpoint", "log", "diagnose"],
+    "frontend": [
+        "react",
+        "vue",
+        "angular",
+        "svelte",
+        "next.js",
+        "nextjs",
+        "css",
+        "html",
+        "ui",
+        "component",
+        "jsx",
+        "tsx",
+        "tailwind",
+    ],
+    "backend": [
+        "api",
+        "server",
+        "endpoint",
+        "route",
+        "middleware",
+        "fastapi",
+        "express",
+        "django",
+        "flask",
+        "nestjs",
+        "rest",
+        "graphql",
+    ],
+    "database": [
+        "database",
+        "sql",
+        "postgres",
+        "mysql",
+        "mongo",
+        "redis",
+        "prisma",
+        "drizzle",
+        "migration",
+        "schema",
+        "query",
+        "index",
+    ],
+    "security": [
+        "security",
+        "vulnerability",
+        "xss",
+        "csrf",
+        "injection",
+        "auth",
+        "permission",
+        "encrypt",
+        "hash",
+        "secret",
+        "cve",
+    ],
+    "devops": [
+        "docker",
+        "kubernetes",
+        "k8s",
+        "ci/cd",
+        "github actions",
+        "deploy",
+        "nginx",
+        "terraform",
+        "helm",
+        "container",
+    ],
+    "testing": [
+        "test",
+        "jest",
+        "pytest",
+        "mocha",
+        "cypress",
+        "playwright",
+        "coverage",
+        "mock",
+        "stub",
+        "e2e",
+        "unit test",
+    ],
+    "performance": [
+        "performance",
+        "optimize",
+        "speed",
+        "cache",
+        "lazy",
+        "bundle",
+        "memory",
+        "cpu",
+        "profil",
+        "benchmark",
+    ],
+    "refactoring": [
+        "refactor",
+        "clean",
+        "extract",
+        "split",
+        "rename",
+        "restructure",
+        "dry",
+        "solid",
+        "pattern",
+    ],
+    "api_design": [
+        "api design",
+        "rest",
+        "graphql",
+        "openapi",
+        "swagger",
+        "endpoint",
+        "schema",
+        "contract",
+    ],
+    "debugging": [
+        "debug",
+        "error",
+        "crash",
+        "exception",
+        "stack trace",
+        "breakpoint",
+        "log",
+        "diagnose",
+    ],
     "documentation": ["document", "readme", "docstring", "jsdoc", "swagger", "guide", "wiki"],
-    "git_workflow": ["git", "branch", "merge", "rebase", "cherry-pick", "bisect", "stash", "tag", "release"],
+    "git_workflow": [
+        "git",
+        "branch",
+        "merge",
+        "rebase",
+        "cherry-pick",
+        "bisect",
+        "stash",
+        "tag",
+        "release",
+    ],
     "migration": ["migrate", "convert", "port", "upgrade", "typescript", "legacy", "modernize"],
-    "ai_engineer": ["llm", "rag", "embedding", "vector", "langchain", "openai", "anthropic", "prompt", "fine-tune", "agent", "chatbot"],
+    "ai_engineer": [
+        "llm",
+        "rag",
+        "embedding",
+        "vector",
+        "langchain",
+        "openai",
+        "anthropic",
+        "prompt",
+        "fine-tune",
+        "agent",
+        "chatbot",
+    ],
     "mobile": ["react native", "flutter", "swift", "kotlin", "ios", "android", "mobile", "expo"],
 }
 
@@ -466,7 +608,9 @@ class PlanningEngine:
             "skills_needed": skills,
         }
 
-    def create_plan(self, goal: str, analysis: dict) -> ExecutionPlan:
+    def create_plan(
+        self, goal: str, analysis: dict, repo_summary: dict | None = None
+    ) -> ExecutionPlan:
         """
         Create an execution plan for a complex task.
 
@@ -474,9 +618,7 @@ class PlanningEngine:
         during execution. The plan provides structure and ordering.
         """
         self._plan_counter += 1
-        plan_id = (
-            f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{self._plan_counter}"
-        )
+        plan_id = f"plan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_{self._plan_counter}"
 
         intent = analysis["intent"]
         difficulty = analysis["difficulty"]
@@ -484,6 +626,29 @@ class PlanningEngine:
 
         # Generate steps based on intent
         steps = self._generate_steps(goal, intent, difficulty)
+
+        # Enforce repo_understanding if the codebase is large
+        if repo_summary and (
+            repo_summary.get("total_files", 0) > 10 or repo_summary.get("total_symbols", 0) > 50
+        ):
+            from nexus.planner import PlanStep
+
+            understand_step = PlanStep(
+                id=0,
+                title="Understand Repository (Mandatory)",
+                description="Use repo_index, repo_symbols, and search_code to map out the codebase architecture before proceeding.",
+                tools_needed=["repo_index", "repo_symbols", "search_code"],
+                depends_on=[],
+            )
+            steps.insert(0, understand_step)
+            # Re-index steps
+            for i, step in enumerate(steps):
+                step.id = i
+                if i > 0 and not step.depends_on:
+                    step.depends_on = [i - 1]
+                elif step.depends_on:
+                    step.depends_on = [d + 1 for d in step.depends_on]
+
         verification = self._generate_verification(intent, skills)
         acceptance = self._generate_acceptance_criteria(goal, intent, verification)
         permitted_files = self._extract_permitted_files(goal)
@@ -491,7 +656,11 @@ class PlanningEngine:
         for step in steps:
             step.permitted_files = list(permitted_files)
             step.acceptance_criteria = list(acceptance)
-            step.checks = list(verification) if "test" in step.title.lower() or "verify" in step.title.lower() else []
+            step.checks = (
+                list(verification)
+                if "test" in step.title.lower() or "verify" in step.title.lower()
+                else []
+            )
             step.risk = self._step_risk(step, intent)
             step.retry_limit = 1 if step.risk == "high" else 2
             step.max_tool_calls = {
@@ -531,30 +700,76 @@ class PlanningEngine:
         self._save_plan(plan)
         return plan
 
-    def _generate_steps(self, goal: str, intent: IntentType, difficulty: Difficulty) -> list[PlanStep]:
+    def _generate_steps(
+        self, goal: str, intent: IntentType, difficulty: Difficulty
+    ) -> list[PlanStep]:
         """Generate plan steps based on intent type."""
         templates = {
             IntentType.BUILD: [
-                ("Understand requirements", "Analyze the user's request and identify all components needed", ["read_file", "get_project_structure"]),
-                ("Research existing code", "Read relevant existing files to understand the codebase", ["read_file", "search_code", "list_directory"]),
+                (
+                    "Understand requirements",
+                    "Analyze the user's request and identify all components needed",
+                    ["read_file", "get_project_structure"],
+                ),
+                (
+                    "Research existing code",
+                    "Read relevant existing files to understand the codebase",
+                    ["read_file", "search_code", "list_directory"],
+                ),
                 ("Plan architecture", "Design the file structure and component architecture", []),
-                ("Implement core logic", "Write the main implementation files", ["write_file", "edit_file"]),
-                ("Add supporting code", "Implement helpers, utilities, types, and configuration", ["write_file", "edit_file"]),
-                ("Wire components together", "Connect all pieces — imports, routes, configuration", ["edit_file", "multi_edit"]),
+                (
+                    "Implement core logic",
+                    "Write the main implementation files",
+                    ["write_file", "edit_file"],
+                ),
+                (
+                    "Add supporting code",
+                    "Implement helpers, utilities, types, and configuration",
+                    ["write_file", "edit_file"],
+                ),
+                (
+                    "Wire components together",
+                    "Connect all pieces — imports, routes, configuration",
+                    ["edit_file", "multi_edit"],
+                ),
                 ("Test the implementation", "Run the code and fix any errors", ["run_command"]),
-                ("Polish and document", "Add error handling, comments, and documentation", ["edit_file"]),
+                (
+                    "Polish and document",
+                    "Add error handling, comments, and documentation",
+                    ["edit_file"],
+                ),
                 ("Commit changes", "Stage and commit with a meaningful message", ["git_commit"]),
             ],
             IntentType.FIX: [
-                ("Reproduce the error", "Understand the error by reading logs and running the failing code", ["run_command", "read_file"]),
-                ("Trace the root cause", "Search the codebase to find where the error originates", ["search_code", "read_file"]),
+                (
+                    "Reproduce the error",
+                    "Understand the error by reading logs and running the failing code",
+                    ["run_command", "read_file"],
+                ),
+                (
+                    "Trace the root cause",
+                    "Search the codebase to find where the error originates",
+                    ["search_code", "read_file"],
+                ),
                 ("Implement the fix", "Apply the code fix", ["edit_file"]),
                 ("Verify the fix", "Run the code again to confirm the fix works", ["run_command"]),
-                ("Add regression test", "Write a test to prevent this bug from recurring", ["write_file"]),
-                ("Commit the fix", "Commit with a descriptive message referencing the bug", ["git_commit"]),
+                (
+                    "Add regression test",
+                    "Write a test to prevent this bug from recurring",
+                    ["write_file"],
+                ),
+                (
+                    "Commit the fix",
+                    "Commit with a descriptive message referencing the bug",
+                    ["git_commit"],
+                ),
             ],
             IntentType.REFACTOR: [
-                ("Analyze current code", "Read and understand the code to be refactored", ["read_file", "search_code"]),
+                (
+                    "Analyze current code",
+                    "Read and understand the code to be refactored",
+                    ["read_file", "search_code"],
+                ),
                 ("Identify improvements", "List specific refactoring opportunities", []),
                 ("Apply refactoring", "Make the code changes", ["edit_file", "multi_edit"]),
                 ("Run tests", "Ensure nothing is broken by the refactoring", ["run_command"]),
@@ -562,8 +777,16 @@ class PlanningEngine:
             ],
             IntentType.REVIEW: [
                 ("Read the code", "Thoroughly read all files to be reviewed", ["read_file"]),
-                ("Check for bugs", "Look for potential bugs, race conditions, edge cases", ["search_code"]),
-                ("Evaluate architecture", "Assess code structure, patterns, and maintainability", []),
+                (
+                    "Check for bugs",
+                    "Look for potential bugs, race conditions, edge cases",
+                    ["search_code"],
+                ),
+                (
+                    "Evaluate architecture",
+                    "Assess code structure, patterns, and maintainability",
+                    [],
+                ),
                 ("Check security", "Look for security vulnerabilities", ["search_code"]),
                 ("Provide feedback", "Summarize findings with specific recommendations", []),
             ],
@@ -572,44 +795,88 @@ class PlanningEngine:
                 ("Identify test cases", "Determine what scenarios to test", []),
                 ("Write tests", "Implement the test files", ["write_file"]),
                 ("Run tests", "Execute the tests and verify they pass", ["run_command"]),
-                ("Fix failing tests", "Debug and fix any test failures", ["edit_file", "run_command"]),
+                (
+                    "Fix failing tests",
+                    "Debug and fix any test failures",
+                    ["edit_file", "run_command"],
+                ),
                 ("Commit tests", "Commit the test files", ["git_commit"]),
             ],
             IntentType.DEPLOY: [
-                ("Verify build", "Run build and tests to ensure deployment readiness", ["run_command"]),
-                ("Create deployment config", "Generate Dockerfiles, CI/CD, or cloud configs", ["write_file"]),
-                ("Configure environment", "Set up environment variables and secrets", ["edit_file"]),
+                (
+                    "Verify build",
+                    "Run build and tests to ensure deployment readiness",
+                    ["run_command"],
+                ),
+                (
+                    "Create deployment config",
+                    "Generate Dockerfiles, CI/CD, or cloud configs",
+                    ["write_file"],
+                ),
+                (
+                    "Configure environment",
+                    "Set up environment variables and secrets",
+                    ["edit_file"],
+                ),
                 ("Deploy", "Execute the deployment", ["run_command"]),
-                ("Verify deployment", "Check that the deployment succeeded", ["run_command", "web_fetch"]),
+                (
+                    "Verify deployment",
+                    "Check that the deployment succeeded",
+                    ["run_command", "web_fetch"],
+                ),
             ],
             IntentType.DOCS: [
-                ("Read the codebase", "Understand what to document", ["read_file", "get_project_structure"]),
+                (
+                    "Read the codebase",
+                    "Understand what to document",
+                    ["read_file", "get_project_structure"],
+                ),
                 ("Generate documentation", "Write the documentation files", ["write_file"]),
                 ("Review and polish", "Ensure accuracy and completeness", ["edit_file"]),
                 ("Commit docs", "Commit the documentation", ["git_commit"]),
             ],
             IntentType.MIGRATE: [
-                ("Analyze source", "Understand the current implementation", ["read_file", "get_project_structure"]),
+                (
+                    "Analyze source",
+                    "Understand the current implementation",
+                    ["read_file", "get_project_structure"],
+                ),
                 ("Plan migration path", "Map old patterns to new ones", []),
                 ("Migrate core files", "Convert the main files", ["write_file", "edit_file"]),
-                ("Update dependencies", "Change package configs and imports", ["edit_file", "run_command"]),
+                (
+                    "Update dependencies",
+                    "Change package configs and imports",
+                    ["edit_file", "run_command"],
+                ),
                 ("Test migration", "Verify everything works in the new form", ["run_command"]),
                 ("Clean up", "Remove old files and dead code", ["run_command"]),
                 ("Commit", "Commit the migrated code", ["git_commit"]),
             ],
             IntentType.OPTIMIZE: [
                 ("Profile current performance", "Measure baseline performance", ["run_command"]),
-                ("Identify bottlenecks", "Find slow areas in the code", ["read_file", "search_code"]),
+                (
+                    "Identify bottlenecks",
+                    "Find slow areas in the code",
+                    ["read_file", "search_code"],
+                ),
                 ("Apply optimizations", "Implement performance improvements", ["edit_file"]),
                 ("Benchmark improvements", "Measure the impact of changes", ["run_command"]),
                 ("Commit optimizations", "Commit with performance metrics", ["git_commit"]),
             ],
             IntentType.SECURITY: [
-                ("Scan for vulnerabilities", "Check for common security issues", ["search_code", "run_command"]),
+                (
+                    "Scan for vulnerabilities",
+                    "Check for common security issues",
+                    ["search_code", "run_command"],
+                ),
                 ("Review authentication", "Check auth flows and session management", ["read_file"]),
                 ("Check dependencies", "Audit dependency vulnerabilities", ["run_command"]),
                 ("Fix findings", "Apply security patches", ["edit_file"]),
-                ("Verify fixes", "Re-scan to confirm vulnerabilities are resolved", ["run_command"]),
+                (
+                    "Verify fixes",
+                    "Re-scan to confirm vulnerabilities are resolved",
+                    ["run_command"],
+                ),
                 ("Commit fixes", "Commit security improvements", ["git_commit"]),
             ],
         }
@@ -625,13 +892,15 @@ class PlanningEngine:
         steps = []
         for i, (title, desc, tools) in enumerate(template):
             deps = [i - 1] if i > 0 else []
-            steps.append(PlanStep(
-                id=i,
-                title=title,
-                description=desc,
-                tools_needed=tools,
-                depends_on=deps,
-            ))
+            steps.append(
+                PlanStep(
+                    id=i,
+                    title=title,
+                    description=desc,
+                    tools_needed=tools,
+                    depends_on=deps,
+                )
+            )
 
         return steps
 
@@ -685,7 +954,9 @@ class PlanningEngine:
         elif intent == IntentType.SECURITY:
             criteria.append("Each security finding is mapped to a concrete mitigation and re-check")
         elif intent == IntentType.DEPLOY:
-            criteria.append("Deployment actions require explicit approval and a post-deploy smoke check")
+            criteria.append(
+                "Deployment actions require explicit approval and a post-deploy smoke check"
+            )
 
         criteria.extend(f"Verification completed: {item}" for item in verification)
         return list(dict.fromkeys(criteria))
@@ -708,9 +979,7 @@ class PlanningEngine:
         }
         return list(
             dict.fromkeys(
-                item.lstrip("./")
-                for item in candidates
-                if item.lower() not in technology_names
+                item.lstrip("./") for item in candidates if item.lower() not in technology_names
             )
         )
 
@@ -741,6 +1010,15 @@ class PlanningEngine:
 
         step = next((item for item in self.current_plan.steps if item.id == step_id), None)
         if step is not None:
+            if status == TaskStatus.COMPLETED:
+                # Prevent marking a step complete until all dependencies are met
+                statuses = {s.id: s.status for s in self.current_plan.steps}
+                for dep_id in step.depends_on:
+                    if statuses.get(dep_id) not in (TaskStatus.COMPLETED, TaskStatus.SKIPPED):
+                        raise RuntimeError(
+                            f"Cannot complete step {step_id}: dependency {dep_id} is not complete."
+                        )
+
             step.status = status
             step.result = result
             if status == TaskStatus.IN_PROGRESS:
@@ -774,7 +1052,7 @@ Progress: {plan.progress:.0f}% | Step {next_step.id + 1}/{len(plan.steps)}
 
 Current Step: {next_step.title}
 Description: {next_step.description}
-Suggested Tools: {', '.join(next_step.tools_needed) if next_step.tools_needed else 'any'}
+Suggested Tools: {", ".join(next_step.tools_needed) if next_step.tools_needed else "any"}
 
 Remaining Steps:
 """
@@ -790,10 +1068,12 @@ Remaining Steps:
         return context
 
     def _save_plan(self, plan: ExecutionPlan):
-        """Persist plan to disk."""
+        """Persist plan to disk using an atomic write."""
         filepath = PLANS_DIR / f"{plan.id}.json"
-        with open(filepath, "w") as f:
+        temp_path = filepath.with_suffix(".tmp")
+        with open(temp_path, "w") as f:
             json.dump(plan.to_dict(), f, indent=2)
+        temp_path.replace(filepath)
 
     def load_plan(self, plan_id: str) -> ExecutionPlan | None:
         """Load a plan from disk."""
@@ -816,14 +1096,18 @@ Remaining Steps:
             try:
                 with open(filepath) as f:
                     data = json.load(f)
-                plans.append({
-                    "id": data["id"],
-                    "goal": data["goal"][:80],
-                    "intent": data.get("intent", "unknown"),
-                    "progress": sum(1 for s in data.get("steps", []) if s.get("status") == "completed"),
-                    "total_steps": len(data.get("steps", [])),
-                    "created_at": data.get("created_at", ""),
-                })
+                plans.append(
+                    {
+                        "id": data["id"],
+                        "goal": data["goal"][:80],
+                        "intent": data.get("intent", "unknown"),
+                        "progress": sum(
+                            1 for s in data.get("steps", []) if s.get("status") == "completed"
+                        ),
+                        "total_steps": len(data.get("steps", [])),
+                        "created_at": data.get("created_at", ""),
+                    }
+                )
             except (json.JSONDecodeError, KeyError):
                 continue
         return plans

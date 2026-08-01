@@ -210,6 +210,7 @@ class SkillLoader:
     def load_builtin(self):
         """Load built-in skills from nexus/skills/builtin/."""
         from nexus.skills.builtin import ALL_SKILLS
+
         for skill_class in ALL_SKILLS:
             try:
                 skill = skill_class()
@@ -229,6 +230,7 @@ class SkillLoader:
                 continue
             try:
                 import importlib.util
+
                 spec = importlib.util.spec_from_file_location(
                     f"custom_skill_{filepath.stem}", str(filepath)
                 )
@@ -293,9 +295,7 @@ class SkillLoader:
                 if normalized in {"name", "description"} and raw:
                     metadata[normalized] = raw
                 elif normalized == "keywords":
-                    metadata["keywords"] = [
-                        item.strip() for item in raw.split(",") if item.strip()
-                    ]
+                    metadata["keywords"] = [item.strip() for item in raw.split(",") if item.strip()]
         checklist_match = re.search(
             r"(?ims)^##\s+(?:quality\s+)?checklist\s*$\n(?P<body>.*?)(?=^##\s|\Z)",
             body,

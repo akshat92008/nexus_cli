@@ -69,14 +69,16 @@ class ConversationMemory:
                 with open(filepath, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 # Return metadata only
-                conversations.append({
-                    "id": data.get("id", filepath.stem),
-                    "model_name": data.get("model_name", "unknown"),
-                    "working_dir": data.get("working_dir", ""),
-                    "created_at": data.get("created_at", ""),
-                    "message_count": data.get("message_count", 0),
-                    "preview": _get_preview(data.get("messages", [])),
-                })
+                conversations.append(
+                    {
+                        "id": data.get("id", filepath.stem),
+                        "model_name": data.get("model_name", "unknown"),
+                        "working_dir": data.get("working_dir", ""),
+                        "created_at": data.get("created_at", ""),
+                        "message_count": data.get("message_count", 0),
+                        "preview": _get_preview(data.get("messages", [])),
+                    }
+                )
             except (json.JSONDecodeError, OSError):
                 continue
         return conversations
@@ -146,7 +148,12 @@ def compact_messages(messages: list[dict], keep_recent: int = 10) -> list[dict]:
     )
 
     compacted = [{"role": "user", "content": summary_text}]
-    compacted.append({"role": "assistant", "content": "Understood. I have the context from our earlier conversation. Let's continue."})
+    compacted.append(
+        {
+            "role": "assistant",
+            "content": "Understood. I have the context from our earlier conversation. Let's continue.",
+        }
+    )
     compacted.extend(recent_messages)
 
     return compacted

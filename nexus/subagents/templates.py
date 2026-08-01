@@ -8,6 +8,7 @@ from nexus.subagents.base import BaseSubagent
 
 class SecurityAuditor(BaseSubagent):
     """Scans code for security vulnerabilities."""
+
     name = "security_auditor"
     description = "Scans the codebase for security vulnerabilities"
     system_prompt = """You are a security auditor. Your job is to find security vulnerabilities in code.
@@ -30,12 +31,19 @@ For each finding, report:
 3. Description of the vulnerability
 4. Recommended fix"""
 
-    allowed_tools = ["read_file", "search_code", "list_directory", "find_files", "get_project_structure"]
+    allowed_tools = [
+        "read_file",
+        "search_code",
+        "list_directory",
+        "find_files",
+        "get_project_structure",
+    ]
     max_iterations = 15
 
 
 class TestWriter(BaseSubagent):
     """Generates tests for changed files."""
+
     name = "test_writer"
     description = "Writes comprehensive tests for specified code"
     system_prompt = """You are a test engineering expert. Your job is to write comprehensive tests.
@@ -49,12 +57,20 @@ Follow these rules:
 - Keep tests independent and fast
 - Aim for high branch coverage"""
 
-    allowed_tools = ["read_file", "write_file", "search_code", "list_directory", "run_command", "find_files"]
+    allowed_tools = [
+        "read_file",
+        "write_file",
+        "search_code",
+        "list_directory",
+        "run_command",
+        "find_files",
+    ]
     max_iterations = 25
 
 
 class CodeReviewer(BaseSubagent):
     """Reviews code for quality, bugs, and best practices."""
+
     name = "code_reviewer"
     description = "Reviews code for quality, bugs, and best practices"
     system_prompt = """You are a senior code reviewer. Provide thorough, constructive feedback.
@@ -83,6 +99,7 @@ Also mention things that are done well (positive feedback)."""
 
 class Researcher(BaseSubagent):
     """Searches the web and docs for solutions."""
+
     name = "researcher"
     description = "Researches solutions by searching the web and documentation"
     system_prompt = """You are a research assistant. Your job is to find relevant information,
@@ -107,6 +124,7 @@ Summarize your findings with:
 
 class Architect(BaseSubagent):
     """Analyzes architecture and suggests improvements."""
+
     name = "architect"
     description = "Analyzes project architecture and suggests improvements"
     system_prompt = """You are a software architect. Analyze the project structure and provide
@@ -127,12 +145,19 @@ Provide:
 4. Specific recommendations with rationale
 5. Suggested refactoring roadmap (if needed)"""
 
-    allowed_tools = ["read_file", "search_code", "list_directory", "find_files", "get_project_structure"]
+    allowed_tools = [
+        "read_file",
+        "search_code",
+        "list_directory",
+        "find_files",
+        "get_project_structure",
+    ]
     max_iterations = 15
 
 
 class DocWriter(BaseSubagent):
     """Generates documentation for the project."""
+
     name = "doc_writer"
     description = "Generates comprehensive documentation"
     system_prompt = """You are a technical writer. Generate clear, comprehensive documentation.
@@ -151,12 +176,19 @@ Follow these standards:
 - Include error handling guidance
 - Add links to related documentation"""
 
-    allowed_tools = ["read_file", "write_file", "search_code", "list_directory", "get_project_structure"]
+    allowed_tools = [
+        "read_file",
+        "write_file",
+        "search_code",
+        "list_directory",
+        "get_project_structure",
+    ]
     max_iterations = 20
 
 
 class PerformanceAnalyzer(BaseSubagent):
     """Analyzes code for performance issues."""
+
     name = "performance_analyzer"
     description = "Identifies performance bottlenecks and optimization opportunities"
     system_prompt = """You are a performance engineer. Analyze code for performance issues.
@@ -219,11 +251,13 @@ def list_templates() -> list[dict]:
     for _key, cls in SUBAGENT_TEMPLATES.items():
         if cls.name not in seen:
             seen.add(cls.name)
-            templates.append({
-                "name": cls.name,
-                "description": cls.description,
-                "aliases": [k for k, v in SUBAGENT_TEMPLATES.items() if v is cls],
-                "max_iterations": cls.max_iterations,
-                "tools": cls.allowed_tools,
-            })
+            templates.append(
+                {
+                    "name": cls.name,
+                    "description": cls.description,
+                    "aliases": [k for k, v in SUBAGENT_TEMPLATES.items() if v is cls],
+                    "max_iterations": cls.max_iterations,
+                    "tools": cls.allowed_tools,
+                }
+            )
     return templates

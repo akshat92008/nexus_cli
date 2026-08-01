@@ -20,7 +20,14 @@ def provider_keys(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
 
 
-@patch.dict(os.environ, {"GROQ_API_KEY": "fake_groq_key", "NVIDIA_FALLBACK_API_KEY_1": "fake_nvidia_key1", "NVIDIA_API_KEY": "fake_nvidia_key"})
+@patch.dict(
+    os.environ,
+    {
+        "GROQ_API_KEY": "fake_groq_key",
+        "NVIDIA_FALLBACK_API_KEY_1": "fake_nvidia_key1",
+        "NVIDIA_API_KEY": "fake_nvidia_key",
+    },
+)
 def test_api_client_key_loading():
     """Verify that primary key, fallback keys, and Groq key are loaded."""
     client = NvidiaClient()
@@ -138,12 +145,17 @@ def test_active_round_robin_key_rotation():
 def test_cloud_api_exhaustion_falls_back_to_local_nova():
     """Verify that when all cloud APIs fail, agent.run falls back to local Nova turn."""
     from nexus.agent import Agent
+
     agent = Agent(api_key="nvapi-test", model_key="deepseek-v4", enable_nova_fallback=True)
     agent.local_intern_enabled = True
 
     # Mock client.chat to simulate cloud rate limit exhaustion on a chat query
-    with patch.object(agent.client, "chat", side_effect=RuntimeError("Rate limited after multiple retries")):
-        with patch.object(agent, "_run_nova_turn", return_value=("Local Nova fallback response", [])) as mock_nova:
+    with patch.object(
+        agent.client, "chat", side_effect=RuntimeError("Rate limited after multiple retries")
+    ):
+        with patch.object(
+            agent, "_run_nova_turn", return_value=("Local Nova fallback response", [])
+        ) as mock_nova:
             res = agent.run("hello, explain binary search trees")
             assert res == "Local Nova fallback response"
             mock_nova.assert_called_once()

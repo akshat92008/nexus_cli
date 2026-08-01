@@ -107,9 +107,10 @@ def test_execution_engine_runs_dag_repairs_and_independent_review(tmp_path):
     assert calls == [1, 2]
     assert result.repairs == 1
     assert plan.steps[0].attempts == 2
-    assert json.loads((ledger.turn_dir / "tasks.json").read_text())["tasks"][1][
-        "status"
-    ] == "completed"
+    assert (
+        json.loads((ledger.turn_dir / "tasks.json").read_text())["tasks"][1]["status"]
+        == "completed"
+    )
 
 
 def test_execution_engine_rejects_cycles(tmp_path):

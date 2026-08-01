@@ -11,6 +11,7 @@ from enum import Enum
 
 class SubagentStatus(str, Enum):
     """Status of a subagent."""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -21,6 +22,7 @@ class SubagentStatus(str, Enum):
 @dataclass
 class SubagentResult:
     """Result from a subagent execution."""
+
     subagent_name: str
     task: str
     status: SubagentStatus
@@ -123,16 +125,14 @@ Begin working on the task now."""
             status=SubagentStatus.COMPLETED,
             summary=content[:2000] if content else "No output",
             tool_calls_made=len(tool_events),
-            files_touched=list(set(
-                e.get("args", {}).get("path", "")
-                for e in tool_events
-                if e.get("args", {}).get("path")
-            )),
-            errors=[
-                e.get("result", "")[:200]
-                for e in tool_events
-                if not e.get("success", True)
-            ],
+            files_touched=list(
+                set(
+                    e.get("args", {}).get("path", "")
+                    for e in tool_events
+                    if e.get("args", {}).get("path")
+                )
+            ),
+            errors=[e.get("result", "")[:200] for e in tool_events if not e.get("success", True)],
         )
         return self._result
 

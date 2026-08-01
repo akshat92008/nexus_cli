@@ -52,9 +52,7 @@ class FallbackRouter(Provider):
         if self._fallback_index < len(self._fallbacks):
             self._active_provider = self._fallbacks[self._fallback_index]
             self._fallback_index += 1
-            logger.warning(
-                "Switched to fallback provider: %s", self._active_provider.name
-            )
+            logger.warning("Switched to fallback provider: %s", self._active_provider.name)
             return True
         return False
 
@@ -119,9 +117,7 @@ class FallbackRouter(Provider):
                 **kwargs,
             )
         except Exception as e:
-            logger.warning(
-                "Provider %s failed in chat_sync: %s", self._active_provider.name, e
-            )
+            logger.warning("Provider %s failed in chat_sync: %s", self._active_provider.name, e)
             if self.switch_to_fallback():
                 return self.chat_sync(
                     model_id,

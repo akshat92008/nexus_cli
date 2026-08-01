@@ -21,11 +21,16 @@ from nexus.verification import CheckType, VerificationEngine
 def test_planner_basic():
     """Test the planning engine intent classification and step generation."""
     planner = PlanningEngine()
-    analysis = planner.analyze("Build a comprehensive production-ready fullstack enterprise application from scratch with multiple databases and complex payment system architectures")
+    analysis = planner.analyze(
+        "Build a comprehensive production-ready fullstack enterprise application from scratch with multiple databases and complex payment system architectures"
+    )
     assert analysis["intent"] == IntentType.BUILD
     assert analysis["plan_type"] == PlanType.PLANNED
 
-    plan = planner.create_plan("Build a comprehensive production-ready fullstack enterprise application from scratch with multiple databases and complex payment system architectures", analysis)
+    plan = planner.create_plan(
+        "Build a comprehensive production-ready fullstack enterprise application from scratch with multiple databases and complex payment system architectures",
+        analysis,
+    )
     assert plan is not None
     assert len(plan.steps) > 0
     assert plan.next_step is not None
@@ -40,7 +45,7 @@ def test_planner_basic():
 def test_reflection_engine():
     """Test the reflection engine loop detection and error retry mechanics."""
     reflector = ReflectionEngine()
-    
+
     # Simulate a successful tool call
     verdict1 = reflector.reflect(
         tool_name="write_file",
@@ -56,7 +61,7 @@ def test_reflection_engine():
             tool_args={"command": "python test.py"},
             tool_output="❌ Traceback (most recent call last):\nImportError: No module named pytest",
         )
-    
+
     # Should flag as ESCALATE or RETRY after enough repeats
     assert verdict.verdict in (ReflectionVerdict.ESCALATE, ReflectionVerdict.RETRY)
 
@@ -65,13 +70,15 @@ def test_context_manager():
     """Test context tracking, file imports tracking, and architecture summarization."""
     with tempfile.TemporaryDirectory() as tmpdir:
         cm = ContextManager(working_dir=tmpdir)
-        
+
         # Test basic tracking
         cm.track_file_access("main.py", was_edited=True)
         assert str(Path("main.py").resolve()) in cm._file_contexts
-        
+
         # Test imports parser
-        cm.track_file_imports("main.py", "import os\nfrom datetime import datetime\nimport requests")
+        cm.track_file_imports(
+            "main.py", "import os\nfrom datetime import datetime\nimport requests"
+        )
         relevant = cm.get_relevant_context("Help me edit main.py")
         assert "main.py" in relevant or "STRUCTURE" in relevant
 
@@ -79,18 +86,20 @@ def test_context_manager():
 def test_safety_layer():
     """Test command and file write validation in Safety Layer."""
     safety = SafetyLayer()
-    
+
     # Safe command
     check1 = safety.check_command("ls -la")
     assert check1.is_allowed
-    
+
     # Dangerous or suspicious commands
     check2 = safety.check_command("rm -rf /")
     assert not check2.is_allowed
     assert check2.level == SafetyLevel.BLOCKED
 
     # Secret checking in content
-    secrets = safety.check_content_for_secrets("Here is my key: nvapi-secret-key-12345-long-enough-credential")
+    secrets = safety.check_content_for_secrets(
+        "Here is my key: nvapi-secret-key-12345-long-enough-credential"
+    )
     assert len(secrets) > 0
 
 
@@ -98,14 +107,14 @@ def test_project_memory():
     """Test loading and parsing of project rules (NEXUS.md)."""
     with tempfile.TemporaryDirectory() as tmpdir:
         pm = ProjectMemory(working_dir=tmpdir)
-        
+
         # rules file doesn't exist yet
         assert not pm.rules_file_exists()
-        
+
         # create default rules
         pm.create_default_rules()
         assert pm.rules_file_exists()
-        
+
         rules = pm.load_rules()
         assert rules.build_command is not None
         assert rules.test_command is not None
@@ -115,7 +124,7 @@ def test_user_memory():
     """Test user memory profile customization and persistent habits."""
     um = UserMemory()
     um.reset()
-    
+
     # Save a convention preference
     um.add_convention("Always write docstrings for Python classes")
     addon = um.get_prompt_addon()
@@ -131,9 +140,9 @@ def test_verification_engine():
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create a mock requirements.txt or pytest config to detect project type
         (Path(tmpdir) / "requirements.txt").write_text("pytest\n")
-        
+
         ve = VerificationEngine(working_dir=tmpdir)
         assert ve.project_type == "python"
-        
+
         available = ve.get_available_checks()
         assert CheckType.TEST in available

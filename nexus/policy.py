@@ -14,6 +14,7 @@ from typing import Any
 @dataclass
 class ModePolicy:
     """Defines the operational rules and bounds for a specific execution mode."""
+
     may_edit: bool = False
     may_apply: bool = False
     require_review: bool = True
@@ -26,21 +27,55 @@ class ModePolicy:
 def get_mode_policy(mode: str) -> ModePolicy:
     """Return the ModePolicy preset for a given mode string."""
     if mode == "review":
-        return ModePolicy(may_edit=True, may_apply=False, require_review=True, context_depth="deep", verification_level="full")
+        return ModePolicy(
+            may_edit=True,
+            may_apply=False,
+            require_review=True,
+            context_depth="deep",
+            verification_level="full",
+        )
     elif mode in ("workspace", "default"):
         return ModePolicy(may_edit=True, may_apply=False, require_review=True)
     elif mode in ("autonomous", "acceptEdits"):
         return ModePolicy(may_edit=True, may_apply=True, require_review=False, retry_budget=2)
     elif mode == "quality":
-        return ModePolicy(may_edit=True, may_apply=True, require_review=True, context_depth="deep", model_strategy="quality", verification_level="full", retry_budget=3)
+        return ModePolicy(
+            may_edit=True,
+            may_apply=True,
+            require_review=True,
+            context_depth="deep",
+            model_strategy="quality",
+            verification_level="full",
+            retry_budget=3,
+        )
     elif mode == "budget":
-        return ModePolicy(may_edit=True, may_apply=True, require_review=False, model_strategy="budget", retry_budget=1)
+        return ModePolicy(
+            may_edit=True,
+            may_apply=True,
+            require_review=False,
+            model_strategy="budget",
+            retry_budget=1,
+        )
     elif mode == "plan":
-        return ModePolicy(may_edit=False, may_apply=False, require_review=True, context_depth="deep")
+        return ModePolicy(
+            may_edit=False, may_apply=False, require_review=True, context_depth="deep"
+        )
     elif mode == "local-only":
-        return ModePolicy(may_edit=True, may_apply=True, require_review=False, model_strategy="local", retry_budget=2)
+        return ModePolicy(
+            may_edit=True,
+            may_apply=True,
+            require_review=False,
+            model_strategy="local",
+            retry_budget=2,
+        )
     elif mode == "ci":
-        return ModePolicy(may_edit=True, may_apply=True, require_review=False, verification_level="full", retry_budget=1)
+        return ModePolicy(
+            may_edit=True,
+            may_apply=True,
+            require_review=False,
+            verification_level="full",
+            retry_budget=1,
+        )
     return ModePolicy()
 
 

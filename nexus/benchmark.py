@@ -70,9 +70,7 @@ class BenchmarkTask:
                 or not command
                 or not all(isinstance(item, str) and item for item in command)
             ):
-                raise ValueError(
-                    f"Benchmark task {task_id} verification must use argv arrays"
-                )
+                raise ValueError(f"Benchmark task {task_id} verification must use argv arrays")
             commands.append(tuple(command))
         return cls(
             id=task_id,
@@ -138,28 +136,48 @@ class BenchmarkReport:
             "summary": {
                 "tasks": len(self.results),
                 "passed": passed,
-                "verified_passed": sum(1 for item in self.results if item.passed and item.agent_status == "VERIFIED"),
-                "failed": len(self.results) - passed,
-                "pass_rate": (
-                    round(passed / len(self.results), 4) if self.results else 0.0
+                "verified_passed": sum(
+                    1 for item in self.results if item.passed and item.agent_status == "VERIFIED"
                 ),
+                "failed": len(self.results) - passed,
+                "pass_rate": (round(passed / len(self.results), 4) if self.results else 0.0),
                 "verified_pass_rate": (
-                    round(sum(1 for item in self.results if item.passed and item.agent_status == "VERIFIED") / len(self.results), 4) if self.results else 0.0
+                    round(
+                        sum(
+                            1
+                            for item in self.results
+                            if item.passed and item.agent_status == "VERIFIED"
+                        )
+                        / len(self.results),
+                        4,
+                    )
+                    if self.results
+                    else 0.0
                 ),
                 "total_duration_ms": sum(item.duration_ms for item in self.results),
                 "total_model_calls": sum(item.model_calls for item in self.results),
-                "average_model_calls": round(sum(item.model_calls for item in self.results) / len(self.results), 2) if self.results else 0.0,
-                "average_retries": round(sum(item.retries for item in self.results) / len(self.results), 2) if self.results else 0.0,
+                "average_model_calls": round(
+                    sum(item.model_calls for item in self.results) / len(self.results), 2
+                )
+                if self.results
+                else 0.0,
+                "average_retries": round(
+                    sum(item.retries for item in self.results) / len(self.results), 2
+                )
+                if self.results
+                else 0.0,
                 "total_prompt_tokens": sum(item.prompt_tokens for item in self.results),
-                "total_completion_tokens": sum(
-                    item.completion_tokens for item in self.results
-                ),
+                "total_completion_tokens": sum(item.completion_tokens for item in self.results),
                 "total_cost_usd": round(
                     sum(item.estimated_cost_usd or 0.0 for item in self.results), 8
                 ),
                 "average_cost_usd": round(
-                    sum(item.estimated_cost_usd or 0.0 for item in self.results) / len(self.results), 4
-                ) if self.results else 0.0,
+                    sum(item.estimated_cost_usd or 0.0 for item in self.results)
+                    / len(self.results),
+                    4,
+                )
+                if self.results
+                else 0.0,
             },
             "results": [asdict(item) for item in self.results],
         }
@@ -180,9 +198,7 @@ class BenchmarkSuite:
         if not isinstance(value, dict):
             raise ValueError("Benchmark manifest must be a JSON object")
         if value.get("schema_version") != BENCHMARK_SCHEMA_VERSION:
-            raise ValueError(
-                f"Unsupported benchmark schema: {value.get('schema_version')!r}"
-            )
+            raise ValueError(f"Unsupported benchmark schema: {value.get('schema_version')!r}")
         raw_tasks = value.get("tasks", [])
         if not isinstance(raw_tasks, list) or not raw_tasks:
             raise ValueError("Benchmark manifest must contain at least one task")
@@ -338,20 +354,14 @@ class BenchmarkRunner:
             payload = _last_json_object(process.stdout)
             after = _fingerprints(workspace)
             changed = sorted(
-                path
-                for path in set(before) | set(after)
-                if before.get(path) != after.get(path)
+                path for path in set(before) | set(after) if before.get(path) != after.get(path)
             )
             unexpected = [
                 path
                 for path in changed
                 if task.allowed_paths and not _matches_any(path, task.allowed_paths)
             ]
-            missing_expected = [
-                path
-                for path in task.expected_changed_files
-                if path not in changed
-            ]
+            missing_expected = [path for path in task.expected_changed_files if path not in changed]
             checks = []
             for argv in task.verification:
                 result = SandboxRunner(workspace).run(
@@ -470,7 +480,7 @@ def _redact_tail(value: Any, limit: int = 4000) -> str:
         secret = os.environ.get(name)
         if secret:
             text = text.replace(secret, "[REDACTED]")
-    return text[-max(0, int(limit)):]
+    return text[-max(0, int(limit)) :]
 
 
 def _classify_process_failure(

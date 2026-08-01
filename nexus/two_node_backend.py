@@ -24,12 +24,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from nexus.code_validation import GeneratedCodeValidator
-from nexus.runtime.kernel import (
-    ReviewOutcome,
-    TaskOutcome,
-    classify_failure,
-)
-from nexus.runtime.session import ExecutionSession
 from nexus.nova_backend import PROMPT_PATH, NovaPipelineBackend, NovaToolProposal
 from nexus.nova_runtime import (
     CEILING_SYSTEM_PROMPT,
@@ -52,6 +46,12 @@ from nexus.planner import (
     TaskStatus,
 )
 from nexus.repo_graph import RepoGraph
+from nexus.runtime.kernel import (
+    ReviewOutcome,
+    TaskOutcome,
+    classify_failure,
+)
+from nexus.runtime.session import ExecutionSession
 from nexus.safety import SafetyLayer, SafetyLevel
 from nexus.sandbox import SandboxRunner
 
@@ -90,10 +90,7 @@ def _run_ceiling_call(call, timeout_seconds: float):
     """Run a blocking provider call with a timeout in CLI and worker threads."""
     if timeout_seconds <= 0:
         return call()
-    if (
-        hasattr(signal, "SIGALRM")
-        and threading.current_thread() is threading.main_thread()
-    ):
+    if hasattr(signal, "SIGALRM") and threading.current_thread() is threading.main_thread():
         with ceiling_timeout(int(timeout_seconds)):
             return call()
 
@@ -103,9 +100,7 @@ def _run_ceiling_call(call, timeout_seconds: float):
         return future.result(timeout=timeout_seconds)
     except FutureTimeoutError as exc:
         future.cancel()
-        raise CeilingCallTimeout(
-            f"Ceiling API call exceeded {timeout_seconds:g}s"
-        ) from exc
+        raise CeilingCallTimeout(f"Ceiling API call exceeded {timeout_seconds:g}s") from exc
     finally:
         executor.shutdown(wait=False, cancel_futures=True)
 
@@ -234,8 +229,7 @@ class TwoNodeResult:
                     lines.append(f"        {raw_line}")
         lines.append("")
         lines.append(
-            "Independent review: "
-            + ("APPROVED" if self.review_approved else "NOT APPROVED")
+            "Independent review: " + ("APPROVED" if self.review_approved else "NOT APPROVED")
         )
         if self.review_summary:
             lines.append(f"  {self.review_summary}")
@@ -251,7 +245,9 @@ class _NvidiaCompletionsShim:
         self._client = client
         self._model_id = model_id
 
-    def create(self, model: str, messages: list[dict], temperature: float = 0.2, max_tokens: int = 2048):
+    def create(
+        self, model: str, messages: list[dict], temperature: float = 0.2, max_tokens: int = 2048
+    ):
         response = self._client.chat_sync(
             model_id=model or self._model_id,
             messages=messages,
@@ -326,9 +322,7 @@ class NvidiaCeilingNode:
             expected_files=max(1, len(explicit_paths)),
             depends_on=[],
         )
-        return [
-            fallback_task
-        ], f"Decomposition fallback ({decomposition_error}) for: {request}"
+        return [fallback_task], f"Decomposition fallback ({decomposition_error}) for: {request}"
 
     def execute_direct(self, task: AtomicTask, context: str, failure_reason: str) -> str:
         prompt = (
@@ -388,9 +382,7 @@ class NvidiaCeilingNode:
                 raw = raw.removeprefix("json").strip()
             value = json.loads(raw)
             approved = value.get("approved") is True
-            findings = [
-                str(item)[:1000] for item in value.get("findings", []) if str(item).strip()
-            ]
+            findings = [str(item)[:1000] for item in value.get("findings", []) if str(item).strip()]
             return approved, str(value.get("summary", ""))[:2000], findings[:20]
         except Exception as exc:
             return False, f"Independent reviewer unavailable: {exc}", []
@@ -507,9 +499,7 @@ class TwoNodeBackend:
 
                 executions[task.id] = execution
                 if execution.proposals:
-                    context_accumulator[0] += self._context_from_output(
-                        execution.raw_output
-                    )
+                    context_accumulator[0] += self._context_from_output(execution.raw_output)
                 return self._task_outcome(execution)
 
             def repair_step(
@@ -530,15 +520,12 @@ class TwoNodeBackend:
                 )
                 execution.failure_kind = execution.failure_kind or failure.value
                 execution.route_reason = (
-                    previous.route_reason
-                    or f"focused {failure.value} repair escalated to Ceiling"
+                    previous.route_reason or f"focused {failure.value} repair escalated to Ceiling"
                 )
                 executions[task.id] = execution
                 self._log_escalation(request, execution)
                 if execution.proposals:
-                    context_accumulator[0] += self._context_from_output(
-                        execution.raw_output
-                    )
+                    context_accumulator[0] += self._context_from_output(execution.raw_output)
                 return self._task_outcome(execution)
 
             def review_plan(_plan: ExecutionPlan) -> ReviewOutcome:
@@ -567,25 +554,17 @@ class TwoNodeBackend:
                 result.review_summary = execution_result.review.summary
                 result.review_findings = execution_result.review.findings
             else:
-                result.review_summary = (
-                    "Review skipped because one or more DAG tasks failed."
-                )
+                result.review_summary = "Review skipped because one or more DAG tasks failed."
             for task in tasks:
                 execution = executions.get(task.id)
                 if execution is None:
-                    step = next(
-                        item for item in execution_plan.steps if item.id == task.id
-                    )
+                    step = next(item for item in execution_plan.steps if item.id == task.id)
                     execution = SubtaskExecution(
                         task=task,
                         node="Nexus DAG",
                         verdict=step.status.value.upper(),
                         error=step.error or step.result,
-                        failure_kind=(
-                            "dependency"
-                            if step.status == TaskStatus.BLOCKED
-                            else ""
-                        ),
+                        failure_kind=("dependency" if step.status == TaskStatus.BLOCKED else ""),
                         route_reason=(
                             "recovered verified checkpoint"
                             if step.status == TaskStatus.COMPLETED
@@ -611,9 +590,7 @@ class TwoNodeBackend:
             ),
             output=execution.error or execution.guardrail_log,
             changed_files=[
-                proposal.source_path
-                for proposal in execution.proposals
-                if proposal.source_path
+                proposal.source_path for proposal in execution.proposals if proposal.source_path
             ],
             metadata={
                 "node": execution.node,
@@ -650,11 +627,7 @@ class TwoNodeBackend:
         raw_intent = analysis.get("intent", IntentType.BUILD)
         raw_difficulty = analysis.get("difficulty", Difficulty.COMPLEX)
         try:
-            intent = (
-                raw_intent
-                if isinstance(raw_intent, IntentType)
-                else IntentType(raw_intent)
-            )
+            intent = raw_intent if isinstance(raw_intent, IntentType) else IntentType(raw_intent)
         except ValueError:
             intent = IntentType.BUILD
         try:
@@ -688,9 +661,7 @@ class TwoNodeBackend:
                 )
                 for task in tasks
             ],
-            acceptance_criteria=[
-                str(item) for item in analysis.get("acceptance_criteria", [])
-            ],
+            acceptance_criteria=[str(item) for item in analysis.get("acceptance_criteria", [])],
             permitted_files=permitted,
             retry_policy={"per_task": 1, "total_repairs": max(1, len(tasks))},
         )
@@ -732,7 +703,9 @@ class TwoNodeBackend:
 
         for attempt in range(2):
             attempts = attempt + 1
-            task_result = intern.execute(task, context=task_context, override_prompt=override_prompt)
+            task_result = intern.execute(
+                task, context=task_context, override_prompt=override_prompt
+            )
             response = task_result.response
             last_raw = response.raw_text
             with tempfile.TemporaryDirectory(prefix="nexus_intern_candidate_") as attempt_tmp:
@@ -749,9 +722,16 @@ class TwoNodeBackend:
                 )
 
                 if not failure:
-                    self._promote_candidate_files(response.files, attempt_tmp, test_executor.workspace_dir)
+                    self._promote_candidate_files(
+                        response.files, attempt_tmp, test_executor.workspace_dir
+                    )
                     proposals: list[NovaToolProposal] = []
-                    summary = "\n".join(logs + [f"VALIDATED attempt={attempts}: schema, constraints, disk replay, and compiler checks passed"])
+                    summary = "\n".join(
+                        logs
+                        + [
+                            f"VALIDATED attempt={attempts}: schema, constraints, disk replay, and compiler checks passed"
+                        ]
+                    )
                     for file_action in response.files:
                         proposals.extend(converter._file_action_to_tool_calls(file_action, summary))
                     return SubtaskExecution(
@@ -797,7 +777,9 @@ class TwoNodeBackend:
         if not schema.passed:
             return schema.reason
 
-        prompt_paths = extract_prompt_paths(validation_prompt) or list(set(PROMPT_PATH.findall(task.description)))
+        prompt_paths = extract_prompt_paths(validation_prompt) or list(
+            set(PROMPT_PATH.findall(task.description))
+        )
         if len(prompt_paths) == 1 and len(response.files) == 1:
             expected_path = os.path.normpath(prompt_paths[0].lstrip("/\\"))
             actual_path = os.path.normpath(response.files[0].path.lstrip("/\\"))
@@ -884,9 +866,13 @@ class TwoNodeBackend:
                 logs.append(f"ESCALATION attempt={ceiling_attempt}: {error}")
                 continue
 
-            expected_paths = extract_prompt_paths(validation_prompt) or extract_prompt_paths(task.description)
+            expected_paths = extract_prompt_paths(validation_prompt) or extract_prompt_paths(
+                task.description
+            )
             actual_paths = [os.path.normpath(item.path.lstrip("/\\")) for item in parsed.files]
-            if len(expected_paths) == 1 and actual_paths != [os.path.normpath(expected_paths[0].lstrip("/\\"))]:
+            if len(expected_paths) == 1 and actual_paths != [
+                os.path.normpath(expected_paths[0].lstrip("/\\"))
+            ]:
                 error = f"Ceiling path validator expected {expected_paths[0]}, got {actual_paths}"
                 logs.append(f"ESCALATION attempt={ceiling_attempt}: {error}")
                 continue
@@ -913,7 +899,9 @@ class TwoNodeBackend:
                     )
                     if test_failure:
                         raise ValueError(test_failure)
-                    self._promote_candidate_files(parsed.files, candidate_tmp, test_executor.workspace_dir)
+                    self._promote_candidate_files(
+                        parsed.files, candidate_tmp, test_executor.workspace_dir
+                    )
                 except ValueError as exc:
                     error = f"Ceiling direct validation failed: {exc}"
                     logs.append(f"ESCALATION attempt={ceiling_attempt}: {error}")
@@ -921,7 +909,9 @@ class TwoNodeBackend:
 
             verdict = "CEILING_PASS"
             error = ""
-            logs.append(f"ESCALATION attempt={ceiling_attempt}: Ceiling schema, path, disk, constraint, and compiler validation passed.")
+            logs.append(
+                f"ESCALATION attempt={ceiling_attempt}: Ceiling schema, path, disk, constraint, and compiler validation passed."
+            )
             summary = "\n".join(item for item in logs if item)
             for file_action in parsed.files:
                 proposals.extend(converter._file_action_to_tool_calls(file_action, summary))
@@ -985,10 +975,7 @@ class TwoNodeBackend:
 
     def _seed_workspace(self, request: str, tasks: list[AtomicTask], verification_dir: Path):
         text = request + "\n" + "\n".join(task.description for task in tasks)
-        relevant = {
-            item["path"]
-            for item in self.repo_graph.relevant_files(request, limit=24)
-        }
+        relevant = {item["path"] for item in self.repo_graph.relevant_files(request, limit=24)}
         for raw_path in set(PROMPT_PATH.findall(text)) | relevant:
             clean_name = raw_path.lstrip("/\\")
             if not clean_name or "." not in clean_name:
@@ -1010,8 +997,7 @@ class TwoNodeBackend:
     def _task_context(self, task: AtomicTask, workspace_dir: str, context_accumulator: str) -> str:
         chunks = [context_accumulator] if context_accumulator else []
         relevant = {
-            item["path"]
-            for item in self.repo_graph.relevant_files(task.description, limit=12)
+            item["path"] for item in self.repo_graph.relevant_files(task.description, limit=12)
         }
         for raw_path in set(PROMPT_PATH.findall(task.description)) | relevant:
             clean_name = raw_path.lstrip("/\\")
@@ -1020,7 +1006,9 @@ class TwoNodeBackend:
             path = Path(workspace_dir) / clean_name
             if path.is_file():
                 try:
-                    chunks.append(f"# Existing File: {clean_name}\n```\n{path.read_text(encoding='utf-8')}\n```")
+                    chunks.append(
+                        f"# Existing File: {clean_name}\n```\n{path.read_text(encoding='utf-8')}\n```"
+                    )
                 except OSError:
                     pass
         return "\n\n".join(chunks)
@@ -1060,8 +1048,7 @@ class TwoNodeBackend:
             "nova_raw_output": execution.intern_raw_output,
             "ceiling_raw_output": execution.raw_output,
             "proposed_tools": [
-                {"name": proposal.name, "args": proposal.args}
-                for proposal in execution.proposals
+                {"name": proposal.name, "args": proposal.args} for proposal in execution.proposals
             ],
         }
         try:
@@ -1105,8 +1092,10 @@ class TwoNodeBackend:
         criteria = analysis.get("acceptance_criteria", [])
         permitted_files = analysis.get("permitted_files", [])
         task_dag = analysis.get("task_dag", [])
+
         def val(item):
             return item.value if hasattr(item, "value") else str(item)
+
         graph_summary = self.repo_graph.summary()
         relevant = self.repo_graph.relevant_files(request, limit=30)
         context = (
@@ -1124,8 +1113,7 @@ class TwoNodeBackend:
             "- task_relevant_files:\n"
             + (
                 "\n".join(
-                    f"  - {item['path']} score={item['score']} "
-                    f"reasons={','.join(item['reasons'])}"
+                    f"  - {item['path']} score={item['score']} reasons={','.join(item['reasons'])}"
                     for item in relevant
                 )
                 or "  - none deterministically ranked"
@@ -1134,9 +1122,7 @@ class TwoNodeBackend:
         if permitted_files:
             context += "\n- permitted_files: " + ", ".join(permitted_files)
         if criteria:
-            context += "\n- acceptance_criteria:\n" + "\n".join(
-                f"  - {item}" for item in criteria
-            )
+            context += "\n- acceptance_criteria:\n" + "\n".join(f"  - {item}" for item in criteria)
         if task_dag:
             context += "\n- task_dag:\n" + "\n".join(
                 f"  - {item.get('id')}: {item.get('title')} "
@@ -1154,9 +1140,23 @@ class TwoNodeBackend:
         if task.expected_files > 1 and ("json" in text or ".json" in text):
             return "ceiling", "multi-file JSON hits Nova's documented filepath-marker weakness"
         high_risk = (
-            "concurren", "thread", "async", "broadcast", "tcp", "database", "migration",
-            "security", "authentication", "authorization", "architecture", "distributed",
-            "merge conflict", "rebase", "package.json", "cargo.toml", "go.mod",
+            "concurren",
+            "thread",
+            "async",
+            "broadcast",
+            "tcp",
+            "database",
+            "migration",
+            "security",
+            "authentication",
+            "authorization",
+            "architecture",
+            "distributed",
+            "merge conflict",
+            "rebase",
+            "package.json",
+            "cargo.toml",
+            "go.mod",
         )
         matched = [term for term in high_risk if term in text]
         if matched:

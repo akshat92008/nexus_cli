@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 class AutoFormatHook(BaseHook):
     """Auto-format files after editing."""
+
     name = "auto_format"
     description = "Auto-format files after editing (prettier, black, gofmt)"
     events = [HookEvent.AFTER_FILE_EDIT, HookEvent.AFTER_FILE_CREATE]
@@ -54,6 +55,7 @@ class AutoFormatHook(BaseHook):
 
 class AutoLintHook(BaseHook):
     """Auto-lint files after editing."""
+
     name = "auto_lint"
     description = "Run linter after file edits"
     events = [HookEvent.AFTER_FILE_EDIT]
@@ -78,6 +80,7 @@ class AutoLintHook(BaseHook):
 
 class PreCommitTestHook(BaseHook):
     """Run tests before committing."""
+
     name = "pre_commit_test"
     description = "Run tests before git commit"
     events = [HookEvent.BEFORE_COMMIT]
@@ -107,6 +110,7 @@ class PreCommitTestHook(BaseHook):
 
 class SecurityScanHook(BaseHook):
     """Scan for secrets before pushing."""
+
     name = "security_scan"
     description = "Scan for hardcoded secrets before git push"
     events = [HookEvent.BEFORE_PUSH]
@@ -120,9 +124,7 @@ class SecurityScanHook(BaseHook):
         working_dir = context.metadata.get("working_dir", ".")
 
         # Validate working_dir
-        if context.workspace_root and not validate_hook_path(
-            working_dir, context.workspace_root
-        ):
+        if context.workspace_root and not validate_hook_path(working_dir, context.workspace_root):
             return HookResult(
                 hook_name=self.name,
                 event=context.event,
@@ -132,14 +134,11 @@ class SecurityScanHook(BaseHook):
             )
 
         # Naive secret scan (no external tools required)
-        secret_pattern = re.compile(
-            r'password|secret|api_key|private_key', re.IGNORECASE
-        )
+        secret_pattern = re.compile(r"password|secret|api_key|private_key", re.IGNORECASE)
         found = False
         for root, dirs, files in os.walk(working_dir):
             dirs[:] = [
-                d for d in dirs
-                if d not in {".git", "node_modules", "__pycache__", ".venv", "venv"}
+                d for d in dirs if d not in {".git", "node_modules", "__pycache__", ".venv", "venv"}
             ]
             for file in files:
                 if file.endswith((".py", ".js", ".ts", ".env")):
@@ -164,6 +163,7 @@ class SecurityScanHook(BaseHook):
 
 class NotifyOnErrorHook(BaseHook):
     """Log errors for debugging."""
+
     name = "notify_on_error"
     description = "Log errors for debugging"
     events = [HookEvent.ON_ERROR]
@@ -184,6 +184,7 @@ class NotifyOnErrorHook(BaseHook):
 
 class SessionStartHook(BaseHook):
     """Actions to perform when a session starts."""
+
     name = "session_start"
     description = "Setup actions on session start"
     events = [HookEvent.ON_SESSION_START]

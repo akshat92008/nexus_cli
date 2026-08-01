@@ -136,8 +136,7 @@ class NovaPipelineBackend:
                         override_prompt = self._retry_prompt(prompt, prompt_paths, failure)
                         continue
                     response_parts.append(
-                        "Nova guardrails rejected the output before Nexus tools ran:\n"
-                        + failure
+                        "Nova guardrails rejected the output before Nexus tools ran:\n" + failure
                     )
                     break
 
@@ -150,13 +149,9 @@ class NovaPipelineBackend:
                 )
                 try:
                     for file_action in response.files:
-                        proposals.extend(
-                            self._file_action_to_tool_calls(file_action, summary)
-                        )
+                        proposals.extend(self._file_action_to_tool_calls(file_action, summary))
                 except NovaBackendError as exc:
-                    logs.append(
-                        f"GUARDRAIL FAILED attempt={attempt + 1}: canonicalization: {exc}"
-                    )
+                    logs.append(f"GUARDRAIL FAILED attempt={attempt + 1}: canonicalization: {exc}")
                     if attempt == 0:
                         override_prompt = self._retry_prompt(prompt, prompt_paths, str(exc))
                         continue
@@ -201,9 +196,7 @@ class NovaPipelineBackend:
 
         if prompt_paths:
             expected = sorted(os.path.normpath(item.lstrip("/\\")) for item in prompt_paths)
-            actual = sorted(
-                os.path.normpath(item.path.lstrip("/\\")) for item in response.files
-            )
+            actual = sorted(os.path.normpath(item.path.lstrip("/\\")) for item in response.files)
             if actual != expected:
                 return f"Path validator expected {expected}, got {actual}"
 
@@ -409,7 +402,11 @@ class NovaPipelineBackend:
                 extracted = re.split(r">>>+|#\s*File:|#\s*filepath:", block)[0].strip("\n")
                 clean_extracted = extracted.strip()
                 target_filename = os.path.basename(file_action.path).strip()
-                if clean_extracted and clean_extracted != target_filename and clean_extracted != file_action.path.strip():
+                if (
+                    clean_extracted
+                    and clean_extracted != target_filename
+                    and clean_extracted != file_action.path.strip()
+                ):
                     content = extracted
                 elif "=======" in parts[0]:
                     pre_content = parts[0].split("=======", 1)[1]
@@ -427,9 +424,13 @@ class NovaPipelineBackend:
                 chunk = re.split(r">>>+|#\s*File:|#\s*filepath:", chunk)[0]
                 chunks.append(chunk.strip("\n"))
             content = "\n".join(chunks).strip("\n")
-        elif "=======" in content and ("<<<<<<<" in content or content.lstrip().startswith("<<<<<<<")):
+        elif "=======" in content and (
+            "<<<<<<<" in content or content.lstrip().startswith("<<<<<<<")
+        ):
             pre_sep, post_sep = content.split("=======", 1)
-            post_sep = re.split(r">>>+#\s*File:|>>>+#\s*filepath:|#\s*File:|#\s*filepath:", post_sep)[0]
+            post_sep = re.split(
+                r">>>+#\s*File:|>>>+#\s*filepath:|#\s*File:|#\s*filepath:", post_sep
+            )[0]
             clean_post = re.sub(r"^>+\s*$", "", post_sep, flags=re.MULTILINE).strip("\n")
             if clean_post:
                 content = clean_post
@@ -437,7 +438,9 @@ class NovaPipelineBackend:
                 pre_sep = pre_sep.split("<<<<<<<", 1)[-1]
                 content = re.sub(r"^<+\s*$", "", pre_sep, flags=re.MULTILINE).strip("\n")
         elif "@@" in content and ("---" in content or "+++" in content):
-            diff_proposals = _unified_diff_to_proposals(file_action.path, content, base_meta, guardrail_summary)
+            diff_proposals = _unified_diff_to_proposals(
+                file_action.path, content, base_meta, guardrail_summary
+            )
             if diff_proposals:
                 return diff_proposals
         else:

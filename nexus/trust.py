@@ -9,9 +9,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 TRUSTED_CONFIG_NAMES = {
-    "NEXUS.md", "nexus.md", ".nexus.md", "CLAUDE.md", "AGENT.md", "AGENTS.md",
-    ".mcp.json", "mcp_servers.json", "settings.json", "settings.local.json",
-    "hooks.json", "plugin.json", ".lsp.json",
+    "NEXUS.md",
+    "nexus.md",
+    ".nexus.md",
+    "CLAUDE.md",
+    "AGENT.md",
+    "AGENTS.md",
+    ".mcp.json",
+    "mcp_servers.json",
+    "settings.json",
+    "settings.local.json",
+    "hooks.json",
+    "plugin.json",
+    ".lsp.json",
 }
 
 
@@ -45,12 +55,14 @@ class TrustStore:
         old_text = previous.get("content", "")
         new_text = content.decode("utf-8", errors="replace")
         changed = bool(previous) and previous.get("digest") != digest
-        diff = "".join(difflib.unified_diff(
-            old_text.splitlines(keepends=True),
-            new_text.splitlines(keepends=True),
-            fromfile=f"approved/{p.name}",
-            tofile=f"current/{p.name}",
-        ))
+        diff = "".join(
+            difflib.unified_diff(
+                old_text.splitlines(keepends=True),
+                new_text.splitlines(keepends=True),
+                fromfile=f"approved/{p.name}",
+                tofile=f"current/{p.name}",
+            )
+        )
         return TrustDecision(str(p), digest, approved, changed, diff)
 
     def approve(self, path: str | Path) -> TrustDecision:
@@ -73,7 +85,8 @@ class TrustStore:
             "digest": decision.digest,
             "approved": False,
             "content": Path(decision.path).read_text(encoding="utf-8", errors="replace")
-            if Path(decision.path).is_file() else "",
+            if Path(decision.path).is_file()
+            else "",
         }
         self._save()
         return decision
@@ -86,7 +99,16 @@ class TrustStore:
         candidates.update((self.working_dir / ".nexus").glob("policies.*"))
         candidates.update((self.working_dir / ".nexus").glob("config.*"))
         candidates.update((self.working_dir / ".nexus").glob("verify.json"))
-        ignored = {".git", ".nexusai", "node_modules", ".venv", "venv", "dist", "build", "__pycache__"}
+        ignored = {
+            ".git",
+            ".nexusai",
+            "node_modules",
+            ".venv",
+            "venv",
+            "dist",
+            "build",
+            "__pycache__",
+        }
         return [self.inspect(p) for p in sorted(candidates) if not ignored.intersection(p.parts)]
 
     def is_approved(self, path: str | Path) -> bool:

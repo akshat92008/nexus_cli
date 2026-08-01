@@ -106,7 +106,9 @@ class SubagentOrchestrator:
         ]
 
         succeeded = sum(1 for r in results if r.succeeded)
-        lines.append(f"  Agents: {len(results)} | Passed: {succeeded} | Failed: {len(results) - succeeded}")
+        lines.append(
+            f"  Agents: {len(results)} | Passed: {succeeded} | Failed: {len(results) - succeeded}"
+        )
         lines.append("")
 
         for result in results:
@@ -176,13 +178,15 @@ class SubagentOrchestrator:
                 result = self._execute_subagent(subagent)
                 results.append(result)
             except Exception as e:
-                results.append(SubagentResult(
-                    subagent_name=subagent.name,
-                    task=subagent.task,
-                    status=SubagentStatus.FAILED,
-                    summary=f"Execution error: {e}",
-                    errors=[str(e)],
-                ))
+                results.append(
+                    SubagentResult(
+                        subagent_name=subagent.name,
+                        task=subagent.task,
+                        status=SubagentStatus.FAILED,
+                        summary=f"Execution error: {e}",
+                        errors=[str(e)],
+                    )
+                )
         return results
 
     def _run_parallel(self) -> list[SubagentResult]:
@@ -191,8 +195,7 @@ class SubagentOrchestrator:
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             future_to_subagent = {
-                executor.submit(self._execute_subagent, sa): sa
-                for sa in self._subagents
+                executor.submit(self._execute_subagent, sa): sa for sa in self._subagents
             }
 
             for future in as_completed(future_to_subagent, timeout=self.timeout):
@@ -201,13 +204,15 @@ class SubagentOrchestrator:
                     result = future.result(timeout=self.timeout)
                     results.append(result)
                 except Exception as e:
-                    results.append(SubagentResult(
-                        subagent_name=subagent.name,
-                        task=subagent.task,
-                        status=SubagentStatus.FAILED,
-                        summary=f"Execution error: {e}",
-                        errors=[str(e)],
-                    ))
+                    results.append(
+                        SubagentResult(
+                            subagent_name=subagent.name,
+                            task=subagent.task,
+                            status=SubagentStatus.FAILED,
+                            summary=f"Execution error: {e}",
+                            errors=[str(e)],
+                        )
+                    )
 
         return results
 

@@ -116,6 +116,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </body>
 </html>"""
 
+
 class RegressionDashboard:
     """Generates offline-capable HTML dashboards from benchmark results."""
 
@@ -135,13 +136,13 @@ class RegressionDashboard:
 
         summary = data.get("summary", {})
         results = data.get("results", [])
-        
+
         total_tasks = summary.get("total", 0)
         passed = summary.get("passed", 0)
         success_rate = round((passed / total_tasks * 100) if total_tasks else 0, 1)
         total_cost = f"{summary.get('estimated_cost_usd', 0.0):.4f}"
         total_duration = round(summary.get("total_duration_ms", 0) / 1000, 1)
-        
+
         table_rows = []
         for res in results:
             status = res.get("status", "FAILED")
@@ -150,13 +151,13 @@ class RegressionDashboard:
             cost_str = f"${cost:.4f}" if cost is not None else "N/A"
             duration = round(res.get("duration_ms", 0) / 1000, 1)
             tokens = res.get("prompt_tokens", 0) + res.get("completion_tokens", 0)
-            
+
             row = f"""
             <tr>
-                <td>{res.get('task_id')}</td>
-                <td>{res.get('category')}</td>
+                <td>{res.get("task_id")}</td>
+                <td>{res.get("category")}</td>
                 <td><span class="status-badge {badge_class}">{status}</span></td>
-                <td>{res.get('agent_status')}</td>
+                <td>{res.get("agent_status")}</td>
                 <td class="cost">{tokens}</td>
                 <td class="cost">{cost_str}</td>
                 <td>{duration}s</td>
@@ -170,7 +171,7 @@ class RegressionDashboard:
             total_tasks=total_tasks,
             total_cost=total_cost,
             total_duration=total_duration,
-            table_rows="\\n".join(table_rows)
+            table_rows="\\n".join(table_rows),
         )
 
         out = Path(output_path).expanduser().resolve()

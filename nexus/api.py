@@ -121,8 +121,7 @@ class NvidiaClient:
         self.nvidia_keys = [self.primary_key] if self.primary_key else []
         for k in sorted(os.environ.keys()):
             if (
-                k.startswith("NVIDIA_FALLBACK_API_KEY")
-                or k.startswith("NVIDIA_API_KEY_")
+                k.startswith("NVIDIA_FALLBACK_API_KEY") or k.startswith("NVIDIA_API_KEY_")
             ) and os.environ[k]:
                 self.nvidia_keys.append(os.environ[k])
 
@@ -140,8 +139,7 @@ class NvidiaClient:
             self.groq_keys.append(os.environ["GROQ_API_KEY"])
         for k in sorted(os.environ.keys()):
             if (
-                k.startswith("GROQ_API_KEY_")
-                or k.startswith("GROQ_FALLBACK_API_KEY")
+                k.startswith("GROQ_API_KEY_") or k.startswith("GROQ_FALLBACK_API_KEY")
             ) and os.environ[k]:
                 self.groq_keys.append(os.environ[k])
         self.groq_keys = list(dict.fromkeys([k for k in self.groq_keys if k]))
@@ -178,7 +176,9 @@ class NvidiaClient:
                 max_retries=0,
             )
         else:
-            raise ValueError("No valid API key found for a custom OpenAI-compatible endpoint, NVIDIA, Groq, or OpenRouter.")
+            raise ValueError(
+                "No valid API key found for a custom OpenAI-compatible endpoint, NVIDIA, Groq, or OpenRouter."
+            )
 
     @property
     def all_keys(self) -> list[str]:
@@ -300,17 +300,25 @@ class NvidiaClient:
                     return resp
                 except Exception as e:
                     err_str = str(e)
-                    errors.append(f"NVIDIA Key {idx+1} ({model_id}): {err_str}")
-                    if any(t in err_str.lower() for t in ("429", "rate limit", "too many requests")):
+                    errors.append(f"NVIDIA Key {idx + 1} ({model_id}): {err_str}")
+                    if any(
+                        t in err_str.lower() for t in ("429", "rate limit", "too many requests")
+                    ):
                         self.key_cooldowns[key] = time.time() + 60.0
-                    if any(t in err_str.lower() for t in ("timeout", "timed out", "connection", "connect", "unreachable")):
+                    if any(
+                        t in err_str.lower()
+                        for t in ("timeout", "timed out", "connection", "connect", "unreachable")
+                    ):
                         connection_timed_out = True
                         break  # Fast exit on host timeout
                     self.switch_to_fallback()
 
         # ── Step 2: Try NVIDIA fallback models (DeepSeek Flash & Llama 3.3) ──
         if not connection_timed_out:
-            fallback_nvidia_models = ["deepseek-ai/deepseek-v4-flash", "meta/llama-3.3-70b-instruct"]
+            fallback_nvidia_models = [
+                "deepseek-ai/deepseek-v4-flash",
+                "meta/llama-3.3-70b-instruct",
+            ]
             now = time.time()
             for fb_model in fallback_nvidia_models:
                 if fb_model == model_id:
@@ -327,10 +335,21 @@ class NvidiaClient:
                         return resp
                     except Exception as e:
                         err_str = str(e)
-                        errors.append(f"NVIDIA Fallback Model {fb_model} Key {idx+1}: {err_str}")
-                        if any(t in err_str.lower() for t in ("429", "rate limit", "too many requests")):
+                        errors.append(f"NVIDIA Fallback Model {fb_model} Key {idx + 1}: {err_str}")
+                        if any(
+                            t in err_str.lower() for t in ("429", "rate limit", "too many requests")
+                        ):
                             self.key_cooldowns[key] = time.time() + 60.0
-                        if any(t in err_str.lower() for t in ("timeout", "timed out", "connection", "connect", "unreachable")):
+                        if any(
+                            t in err_str.lower()
+                            for t in (
+                                "timeout",
+                                "timed out",
+                                "connection",
+                                "connect",
+                                "unreachable",
+                            )
+                        ):
                             connection_timed_out = True
                             break
                 if connection_timed_out:
@@ -358,7 +377,12 @@ class NvidiaClient:
                     except Exception as e:
                         err_str = str(e)
                         errors.append(f"Groq API Fallback ({g_model}): {err_str}")
-                        if "429" in err_str or "rate limit" in err_str.lower() or "413" in err_str or "400" in err_str:
+                        if (
+                            "429" in err_str
+                            or "rate limit" in err_str.lower()
+                            or "413" in err_str
+                            or "400" in err_str
+                        ):
                             continue  # Try next model or key if rate-limited or invalid model
 
         # ── Step 4: Fallback to OpenRouter if a key is present ───────────────

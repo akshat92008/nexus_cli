@@ -10,6 +10,7 @@ from enum import Enum
 
 class EventType(str, Enum):
     """Types of runtime events."""
+
     RUN_STARTED = "run_started"
     RUN_COMPLETED = "run_completed"
     RUN_FAILED = "run_failed"
@@ -28,6 +29,7 @@ class EventType(str, Enum):
 @dataclass
 class BaseEvent:
     """Base class for all runtime events."""
+
     type: EventType
     timestamp: float = field(default_factory=lambda: __import__("time").time())
 

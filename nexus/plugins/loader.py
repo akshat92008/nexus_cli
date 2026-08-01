@@ -143,7 +143,7 @@ class PluginLoader:
                     plugin_dir=str(item),
                     status="trust_required",
                     message=f"Local plugin '{manifest.name}' requires explicit approval. "
-                            f"Capabilities: {manifest.display_capabilities()}",
+                    f"Capabilities: {manifest.display_capabilities()}",
                     manifest=manifest,
                 )
             else:
@@ -151,8 +151,8 @@ class PluginLoader:
                     plugin_dir=str(item),
                     status="trust_required",
                     message=f"Local plugin '{manifest.name}' is not approved. "
-                            f"Run 'nexus trust approve' to review and approve. "
-                            f"Content hash: {content_hash[:12]}...",
+                    f"Run 'nexus trust approve' to review and approve. "
+                    f"Content hash: {content_hash[:12]}...",
                     manifest=manifest,
                 )
 
@@ -199,8 +199,9 @@ class PluginLoader:
                 manifest=manifest,
             )
             self.diagnostics.append(diag)
-            logger.warning("Plugin %s: missing entry point %s",
-                           plugin_dir.name, manifest.entry_point)
+            logger.warning(
+                "Plugin %s: missing entry point %s", plugin_dir.name, manifest.entry_point
+            )
             return None
 
         # ── Content-addressed trust check ────────────────────────────────
@@ -210,7 +211,7 @@ class PluginLoader:
                 plugin_dir=str(plugin_dir),
                 status="trust_required",
                 message=f"Plugin '{manifest.name}' requires trust approval. "
-                        f"Hash: {content_hash[:12]}...",
+                f"Hash: {content_hash[:12]}...",
                 manifest=manifest,
             )
             self.diagnostics.append(diag)

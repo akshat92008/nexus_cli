@@ -82,10 +82,8 @@ class HostedProvider(Provider):
                 )
                 if is_rate_limit and retries < max_retries:
                     retries += 1
-                    wait_time = min(2 ** retries, 5)
-                    logger.warning(
-                        "Rate limited on %s, retrying in %ds...", self.name, wait_time
-                    )
+                    wait_time = min(2**retries, 5)
+                    logger.warning("Rate limited on %s, retrying in %ds...", self.name, wait_time)
                     time.sleep(wait_time)
                 else:
                     raise

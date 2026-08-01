@@ -14,7 +14,9 @@ class Action:
 def test_python_syntax_failure_is_not_approved(tmp_path):
     path = tmp_path / "broken.py"
     path.write_text("def broken(:\n    pass\n")
-    checks = GeneratedCodeValidator(str(tmp_path)).validate([Action("broken.py")], "create broken.py")
+    checks = GeneratedCodeValidator(str(tmp_path)).validate(
+        [Action("broken.py")], "create broken.py"
+    )
     assert len(checks) == 1
     assert not checks[0].passed
     assert checks[0].exit_code == 1
@@ -42,12 +44,7 @@ def test_python_main_must_be_called_by_name_guard(tmp_path):
 
 def test_python_cli_may_use_named_framework_entrypoint(tmp_path):
     path = tmp_path / "cli.py"
-    path.write_text(
-        "def cli():\n"
-        "    print('ok')\n\n"
-        "if __name__ == '__main__':\n"
-        "    cli()\n"
-    )
+    path.write_text("def cli():\n    print('ok')\n\nif __name__ == '__main__':\n    cli()\n")
     checks = GeneratedCodeValidator(str(tmp_path)).validate(
         [Action("cli.py")], "Create a Python CLI entrypoint"
     )
@@ -57,9 +54,7 @@ def test_python_cli_may_use_named_framework_entrypoint(tmp_path):
 def test_javascript_template_literals_do_not_trigger_false_truncation(tmp_path):
     path = tmp_path / "render.js"
     path.write_text(
-        "function render(item) {\n"
-        "  return `<div data-id=\"${item.id}\">${item.name}</div>`;\n"
-        "}\n"
+        'function render(item) {\n  return `<div data-id="${item.id}">${item.name}</div>`;\n}\n'
     )
     checks = GeneratedCodeValidator(str(tmp_path)).validate(
         [Action("render.js")], "Create render.js"
@@ -78,7 +73,9 @@ def test_javascript_array_join_is_not_path_join(tmp_path):
 
 def test_nonnegative_boundary_guard_cannot_reject_zero(tmp_path):
     path = tmp_path / "counter.py"
-    path.write_text("def count(limit):\n    if limit <= 0:\n        return []\n    return list(range(limit + 1))\n")
+    path.write_text(
+        "def count(limit):\n    if limit <= 0:\n        return []\n    return list(range(limit + 1))\n"
+    )
     checks = GeneratedCodeValidator(str(tmp_path)).validate(
         [Action("counter.py")], "nonnegative input includes the limit; negative input returns empty"
     )
@@ -131,9 +128,7 @@ def test_javascript_builtin_usage_needs_import(tmp_path):
 
 def test_cpp_exact_output_rejects_trailing_separator(tmp_path):
     path = tmp_path / "main.cpp"
-    path.write_text(
-        "#include <iostream>\nint main(){ for(int x: {0,1}) std::cout << x << ' '; }\n"
-    )
+    path.write_text("#include <iostream>\nint main(){ for(int x: {0,1}) std::cout << x << ' '; }\n")
     checks = GeneratedCodeValidator(str(tmp_path)).validate(
         [Action("main.cpp")], "print exactly '0 1' and a newline"
     )

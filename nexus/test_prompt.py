@@ -5,19 +5,22 @@ from prompt_toolkit.key_binding import KeyBindings
 
 kb = KeyBindings()
 
-@kb.add('enter')
+
+@kb.add("enter")
 def _(event):
     event.current_buffer.validate_and_handle()
 
-@kb.add('escape', 'enter')
+
+@kb.add("escape", "enter")
 def _(event):
-    event.current_buffer.insert_text('\n')
+    event.current_buffer.insert_text("\n")
+
 
 session = PromptSession(history=InMemoryHistory())
 
 try:
     print("Type something and press Enter:")
-    result = session.prompt(HTML('<ansicyan> ❯ </ansicyan>'), key_bindings=kb)
+    result = session.prompt(HTML("<ansicyan> ❯ </ansicyan>"), key_bindings=kb)
     print("Result:", repr(result))
 except Exception as e:
     print("Error:", e)

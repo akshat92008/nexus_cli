@@ -10,6 +10,7 @@ logger = logging.getLogger(__name__)
 
 class RunState(str, Enum):
     """Execution states for an agent run."""
+
     IDLE = "idle"
     PLANNING = "planning"
     EXECUTING = "executing"
@@ -41,13 +42,13 @@ class StateMachine:
     def transition_to(self, new_state: RunState) -> bool:
         """
         Transition to a new state.
-        
+
         Returns True if successful, False if invalid transition.
         """
         if new_state not in self._transitions[self._state]:
             logger.error("Invalid state transition: %s -> %s", self._state, new_state)
             return False
-        
+
         logger.debug("State transition: %s -> %s", self._state, new_state)
         self._state = new_state
         return True

@@ -150,7 +150,9 @@ def command_exit_code(result: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
-def verify_mutation(tool: str, args: dict[str, Any], working_dir: str | None = None) -> tuple[bool, str, list[dict[str, Any]]]:
+def verify_mutation(
+    tool: str, args: dict[str, Any], working_dir: str | None = None
+) -> tuple[bool, str, list[dict[str, Any]]]:
     """Re-read a mutation target and compare it with the requested intent."""
     if tool == "multi_edit":
         artifacts: list[dict[str, Any]] = []
@@ -165,7 +167,7 @@ def verify_mutation(tool: str, args: dict[str, Any], working_dir: str | None = N
     raw_path = args.get("path") or args.get("file_path")
     if not raw_path:
         return False, "mutation did not identify a target path", []
-    
+
     path = Path(raw_path).expanduser()
     if not path.is_absolute() and working_dir:
         path = Path(working_dir) / path
@@ -181,13 +183,25 @@ def verify_mutation(tool: str, args: dict[str, Any], working_dir: str | None = N
     if tool == "write_file":
         expected = str(args.get("content", ""))
         ok = text == expected
-        return ok, "exact content matched" if ok else "disk content differs from requested content", [artifact]
+        return (
+            ok,
+            "exact content matched" if ok else "disk content differs from requested content",
+            [artifact],
+        )
     if tool == "edit_file":
         new_text = str(args.get("new_text", ""))
         ok = new_text in text
-        return ok, "replacement text found on disk" if ok else "replacement text missing after edit", [artifact]
+        return (
+            ok,
+            "replacement text found on disk" if ok else "replacement text missing after edit",
+            [artifact],
+        )
     if tool == "patch_file":
         new_content = str(args.get("new_content", ""))
         ok = not new_content or new_content in text
-        return ok, "patched content found on disk" if ok else "patched content missing after edit", [artifact]
+        return (
+            ok,
+            "patched content found on disk" if ok else "patched content missing after edit",
+            [artifact],
+        )
     return False, f"unsupported mutation verifier: {tool}", [artifact]
