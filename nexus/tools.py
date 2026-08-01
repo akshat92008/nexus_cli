@@ -1472,7 +1472,7 @@ def tool_process_run(
     """Start a shell-free background process with a filtered environment."""
     try:
         work_dir = cwd or _tool_working_dir.get() or os.getcwd()
-        argv = shlex.split(command, posix=os.name != "nt")
+        argv = shlex.split(command, posix=True)
         if not argv:
             return "❌ Background command is empty"
         log_dir = nexus_home() / "logs"

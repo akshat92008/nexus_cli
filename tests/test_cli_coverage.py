@@ -95,8 +95,53 @@ def test_cli_direct_command():
                 except SystemExit:
                     pass
                 mock_agent._execute_tool_with_safety.assert_called_once_with(
-                    "run_process", {"argv": ["echo", "hello"], "cwd": mock_agent.working_dir}, _user_initiated=True
+                    "run_process", {"argv": ["echo", "hello"], "cwd": mock_agent.working_dir}, _user_initiated=True, _user_confirmed=False
                 )
+
+def test_cli_direct_command_confirm_danger():
+    with patch.dict(os.environ, {"NVIDIA_API_KEY": "test"}):
+        with patch("nexus.cli.Agent") as MockAgent:
+            with patch.object(sys, "argv", ["nexus", "--confirm-danger", "!rm -rf ./sentinel"]):
+                mock_agent = MockAgent.return_value
+                mock_agent._execute_tool_with_safety.return_value = ("success\n", True)
+                try:
+                    main()
+                except SystemExit:
+                    pass
+                mock_agent._execute_tool_with_safety.assert_called_once_with(
+                    "run_process", {"argv": ["rm", "-rf", "./sentinel"], "cwd": mock_agent.working_dir}, _user_initiated=True, _user_confirmed=True
+                )
+
+def test_cli_direct_command_pending_rewrite(capsys):
+    with patch.dict(os.environ, {"NVIDIA_API_KEY": "test"}):
+        with patch("nexus.cli.Agent") as MockAgent:
+            with patch.object(sys, "argv", ["nexus", "!rm -rf /"]):
+                mock_agent = MockAgent.return_value
+                mock_agent._execute_tool_with_safety.return_value = ("⏸️ PENDING_CONFIRMATION [danger-0001]: ...", False)
+                try:
+                    main()
+                except SystemExit:
+                    pass
+                captured = capsys.readouterr()
+                assert "Run with --confirm-danger to execute this exact command: !rm -rf /" in captured.out
+
+def test_cli_direct_command_real_execution(tmp_path):
+    import subprocess
+    # Run a real harmless direct command via subprocess to avoid mock gaps
+    result = subprocess.run(
+        [sys.executable, "-m", "nexus", "--output-format", "json", "!echo real_test_hello"],
+        env={**os.environ, "NVIDIA_API_KEY": "test"},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+    import json
+    data = json.loads(result.stdout)
+    assert data["name"] == "run_process"
+    if sys.platform != "win32":
+        assert "real_test_hello" in data["result"]
+    else:
+        assert "No supported OS sandbox is available" in data["result"]
 
 
 def test_cli_single_prompt():

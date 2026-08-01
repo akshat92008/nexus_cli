@@ -313,7 +313,7 @@ class SandboxRunner:
             )
         )
         try:
-            result.argv = shlex.split(command, posix=os.name != "nt")
+            result.argv = shlex.split(command, posix=True)
         except ValueError:
             result.argv = [command]
         return result
@@ -517,7 +517,7 @@ class SandboxRunner:
         if shell_command:
             normalized = re.sub(r"(&&|\|\||;)", r" \1 ", shell_command)
             try:
-                tokens = shlex.split(normalized, posix=os.name != "nt")
+                tokens = shlex.split(normalized, posix=True)
             except ValueError:
                 return "Shell command could not be safely parsed"
             command_position = True

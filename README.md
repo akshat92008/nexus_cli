@@ -185,6 +185,13 @@ or `sandbox-exec` on macOS). These presets expose shell-free `run_process`
 instead of the compatibility `run_command` shell. This prevents a command
 that merely looks safe from reading outside the authorized workspace.
 
+### OS Sandbox Support
+
+Nexus relies on kernel-level sandboxing for autonomous workflows (like the `autonomous` mode and CI presets) to enforce strict network and file-system boundaries for generated code execution:
+
+- **Linux**: Fully supported via `bubblewrap`.
+- **macOS**: Fully supported via `sandbox-exec`.
+- **Windows**: Limited support. Autonomous commands that require isolation will safely **fail closed** on Windows because no equivalent native sandbox backend is currently integrated. Direct commands and non-autonomous modes work as expected.
 ## Models
 
 Hosted model IDs are drawn from the NVIDIA NIM catalog. Provider availability

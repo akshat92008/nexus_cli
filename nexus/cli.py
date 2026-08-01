@@ -161,6 +161,11 @@ Environment:
         help="Run non-interactively and exit",
     )
     parser.add_argument(
+        "--confirm-danger",
+        action="store_true",
+        help="Confirm dangerous operations without prompting",
+    )
+    parser.add_argument(
         "--output-format",
         "--output",
         dest="output_format",
@@ -849,7 +854,7 @@ def run_interactive(agent: Agent):
             if user_input.lstrip().startswith("!"):
                 command = user_input.lstrip()[1:].strip()
                 try:
-                    argv = shlex.split(command, posix=os.name != "nt")
+                    argv = shlex.split(command, posix=True)
                 except ValueError as e:
                     ui.print_error(f"Invalid command: {e}")
                     continue
@@ -1060,7 +1065,7 @@ def main():
     if args.prompt and args.prompt.lstrip().startswith("!"):
         try:
             command = args.prompt.lstrip()[1:].strip()
-            argv = shlex.split(command, posix=os.name != "nt")
+            argv = shlex.split(command, posix=True)
             _mode_policy = get_mode_policy(args.mode)
             agent = Agent(
                 api_key="offline-direct-command",
@@ -1075,14 +1080,20 @@ def main():
             )
             result, success = agent._execute_tool_with_safety(
                 "run_process", {"argv": argv, "cwd": agent.working_dir},
-                _user_initiated=True
+                _user_initiated=True,
+                _user_confirmed=args.confirm_danger
             )
+            if not args.confirm_danger and "⏸️ PENDING_CONFIRMATION" in result:
+                result = (
+                    f"⏸️ PENDING_CONFIRMATION: Dangerous command detected.\n"
+                    f"Run with --confirm-danger to execute this exact command: {args.prompt}"
+                )
             if args.output_format in ("json", "jsonl", "stream-json"):
                 print(
                     json.dumps(
                         {
                             "type": "tool_call",
-                            "name": "run_command",
+                            "name": "run_process",
                             "result": result,
                             "success": success,
                         }
@@ -1171,7 +1182,9 @@ def main():
     # Create agent
     try:
         _mode_policy = get_mode_policy(args.mode)
-        automatic_workspace = _mode_policy.may_edit and not args.resume_run
+        working_dir_path = Path(args.working_dir or os.getcwd()).resolve()
+        is_git_repo = (working_dir_path / ".git").exists()
+        automatic_workspace = _mode_policy.may_edit and not args.resume_run and is_git_repo
         agent = Agent(
             api_key=api_key,
             model_key=args.model,
