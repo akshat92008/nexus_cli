@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from nexus.paths import nexus_home
+from nexus.process_io import filtered_subprocess_env, readline_with_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -77,16 +78,10 @@ class MCPConnection:
     def connect(self) -> bool:
         """Start the MCP server process and initialize the connection."""
         try:
-            import os
-
             # SECURITY: Minimal environment. PYTHONPATH is deliberately excluded
-            # to prevent code injection into the MCP server process.
-            safe_env = {
-                k: v
-                for k, v in os.environ.items()
-                if k in ("PATH", "USER", "HOME", "LANG", "LC_ALL", "TMPDIR", "NODE_ENV")
-            }
-            env = {**safe_env, **self.config.env}
+            # to prevent code injection into the MCP server process. Platform
+            # bootstrap variables are retained so Windows children can start.
+            env = filtered_subprocess_env(overrides=self.config.env)
             self._process = subprocess.Popen(
                 self.config.command,
                 stdin=subprocess.PIPE,
@@ -206,13 +201,10 @@ class MCPConnection:
                 self._process.stdin.write(line)
                 self._process.stdin.flush()
 
-                # Read response
-                import select
-
-                ready, _, _ = select.select([self._process.stdout], [], [], 30.0)
-                if not ready:
+                response_line = readline_with_timeout(self._process.stdout, 30.0)
+                if response_line is None:
+                    self.disconnect()
                     return None
-                response_line = self._process.stdout.readline()
                 if response_line:
                     return json.loads(response_line)
             except (BrokenPipeError, json.JSONDecodeError, OSError):

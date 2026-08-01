@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -18,6 +18,7 @@ class BudgetLimits:
     """Optional hard ceilings. ``None`` means the dimension is unlimited."""
 
     max_hosted_calls: int | None = None
+    max_provider_attempts: int | None = None
     max_prompt_tokens: int | None = None
     max_completion_tokens: int | None = None
     max_cost_usd: float | None = None
@@ -25,7 +26,12 @@ class BudgetLimits:
     output_price_per_million: float | None = None
 
     def validate(self) -> None:
-        for name in ("max_hosted_calls", "max_prompt_tokens", "max_completion_tokens"):
+        for name in (
+            "max_hosted_calls",
+            "max_provider_attempts",
+            "max_prompt_tokens",
+            "max_completion_tokens",
+        ):
             value = getattr(self, name)
             if value is not None and value < 0:
                 raise ValueError(f"{name} must be non-negative")
@@ -44,6 +50,9 @@ class BudgetLimits:
 @dataclass
 class BudgetUsage:
     hosted_calls: int = 0
+    provider_attempts: int = 0
+    attempts_by_provider: dict[str, int] = field(default_factory=dict)
+    attempts_by_model: dict[str, int] = field(default_factory=dict)
     prompt_tokens: int = 0
     completion_tokens: int = 0
     estimated_cost_usd: float = 0.0
@@ -130,6 +139,26 @@ class BudgetController:
         with self._lock:
             self.usage = BudgetUsage()
 
+    def before_provider_attempt(self, provider: str, model: str) -> int:
+        """Reserve one physical HTTP attempt before any provider request is sent."""
+
+        with self._lock:
+            limit = self.limits.max_provider_attempts
+            if limit is not None and self.usage.provider_attempts >= limit:
+                raise BudgetExceeded(
+                    f"Provider-attempt budget exhausted ({self.usage.provider_attempts}/{limit})."
+                )
+            self.usage.provider_attempts += 1
+            provider_key = provider or "unknown"
+            model_key = model or "unknown"
+            self.usage.attempts_by_provider[provider_key] = (
+                self.usage.attempts_by_provider.get(provider_key, 0) + 1
+            )
+            self.usage.attempts_by_model[model_key] = (
+                self.usage.attempts_by_model.get(model_key, 0) + 1
+            )
+            return self.usage.provider_attempts
+
     def record_usage(self, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
         """Add provider-reported usage and enforce the hard post-call ceiling."""
         with self._lock:
@@ -139,10 +168,13 @@ class BudgetController:
             self._check_token_and_cost_limits()
 
     def snapshot(self) -> dict[str, Any]:
-        return {
+        snapshot = {
             "limits": asdict(self.limits),
             "usage": asdict(self.usage),
         }
+        snapshot["usage"]["logical_agent_calls"] = snapshot["usage"]["hosted_calls"]
+        snapshot["usage"]["actual_provider_attempts"] = snapshot["usage"]["provider_attempts"]
+        return snapshot
 
     def _estimate_cost(self) -> float:
         if (
@@ -193,6 +225,10 @@ class BudgetedClient:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._wrapped_client, name)
+
+    @property
+    def attempt_telemetry_enabled(self) -> bool:
+        return bool(getattr(self._wrapped_client, "attempt_telemetry_enabled", False))
 
     def chat(self, *args: Any, **kwargs: Any) -> Any:
         prompt_estimate = self._estimate_messages(kwargs.get("messages"))

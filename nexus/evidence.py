@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -11,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from nexus.paths import nexus_home
+from nexus.storage import exclusive_file_lock, read_jsonl_prefix, recover_jsonl_suffix
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -55,7 +57,8 @@ class EvidenceTrail:
         self.directory = base / "evidence"
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / f"{session_id}.jsonl"
-        self._counter = sum(1 for _ in self._iter_records())
+        records, self._corruption = read_jsonl_prefix(self.path)
+        self._counter = len(records)
 
     def append(
         self,
@@ -70,27 +73,64 @@ class EvidenceTrail:
         raw_output: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> EvidenceRecord:
-        self._counter += 1
-        record = EvidenceRecord(
-            id=f"ev-{self._counter:06d}",
-            timestamp_utc=datetime.now(timezone.utc).isoformat(),
-            session_id=self.session_id,
-            kind=kind,
-            claim=claim,
-            status=status,
-            tool=tool,
-            command=command,
-            exit_code=exit_code,
-            artifacts=artifacts or [],
-            raw_output=raw_output,
-            metadata=metadata or {},
-        )
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(asdict(record), ensure_ascii=False) + "\n")
+        with exclusive_file_lock(self.path):
+            records, corruption = read_jsonl_prefix(self.path)
+            if corruption:
+                backup = recover_jsonl_suffix(self.path, records)
+                recovery_record = EvidenceRecord(
+                    id=f"ev-{len(records) + 1:06d}",
+                    timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                    session_id=self.session_id,
+                    kind="storage_corruption",
+                    claim="Recovered the valid evidence prefix and quarantined a corrupt suffix",
+                    status="failed",
+                    raw_output=corruption["error"],
+                    metadata={**corruption, "backup": str(backup)},
+                )
+                self._write_record(recovery_record)
+                records.append(asdict(recovery_record))
+            self._counter = len(records) + 1
+            record = EvidenceRecord(
+                id=f"ev-{self._counter:06d}",
+                timestamp_utc=datetime.now(timezone.utc).isoformat(),
+                session_id=self.session_id,
+                kind=kind,
+                claim=claim,
+                status=status,
+                tool=tool,
+                command=command,
+                exit_code=exit_code,
+                artifacts=artifacts or [],
+                raw_output=raw_output,
+                metadata=metadata or {},
+            )
+            self._write_record(record)
         return record
+
+    def _write_record(self, record: EvidenceRecord) -> None:
+        encoded = (json.dumps(asdict(record), ensure_ascii=False) + "\n").encode("utf-8")
+        descriptor = os.open(self.path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+        try:
+            os.write(descriptor, encoded)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
 
     def records(self, limit: int | None = None) -> list[dict[str, Any]]:
         records = list(self._iter_records())
+        if self._corruption:
+            records.append(
+                {
+                    "id": f"ev-corrupt-{self._corruption['line']}",
+                    "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                    "session_id": self.session_id,
+                    "kind": "storage_corruption",
+                    "claim": "Evidence JSONL contains a corrupt suffix",
+                    "status": "failed",
+                    "raw_output": self._corruption["error"],
+                    "metadata": dict(self._corruption),
+                }
+            )
         return records[-limit:] if limit else records
 
     def verify_recent(self, count: int = 10) -> tuple[bool, str]:
@@ -127,15 +167,7 @@ class EvidenceTrail:
         return all_match, "\n".join(lines)
 
     def _iter_records(self):
-        if not self.path.exists():
-            return iter(())
-        records = []
-        try:
-            for line in self.path.read_text(encoding="utf-8").splitlines():
-                if line.strip():
-                    records.append(json.loads(line))
-        except (OSError, json.JSONDecodeError):
-            return iter(())
+        records, self._corruption = read_jsonl_prefix(self.path)
         return iter(records)
 
 

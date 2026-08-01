@@ -229,6 +229,7 @@ class ExecutionKernel:
                 ModelRequestStarted(model=self.model_id, messages=current_messages)
             )
 
+            request_started = datetime.now(timezone.utc)
             try:
                 stream = self.provider.chat(
                     model_id=self.model_id,
@@ -239,14 +240,62 @@ class ExecutionKernel:
                     temperature=temperature,
                 )
             except Exception as e:
+                if self.ledger and self.ledger.turn_dir:
+                    completed = datetime.now(timezone.utc)
+                    self.ledger.append_model_call(
+                        role="executor",
+                        model=self.model_id,
+                        provider=str(getattr(self.provider, "id", "")),
+                        status="failed",
+                        started_at=request_started.isoformat(),
+                        completed_at=completed.isoformat(),
+                        duration_ms=int((completed - request_started).total_seconds() * 1000),
+                        error_category=classify_failure(str(e)).value,
+                        detail=str(e)[:1000],
+                    )
                 yield self._create_and_emit(ErrorEvent(message=f"Provider error: {e}"))
                 self.state_machine.transition_to(RunState.FAILED)
                 yield self._create_and_emit(RunFailed(error=str(e)))
                 return
 
             # Process Stream
-            full_content, tool_calls = yield from self._process_stream(stream)
-            yield self._create_and_emit(ModelRequestCompleted(model=self.model_id))
+            try:
+                full_content, tool_calls, usage, request_id = yield from self._process_stream(
+                    stream
+                )
+            except Exception as exc:
+                if self.ledger and self.ledger.turn_dir:
+                    completed = datetime.now(timezone.utc)
+                    self.ledger.append_model_call(
+                        role="executor",
+                        model=self.model_id,
+                        provider=str(getattr(self.provider, "id", "")),
+                        status="failed",
+                        started_at=request_started.isoformat(),
+                        completed_at=completed.isoformat(),
+                        duration_ms=int((completed - request_started).total_seconds() * 1000),
+                        error_category=classify_failure(str(exc)).value,
+                        detail=str(exc)[:1000],
+                    )
+                yield self._create_and_emit(ErrorEvent(message=f"Provider stream error: {exc}"))
+                self.state_machine.transition_to(RunState.FAILED)
+                yield self._create_and_emit(RunFailed(error=str(exc)))
+                return
+            completed = datetime.now(timezone.utc)
+            if self.ledger and self.ledger.turn_dir:
+                self.ledger.append_model_call(
+                    role="executor",
+                    model=self.model_id,
+                    provider=str(getattr(self.provider, "id", "")),
+                    status="verified",
+                    usage=usage,
+                    request_id=request_id,
+                    started_at=request_started.isoformat(),
+                    completed_at=completed.isoformat(),
+                    duration_ms=int((completed - request_started).total_seconds() * 1000),
+                    has_tool_calls=bool(tool_calls),
+                )
+            yield self._create_and_emit(ModelRequestCompleted(model=self.model_id, usage=usage))
 
             # Record assistant message
             assistant_msg: dict = {"role": "assistant"}
@@ -361,12 +410,24 @@ class ExecutionKernel:
 
         yield self._create_and_emit(RunCompleted(content=final_content))
 
-    def _process_stream(self, stream) -> tuple[str, list[dict]]:
+    def _process_stream(self, stream) -> tuple[str, list[dict], dict[str, int], str]:
         """Process the generator from the provider."""
         full_content = ""
         tool_calls_accum: dict[int, dict] = {}
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        request_id = ""
 
         for chunk in stream:
+            request_id = request_id or str(getattr(chunk, "id", "") or "")
+            chunk_usage = getattr(chunk, "usage", None)
+            if chunk_usage is not None:
+                for key in usage:
+                    value = (
+                        chunk_usage.get(key, 0)
+                        if isinstance(chunk_usage, dict)
+                        else getattr(chunk_usage, key, 0)
+                    )
+                    usage[key] = max(usage[key], int(value or 0))
             if not hasattr(chunk, "choices") or not chunk.choices:
                 continue
             delta = chunk.choices[0].delta
@@ -400,7 +461,9 @@ class ExecutionKernel:
                     tc["id"] = f"call_{idx}_{int(time.time() * 1000)}"
                 tool_calls.append(tc)
 
-        return full_content, tool_calls
+        if not usage["total_tokens"]:
+            usage["total_tokens"] = usage["prompt_tokens"] + usage["completion_tokens"]
+        return full_content, tool_calls, usage, request_id
 
 
 # ---------------------------------------------------------------------------

@@ -5,6 +5,8 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -432,9 +434,11 @@ def test_tool_security_scan(tmp_path):
 
 
 def test_tool_browser_check(monkeypatch):
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
 
     from nexus.tools import tool_browser_check
+
+    sync_api = pytest.importorskip("playwright.sync_api")
 
     mock_playwright = MagicMock()
     mock_browser = MagicMock()
@@ -448,10 +452,10 @@ def test_tool_browser_check(monkeypatch):
     mock_sync_pw_cm = MagicMock()
     mock_sync_pw_cm.__enter__.return_value = mock_playwright
 
-    with patch("playwright.sync_api.sync_playwright", return_value=mock_sync_pw_cm, create=True):
-        res = tool_browser_check(url="http://127.0.0.1/")
-        assert "browser" in res
-        assert "passed" in res
+    monkeypatch.setattr(sync_api, "sync_playwright", lambda: mock_sync_pw_cm)
+    res = tool_browser_check(url="http://127.0.0.1/")
+    assert "browser" in res
+    assert "passed" in res
 
 
 from nexus.github import GitHubIntegration  # noqa: E402

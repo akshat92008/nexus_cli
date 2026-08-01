@@ -5,9 +5,13 @@ Spawns isolated agent instances, executes them (sequentially or parallel),
 and aggregates their results into a unified report.
 """
 
+import shutil
+import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
+from pathlib import Path
 
 from nexus.subagents.base import BaseSubagent, SubagentResult, SubagentStatus
 
@@ -38,7 +42,7 @@ class SubagentOrchestrator:
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str | None,
         model_id: str,
         working_dir: str = "",
         max_workers: int = 3,
@@ -190,46 +194,111 @@ class SubagentOrchestrator:
         return results
 
     def _run_parallel(self) -> list[SubagentResult]:
-        """Run subagents in parallel using threads."""
-        results = []
+        """Parallelize read-only work and serialize isolated mutating work."""
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+        mutating = [item for item in self._subagents if self._requires_isolation(item)]
+        read_only = [item for item in self._subagents if item not in mutating]
+        by_agent: dict[int, SubagentResult] = {}
+
+        if read_only:
+            executor = ThreadPoolExecutor(max_workers=min(self.max_workers, len(read_only)))
             future_to_subagent = {
-                executor.submit(self._execute_subagent, sa): sa for sa in self._subagents
+                executor.submit(self._execute_subagent, subagent): subagent
+                for subagent in read_only
             }
-
-            for future in as_completed(future_to_subagent, timeout=self.timeout):
-                subagent = future_to_subagent[future]
-                try:
-                    result = future.result(timeout=self.timeout)
-                    results.append(result)
-                except Exception as e:
-                    results.append(
-                        SubagentResult(
-                            subagent_name=subagent.name,
-                            task=subagent.task,
-                            status=SubagentStatus.FAILED,
-                            summary=f"Execution error: {e}",
-                            errors=[str(e)],
+            try:
+                for future in as_completed(future_to_subagent, timeout=self.timeout):
+                    subagent = future_to_subagent[future]
+                    try:
+                        by_agent[id(subagent)] = future.result()
+                    except Exception as exc:
+                        by_agent[id(subagent)] = self._failed_result(subagent, exc)
+            except FuturesTimeoutError:
+                for future, subagent in future_to_subagent.items():
+                    if id(subagent) not in by_agent:
+                        future.cancel()
+                        by_agent[id(subagent)] = self._failed_result(
+                            subagent,
+                            TimeoutError(f"Subagent exceeded the {self.timeout}s team timeout."),
                         )
-                    )
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
-        return results
+        # Agents that can mutate files run one at a time in copy-on-write
+        # workspaces.  Each verified result is merged before the next starts,
+        # eliminating last-writer-wins file corruption.
+        for subagent in mutating:
+            by_agent[id(subagent)] = self._execute_subagent(subagent)
+
+        return [by_agent[id(subagent)] for subagent in self._subagents]
+
+    @staticmethod
+    def _requires_isolation(subagent: BaseSubagent) -> bool:
+        mutating_tools = {
+            "write_file",
+            "edit_file",
+            "patch_file",
+            "multi_edit",
+            "run_command",
+            "run_process",
+            "process_run",
+            "git_commit",
+            "git_branch",
+        }
+        # BaseSubagent defines an empty list as "all tools", which necessarily
+        # includes mutation capabilities.
+        return not subagent.allowed_tools or bool(
+            mutating_tools.intersection(subagent.allowed_tools)
+        )
+
+    @staticmethod
+    def _failed_result(subagent: BaseSubagent, error: Exception) -> SubagentResult:
+        return SubagentResult(
+            subagent_name=subagent.name,
+            task=subagent.task,
+            status=SubagentStatus.FAILED,
+            summary=f"Execution error: {error}",
+            errors=[str(error)],
+        )
 
     def _execute_subagent(self, subagent: BaseSubagent) -> SubagentResult:
         """Execute a single subagent using a fresh Agent instance."""
         start_time = time.monotonic()
+        started_at = datetime.now().isoformat()
         subagent.status = SubagentStatus.RUNNING
+        isolated_workspace = None
+        isolated_state: Path | None = None
+        agent = None
+        apply_started = False
+        apply_succeeded = False
 
         try:
             # Import here to avoid circular imports
             from nexus.agent import Agent
+            from nexus.run_state import RunStatus
+            from nexus.workspace import GitWorktreeSession
+
+            working_dir = subagent.working_dir or self.working_dir
+            mutating = self._requires_isolation(subagent)
+            if mutating:
+                isolated_state = Path(tempfile.mkdtemp(prefix="nexus-subagent-"))
+                isolated_workspace = GitWorktreeSession(
+                    working_dir,
+                    f"{subagent.name}-{time.time_ns()}",
+                    state_root=isolated_state,
+                    force_copy=True,
+                )
+                working_dir = isolated_workspace.create().path
 
             # Create a fresh, isolated agent for this subagent
             agent = Agent(
                 api_key=self.api_key,
                 model_key=self.model_id,
-                working_dir=subagent.working_dir or self.working_dir,
+                working_dir=working_dir,
+                permission_mode="acceptEdits" if mutating else "plan",
+                allowed_tools=list(subagent.allowed_tools),
+                max_turns=subagent.max_iterations,
+                workspace_isolation=False,
             )
 
             # Override system prompt with subagent's prompt
@@ -246,10 +315,24 @@ class SubagentOrchestrator:
             # Process the result
             result = subagent.process_result(content, events)
             result.duration_ms = duration
-            result.started_at = datetime.now().isoformat()
+            result.started_at = started_at
             result.completed_at = datetime.now().isoformat()
 
-            subagent.status = SubagentStatus.COMPLETED
+            if duration > self.timeout * 1000:
+                raise TimeoutError(f"Subagent exceeded its {self.timeout}s timeout.")
+            if mutating:
+                if not result.succeeded:
+                    raise RuntimeError("Isolated subagent reported one or more failed tool calls.")
+                report = agent.run_ledger.resume_summary().get("final_report", {})
+                if report.get("status") != RunStatus.VERIFIED.value:
+                    raise RuntimeError(
+                        "Isolated subagent changes were not merged because the run was not VERIFIED."
+                    )
+                apply_started = True
+                isolated_workspace.apply()
+                apply_succeeded = True
+
+            subagent.status = result.status
             return result
 
         except Exception as e:
@@ -263,7 +346,16 @@ class SubagentOrchestrator:
                 summary=f"Subagent failed: {e}",
                 errors=[str(e)],
                 duration_ms=duration,
+                started_at=started_at,
+                completed_at=datetime.now().isoformat(),
             )
+        finally:
+            if agent is not None:
+                agent.close()
+            if isolated_workspace is not None:
+                isolated_workspace.discard()
+            if isolated_state is not None and (not apply_started or apply_succeeded):
+                shutil.rmtree(isolated_state, ignore_errors=True)
 
     def list_subagents(self) -> list[dict]:
         """List all queued subagents."""

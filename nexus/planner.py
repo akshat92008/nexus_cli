@@ -732,7 +732,11 @@ class PlanningEngine:
                     "Connect all pieces — imports, routes, configuration",
                     ["edit_file", "multi_edit"],
                 ),
-                ("Test the implementation", "Run the code and fix any errors", ["run_command"]),
+                (
+                    "Test the implementation",
+                    "Run the code and fix any errors",
+                    ["run_command", "read_file", "edit_file"],
+                ),
                 (
                     "Polish and document",
                     "Add error handling, comments, and documentation",
@@ -881,13 +885,33 @@ class PlanningEngine:
             ],
         }
 
-        template = templates.get(intent, templates[IntentType.BUILD])
+        # Source-control publication is a user-controlled lifecycle action, not
+        # an implementation step.  Keeping it in autonomous plans made otherwise
+        # successful runs block on permissions or mutate repository history.
+        template = [
+            item
+            for item in templates.get(intent, templates[IntentType.BUILD])
+            if "git_commit" not in item[2]
+        ]
 
-        # For simpler tasks, use fewer steps
+        # A short plan still needs an implementation and a verification phase.
+        # Prefix-truncating the templates used to turn a simple BUILD into three
+        # analysis-only steps and a simple FIX into an unverified edit.
         if difficulty == Difficulty.SIMPLE:
-            template = template[:3]
-        elif difficulty == Difficulty.MODERATE:
-            template = template[:5]
+            simple_indices = {
+                IntentType.BUILD: (0, 3, 6),
+                IntentType.FIX: (0, 2, 3, 4),
+                IntentType.REFACTOR: (0, 2, 3),
+                IntentType.REVIEW: (0, 1, 4),
+                IntentType.TEST: (0, 1, 2, 3),
+                IntentType.DEPLOY: (0, 1, 3, 4),
+                IntentType.DOCS: (0, 1, 2),
+                IntentType.MIGRATE: (0, 2, 3, 4, 5),
+                IntentType.OPTIMIZE: (0, 1, 2, 3),
+                IntentType.SECURITY: (0, 1, 2, 3, 4),
+            }
+            indices = simple_indices.get(intent, simple_indices[IntentType.BUILD])
+            template = [template[index] for index in indices if index < len(template)]
 
         steps = []
         for i, (title, desc, tools) in enumerate(template):
@@ -1022,12 +1046,21 @@ class PlanningEngine:
             step.status = status
             step.result = result
             if status == TaskStatus.IN_PROGRESS:
+                self.current_plan.status = TaskStatus.IN_PROGRESS
+                self.current_plan.current_step = step_id
                 step.attempts += 1
                 step.started_at = datetime.now().isoformat()
             elif status in (TaskStatus.COMPLETED, TaskStatus.FAILED):
                 step.completed_at = datetime.now().isoformat()
                 if status == TaskStatus.FAILED:
                     step.error = result
+                    self.current_plan.status = TaskStatus.FAILED
+                elif self.current_plan.is_complete:
+                    self.current_plan.status = TaskStatus.COMPLETED
+                    self.current_plan.current_step = None
+                else:
+                    next_step = self.current_plan.next_step
+                    self.current_plan.current_step = next_step.id if next_step else None
 
             self._save_plan(self.current_plan)
             return True
@@ -1039,7 +1072,13 @@ class PlanningEngine:
             return ""
 
         plan = self.current_plan
-        next_step = plan.next_step
+        next_step = (
+            next(
+                (step for step in plan.steps if step.status == TaskStatus.IN_PROGRESS),
+                None,
+            )
+            or plan.next_step
+        )
 
         if not next_step:
             if plan.is_complete:

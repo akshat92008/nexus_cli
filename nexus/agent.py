@@ -12,7 +12,7 @@ import re
 import shlex
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,7 +60,7 @@ from nexus.subagents.templates import create_subagent
 from nexus.tools import TOOL_DEFINITIONS, execute_tool, tool_get_project_structure, tool_git_status
 from nexus.trust import TrustStore
 from nexus.user_memory import UserMemory
-from nexus.verification import CheckType, VerificationEngine
+from nexus.verification import CheckStatus, CheckType, VerificationEngine
 from nexus.workspace import GitWorktreeSession, WorktreeError
 
 
@@ -85,6 +85,38 @@ def _redact_runtime_text(value: str) -> str:
         "[REDACTED_CREDENTIAL]",
         redacted,
     )
+
+
+def _effective_evidence(evidence: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:
+    """Return the latest state-bearing evidence instead of stale failed attempts."""
+
+    matching = [item for item in evidence if item.get("kind") == kind]
+    if kind == "verification_check":
+        latest: dict[str, dict[str, Any]] = {}
+        for item in matching:
+            identity = str(
+                item.get("metadata", {}).get("check_type") or item.get("command") or item.get("id")
+            )
+            latest[identity] = item
+        return list(latest.values())
+    if kind == "file_mutation":
+        latest_by_path: dict[str, dict[str, Any]] = {}
+        pathless: list[dict[str, Any]] = []
+        for item in matching:
+            paths = {
+                str(artifact.get("path", ""))
+                for artifact in item.get("artifacts", [])
+                if artifact.get("path")
+            }
+            if not paths:
+                pathless.append(item)
+            for path in paths:
+                latest_by_path[path] = item
+        selected_ids = {str(item.get("id")) for item in latest_by_path.values()}
+        return [
+            item for item in matching if str(item.get("id")) in selected_ids or item in pathless
+        ]
+    return matching
 
 
 # ── System Prompt ────────────────────────────────────────────────────────────
@@ -212,6 +244,7 @@ class Agent:
         max_turns: int = 50,
         workspace_isolation: bool = False,
         max_hosted_calls: int | None = None,
+        max_provider_attempts: int | None = None,
         max_prompt_tokens: int | None = None,
         max_completion_tokens: int | None = None,
         max_cost_usd: float | None = None,
@@ -226,18 +259,7 @@ class Agent:
         self.source_working_dir = str(Path(working_dir or os.getcwd()).resolve())
         self.conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self.worktree: GitWorktreeSession | None = None
-        if workspace_isolation:
-            try:
-                self.worktree = GitWorktreeSession(
-                    self.source_working_dir,
-                    self.conversation_id,
-                )
-                worktree_info = self.worktree.create()
-                self.working_dir = worktree_info.path
-            except WorktreeError as exc:
-                raise ValueError(f"Could not create isolated Git worktree: {exc}") from exc
-        else:
-            self.working_dir = self.source_working_dir
+        self.working_dir = self.source_working_dir
         # P0-3 FIX: Remove os.chdir(self.working_dir) to prevent global process state pollution
         self.mode_policy = mode_policy or get_mode_policy(permission_mode)
 
@@ -270,6 +292,7 @@ class Agent:
         self.budget = BudgetController(
             BudgetLimits(
                 max_hosted_calls=max_hosted_calls,
+                max_provider_attempts=max_provider_attempts,
                 max_prompt_tokens=max_prompt_tokens,
                 max_completion_tokens=max_completion_tokens,
                 max_cost_usd=max_cost_usd,
@@ -277,19 +300,43 @@ class Agent:
                 output_price_per_million=output_price_per_million,
             )
         )
-        if self._is_nova_model():
-            provider = NovaProvider(
-                model_name=self.model_cfg.get("ollama_model", "nova_codex"),
-                working_dir=self.working_dir,
+        hosted_client = None
+        if not self._is_nova_model():
+            primary = HostedProvider(
+                api_key=api_key,
+                attempt_controller=self.budget,
+                attempt_observer=self._record_provider_attempt,
             )
-            self.client = provider
-        else:
-            primary = HostedProvider(api_key=api_key)
             router = FallbackRouter(primary)
             from nexus.budget import BudgetedClient
 
             # BudgetedClient duck-types the provider to add budget enforcement
-            self.client = BudgetedClient(router, self.budget)
+            hosted_client = BudgetedClient(router, self.budget)
+
+        # Validate provider configuration and budgets before allocating a
+        # persistent worktree so constructor failures cannot leak workspaces.
+        if workspace_isolation:
+            try:
+                self.worktree = GitWorktreeSession(
+                    self.source_working_dir,
+                    self.conversation_id,
+                )
+                worktree_info = self.worktree.create()
+                self.working_dir = worktree_info.path
+            except WorktreeError as exc:
+                raise ValueError(f"Could not create isolated Git worktree: {exc}") from exc
+        if self._is_nova_model():
+            try:
+                self.client = NovaProvider(
+                    model_name=self.model_cfg.get("ollama_model", "nova_codex"),
+                    working_dir=self.working_dir,
+                )
+            except Exception:
+                if self.worktree is not None:
+                    self.worktree.discard()
+                raise
+        else:
+            self.client = hosted_client
 
         # State
         self.messages: list[dict] = []
@@ -321,6 +368,7 @@ class Agent:
         self._active_objective = ""
         self._active_analysis: dict[str, Any] = {}
         self._active_plan = None
+        self._enforce_plan_tool_contract = False
         self._permissions_used: set[str] = set()
         self._network_calls: list[str] = []
         self.package_guard = PackageGuard()
@@ -508,7 +556,11 @@ class Agent:
             )
         else:
             try:
-                primary = HostedProvider(api_key=self._api_key)
+                primary = HostedProvider(
+                    api_key=self._api_key,
+                    attempt_controller=self.budget,
+                    attempt_observer=self._record_provider_attempt,
+                )
                 router = FallbackRouter(primary)
                 self.client = BudgetedClient(router, self.budget)
             except ValueError:
@@ -651,6 +703,34 @@ class Agent:
 
     # ── Durable run lifecycle ───────────────────────────────────────────
 
+    @staticmethod
+    def _effective_evidence(evidence: list[dict[str, Any]], kind: str) -> list[dict[str, Any]]:
+        return _effective_evidence(evidence, kind)
+
+    def _applicable_verification(self, intent: IntentType, skills: list[str]) -> list[str]:
+        """Generate checks that this repository can actually execute.
+
+        Exact evidence matching remains strict; this only prevents Nexus from
+        inventing a mandatory lint/type contract when the repository has no
+        configured or installed linter/type checker.
+        """
+
+        generated = self.planner._generate_verification(intent, skills)
+        available = {item.value for item in self.verifier.get_available_checks()}
+        applicable: list[str] = []
+        for item in generated:
+            lowered = item.lower()
+            if "lint/type" in lowered:
+                if {"lint", "type_check"}.issubset(available):
+                    applicable.append(item)
+                elif "lint" in available:
+                    applicable.append("Check for lint errors")
+                elif "type_check" in available:
+                    applicable.append("Check for type errors")
+                continue
+            applicable.append(item)
+        return applicable
+
     def _begin_managed_run(
         self,
         user_input: str,
@@ -680,7 +760,7 @@ class Agent:
             "acceptance_criteria": self.planner._generate_acceptance_criteria(
                 user_input,
                 analysis["intent"],
-                self.planner._generate_verification(
+                self._applicable_verification(
                     analysis["intent"],
                     analysis.get("skills_needed", []),
                 ),
@@ -704,12 +784,212 @@ class Agent:
             detail="Request and execution contract persisted before model execution.",
         )
         if plan and hasattr(plan, "steps"):
-            current_step = next(
-                (s for s in plan.steps if s.status in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS)),
-                None,
+            current_step = (
+                next(
+                    (s for s in plan.steps if s.status == TaskStatus.IN_PROGRESS),
+                    None,
+                )
+                or plan.next_step
             )
-            if current_step:
+            if current_step and current_step.status == TaskStatus.PENDING:
                 self.planner.advance_step(current_step.id, TaskStatus.IN_PROGRESS)
+
+    def _record_provider_attempt(self, attempt: dict[str, Any]) -> None:
+        """Persist one physical provider request emitted by the hosted router."""
+
+        if not getattr(self, "run_ledger", None) or not self.run_ledger.turn_dir:
+            return
+        error = str(attempt.get("error", ""))
+        error_category = ""
+        if error:
+            from nexus.runtime.kernel import classify_failure
+
+            error_category = classify_failure(error).value
+        usage = attempt.get("usage") if isinstance(attempt.get("usage"), dict) else {}
+        limits = self.budget.snapshot().get("limits", {})
+        input_price = limits.get("input_price_per_million")
+        output_price = limits.get("output_price_per_million")
+        estimated_cost = 0.0
+        if input_price is not None and output_price is not None:
+            estimated_cost = (
+                int(usage.get("prompt_tokens", 0) or 0) * float(input_price)
+                + int(usage.get("completion_tokens", 0) or 0) * float(output_price)
+            ) / 1_000_000
+        self.run_ledger.append_model_call(
+            role="provider_attempt",
+            model=str(attempt.get("model", self.model_cfg.get("id", ""))),
+            provider=str(attempt.get("provider", "")),
+            status=str(attempt.get("status", "failed")),
+            usage=usage,
+            request_id=str(attempt.get("request_id", "")),
+            started_at=str(attempt.get("started_at", "")),
+            completed_at=str(attempt.get("completed_at", "")),
+            duration_ms=int(attempt.get("duration_ms", 0) or 0),
+            attempt=int(attempt.get("attempt", 1) or 1),
+            physical_attempt=int(attempt.get("physical_attempt", 1) or 1),
+            retry_number=max(0, int(attempt.get("attempt", 1) or 1) - 1),
+            fallback_from=str(attempt.get("fallback_from", "")),
+            estimated_cost_usd=estimated_cost,
+            error_category=error_category,
+            detail=_redact_runtime_text(error[:1000]),
+        )
+
+    @staticmethod
+    def _parse_review_payload(raw: str) -> dict[str, Any]:
+        """Parse the reviewer's strict JSON response and fail closed."""
+
+        candidate = (raw or "").strip()
+        fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", candidate, re.DOTALL)
+        if fenced:
+            candidate = fenced.group(1)
+        else:
+            start, end = candidate.find("{"), candidate.rfind("}")
+            if start >= 0 and end > start:
+                candidate = candidate[start : end + 1]
+        parsed = json.loads(candidate)
+        if not isinstance(parsed, dict) or not isinstance(parsed.get("approved"), bool):
+            raise ValueError("review JSON must contain a boolean 'approved' field")
+        findings = parsed.get("findings", [])
+        if not isinstance(findings, list) or not all(isinstance(item, str) for item in findings):
+            raise ValueError("review JSON 'findings' must be an array of strings")
+        summary = parsed.get("summary", "")
+        if not isinstance(summary, str) or not summary.strip():
+            raise ValueError("review JSON must contain a non-empty 'summary'")
+        return {
+            "approved": parsed["approved"],
+            "summary": summary.strip(),
+            "findings": findings,
+        }
+
+    def _run_independent_review(self) -> tuple[bool, str]:
+        """Require a read-only hosted review before mutation runs can be verified."""
+
+        evidence = self.evidence.records()[getattr(self, "_turn_evidence_start", 0) :]
+        mutations = [item for item in evidence if item.get("kind") == "file_mutation"]
+        if not mutations:
+            return True, "No file mutations require independent review."
+        approved = [
+            item
+            for item in evidence
+            if item.get("kind") == "independent_review" and item.get("status") == "verified"
+        ]
+        if approved:
+            return True, str(approved[-1].get("raw_output", "Independent review approved."))
+
+        changes = self.history.changes[getattr(self, "_run_history_start", 0) :]
+        diff = self.history.get_recent_diffs(max(1, len(changes)))
+        if not diff or diff == "No file changes in this session.":
+            message = "Independent review could not obtain the applied diff."
+            self.evidence.append(
+                kind="independent_review",
+                claim="independent hosted reviewer evaluated the applied diff",
+                status="failed",
+                raw_output=message,
+                metadata={"findings": [message]},
+            )
+            return False, message
+
+        checks = [
+            {
+                "type": item.get("metadata", {}).get("check_type", ""),
+                "status": item.get("status", ""),
+                "claim": item.get("claim", ""),
+            }
+            for item in evidence
+            if item.get("kind") == "verification_check"
+        ]
+        reviewer_model = os.environ.get("NEXUS_REVIEW_MODEL_ID", "").strip()
+        if not reviewer_model and self.model_key == "custom":
+            reviewer_model = self.model_cfg["id"]
+        if not reviewer_model:
+            reviewer_model = (
+                "qwen/qwen3.5-397b-a17b"
+                if self.model_cfg["id"] != "qwen/qwen3.5-397b-a17b"
+                else "meta/llama-3.3-70b-instruct"
+            )
+
+        chunk_size = 50_000
+        chunks = [diff[index : index + chunk_size] for index in range(0, len(diff), chunk_size)]
+        all_findings: list[str] = []
+        summaries: list[str] = []
+        all_approved = True
+        for index, chunk in enumerate(chunks, start=1):
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an independent, read-only senior code reviewer. Evaluate only "
+                        "the supplied applied diff against the objective and deterministic check "
+                        "results. Reject missing behavior, unsafe changes, broken integration, "
+                        "unsupported completion claims, or an incomplete diff chunk. Return only "
+                        'JSON: {"approved": boolean, "summary": string, '
+                        '"findings": [string]}. Never request or call tools.'
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Objective:\n{self._active_objective}\n\n"
+                        f"Deterministic checks:\n{json.dumps(checks, ensure_ascii=False)}\n\n"
+                        f"Diff chunk {index}/{len(chunks)}:\n```diff\n{chunk}\n```"
+                    ),
+                },
+            ]
+            started = datetime.now(timezone.utc)
+            try:
+                response = self.client.chat_sync(
+                    model_id=reviewer_model,
+                    messages=messages,
+                    tools=None,
+                    max_tokens=2000,
+                    temperature=0.0,
+                )
+                raw = str(response.choices[0].message.content or "")
+                parsed = self._parse_review_payload(raw)
+                all_approved = all_approved and parsed["approved"]
+                summaries.append(f"Chunk {index}: {parsed['summary']}")
+                all_findings.extend(parsed["findings"])
+                completed = datetime.now(timezone.utc)
+                self.run_ledger.append_model_call(
+                    role="independent_reviewer",
+                    model=reviewer_model,
+                    provider=str(getattr(self.client, "id", "")),
+                    status="verified",
+                    started_at=started.isoformat(),
+                    completed_at=completed.isoformat(),
+                    duration_ms=int((completed - started).total_seconds() * 1000),
+                    detail=parsed["summary"][:1000],
+                )
+            except Exception as exc:
+                all_approved = False
+                failure = f"Review chunk {index} failed closed: {exc}"
+                summaries.append(failure)
+                all_findings.append(failure)
+                completed = datetime.now(timezone.utc)
+                self.run_ledger.append_model_call(
+                    role="independent_reviewer",
+                    model=reviewer_model,
+                    provider=str(getattr(self.client, "id", "")),
+                    status="failed",
+                    started_at=started.isoformat(),
+                    completed_at=completed.isoformat(),
+                    duration_ms=int((completed - started).total_seconds() * 1000),
+                    detail=_redact_runtime_text(str(exc)[:1000]),
+                )
+
+        summary = "\n".join(summaries)
+        self.evidence.append(
+            kind="independent_review",
+            claim="independent hosted reviewer evaluated the applied diff",
+            status="verified" if all_approved else "failed",
+            raw_output=summary,
+            metadata={
+                "reviewer_model": reviewer_model,
+                "chunks": len(chunks),
+                "findings": all_findings,
+            },
+        )
+        return all_approved, summary
 
     def _evaluate_unrelated_files(
         self, criterion: str, plan: Any, changes: list
@@ -742,8 +1022,11 @@ class Agent:
 
     def _evaluate_fingerprinted_mutations(self, criterion: str, evidence: list) -> CriterionResult:
         mutation_records = [item for item in evidence if item.get("kind") == "file_mutation"]
-        satisfied = bool(mutation_records) and all(
-            item.get("status") == "verified" for item in mutation_records
+        task_type = get_task_type(self._active_analysis.get("intent", IntentType.UNKNOWN))
+        satisfied = (
+            (not mutation_records and task_type == TaskType.READ_ONLY)
+            or bool(mutation_records)
+            and all(item.get("status") == "verified" for item in mutation_records)
         )
         return CriterionResult(
             criterion,
@@ -841,6 +1124,11 @@ class Agent:
         if not self.run_ledger.turn_dir:
             return {}
         evidence = self.evidence.records()[getattr(self, "_turn_evidence_start", 0) :]
+        mutation_records = self._effective_evidence(evidence, "file_mutation")
+        verification_records = self._effective_evidence(evidence, "verification_check")
+        effective_state_ids = {
+            str(item.get("id")) for item in [*mutation_records, *verification_records]
+        }
         changes = self.history.changes[self._run_history_start :]
         command_records = [item for item in evidence if item.get("kind") == "command"]
         passing_commands = [
@@ -861,6 +1149,10 @@ class Agent:
             for item in evidence
             if item.get("status") == "failed"
             and item.get("kind") not in {"routing", "independent_review"}
+            and (
+                item.get("kind") not in {"file_mutation", "verification_check"}
+                or str(item.get("id")) in effective_state_ids
+            )
             and not (
                 item.get("kind") == "command" and item.get("command", "") in successful_command_text
             )
@@ -869,11 +1161,7 @@ class Agent:
                 and latest_behavioral_status.get(item.get("tool", "")) == "verified"
             )
         ]
-        verified_mutations = [
-            item
-            for item in evidence
-            if item.get("kind") == "file_mutation" and item.get("status") == "verified"
-        ]
+        verified_mutations = [item for item in mutation_records if item.get("status") == "verified"]
         passing_behavioral = [
             item
             for item in evidence
@@ -884,23 +1172,37 @@ class Agent:
             for item in evidence
             if item.get("kind") == "independent_review" and item.get("status") == "verified"
         ]
-        verification_records = [
-            item for item in evidence if item.get("kind") == "verification_check"
-        ]
         passing_checks = [item for item in verification_records if item.get("status") == "verified"]
 
         def matching_checks(criterion: str) -> list[dict[str, Any]]:
             lowered = criterion.lower()
-            if "lint" in lowered or "type" in lowered:
-                target_types = {"lint", "type_check", "build"}
+            passing_by_type: dict[str, list[dict[str, Any]]] = {}
+            for item in passing_checks:
+                check_type = str(item.get("metadata", {}).get("check_type", ""))
+                passing_by_type.setdefault(check_type, []).append(item)
+
+            if "executable test" in lowered and "build" in lowered:
+                target_types = {"test", "build", "browser", "api", "database"}
+            elif "lint" in lowered and "type" in lowered:
+                # A build is neither a linter nor a type checker. Combined
+                # criteria require one passing record of each exact type.
+                if not passing_by_type.get("lint") or not passing_by_type.get("type_check"):
+                    return []
+                return [*passing_by_type["lint"], *passing_by_type["type_check"]]
+            elif "lint" in lowered:
+                target_types = {"lint"}
+            elif "type" in lowered:
+                target_types = {"type_check"}
             elif "security" in lowered or "vulnerab" in lowered:
                 target_types = {"security"}
+            elif "coverage" in lowered:
+                target_types = {"coverage"}
             elif "build" in lowered or "compile" in lowered:
                 target_types = {"build"}
-            elif "test" in lowered or "regression" in lowered or "coverage" in lowered:
-                target_types = {"test", "browser", "database", "api"}
+            elif "test" in lowered or "regression" in lowered:
+                target_types = {"test"}
             elif "run the project" in lowered or "works" in lowered or "smoke" in lowered:
-                target_types = {"test", "build", "browser", "api"}
+                target_types = {"test", "build", "browser", "api", "database"}
             else:
                 return []
             return [
@@ -914,13 +1216,14 @@ class Agent:
             criteria_text = list(plan.acceptance_criteria)
             self.run_ledger.record_plan(plan)
         else:
+            verification = self._applicable_verification(
+                self._active_analysis.get("intent", IntentType.UNKNOWN),
+                self._active_analysis.get("skills_needed", []),
+            )
             criteria_text = self.planner._generate_acceptance_criteria(
                 self._active_objective,
                 self._active_analysis.get("intent", IntentType.UNKNOWN),
-                self.planner._generate_verification(
-                    self._active_analysis.get("intent", IntentType.UNKNOWN),
-                    self._active_analysis.get("skills_needed", []),
-                ),
+                verification,
             )
 
         results: list[CriterionResult] = []
@@ -948,7 +1251,8 @@ class Agent:
                     )
                 )
             elif "verification completed" in lowered or any(
-                term in lowered for term in ("test", "build", "lint", "smoke check")
+                term in lowered
+                for term in ("test", "build", "lint", "type", "coverage", "smoke check")
             ):
                 results.append(
                     self._evaluate_verification_checks(criterion, matching_checks(criterion))
@@ -971,10 +1275,15 @@ class Agent:
                     )
                 )
 
+        # Autonomous execution is iterative: a failed command or edit attempt
+        # is not an unresolved run failure when a later call to that tool
+        # succeeds and final deterministic verification passes.
+        latest_tool_events: dict[str, dict[str, Any]] = {}
+        for item in events or []:
+            if item.get("type") == "tool_call":
+                latest_tool_events[str(item.get("name", "unknown"))] = item
         event_failures = [
-            item
-            for item in (events or [])
-            if item.get("type") == "tool_call" and not item.get("success")
+            item for item in latest_tool_events.values() if not item.get("success", False)
         ]
         if status_override is not None:
             run_status = status_override
@@ -1033,6 +1342,13 @@ class Agent:
             outcome = "NO_CHANGES"
 
         turn_dir = self.run_ledger.turn_dir
+        model_call_records, _model_call_corruption = self.run_ledger.read_jsonl("model_calls.jsonl")
+        logical_model_calls = [
+            item for item in model_call_records if item.get("role") != "provider_attempt"
+        ]
+        provider_attempt_records = [
+            item for item in model_call_records if item.get("role") == "provider_attempt"
+        ]
 
         def jsonl_count(filename: str) -> int:
             if turn_dir is None:
@@ -1052,9 +1368,7 @@ class Agent:
             try:
                 records = [
                     json.loads(line)
-                    for line in (turn_dir / "events.jsonl")
-                    .read_text(encoding="utf-8")
-                    .splitlines()
+                    for line in (turn_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
                     if line.strip()
                 ]
             except (OSError, json.JSONDecodeError):
@@ -1117,7 +1431,8 @@ class Agent:
                 "local_intern_mode": self.local_intern_mode,
                 "local_intern_enabled": self.local_intern_enabled,
                 "plugins_enabled": self._plugins_enabled,
-                "model_calls": jsonl_count("model_calls.jsonl"),
+                "model_calls": len(logical_model_calls),
+                "provider_attempts": len(provider_attempt_records),
                 "tool_calls": jsonl_count("tool_calls.jsonl"),
                 "tests_executed": len(verification_records),
                 "criteria_satisfied": sum(
@@ -1311,7 +1626,86 @@ class Agent:
         except Exception:
             pass
 
-        return tools
+        configured_allowlist = set(self.allowed_tools)
+        step_allowlist: set[str] = set()
+        if self._active_plan is not None:
+            current = next(
+                (step for step in self._active_plan.steps if step.status == TaskStatus.IN_PROGRESS),
+                None,
+            )
+            if current:
+                step_allowlist.update(current.tools_needed)
+                step_allowlist.update(
+                    {
+                        "read_file",
+                        "search_code",
+                        "list_directory",
+                        "find_files",
+                        "get_project_structure",
+                        "repo_context",
+                        "repo_symbols",
+                        "repo_impact",
+                    }
+                )
+        effective_allowlist = (
+            configured_allowlist & step_allowlist
+            if configured_allowlist and step_allowlist
+            else configured_allowlist or step_allowlist
+        )
+
+        def permitted(definition: dict[str, Any]) -> bool:
+            name = str(definition.get("function", {}).get("name", ""))
+            return bool(
+                name
+                and name not in self.disallowed_tools
+                and (not effective_allowlist or name in effective_allowlist)
+            )
+
+        return [definition for definition in tools if permitted(definition)]
+
+    def close(self, *, discard_workspace: bool = False) -> dict[str, Any]:
+        """Release transports and optionally archive/discard the isolated workspace."""
+
+        report: dict[str, Any] = {
+            "mcp_disconnected": False,
+            "background_processes_stopped": [],
+            "workspace_discarded": False,
+            "recovery_patch": "",
+            "errors": [],
+        }
+        try:
+            self.mcp.disconnect_all()
+            report["mcp_disconnected"] = True
+        except Exception as exc:
+            report["errors"].append(f"MCP cleanup failed: {exc}")
+        try:
+            from nexus.tools import stop_owned_processes
+
+            process_cleanup = stop_owned_processes(self.conversation_id)
+            report["background_processes_stopped"] = process_cleanup["stopped"]
+            report["errors"].extend(process_cleanup["errors"])
+        except Exception as exc:
+            report["errors"].append(f"Background process cleanup failed: {exc}")
+        if discard_workspace and self.worktree is not None and self.worktree.info is not None:
+            try:
+                diff = self.worktree.diff()
+                if diff:
+                    if self.run_ledger.turn_dir:
+                        patch = self.run_ledger.store_artifact(
+                            "patches", "workspace-close-recovery.diff", diff
+                        )
+                    else:
+                        recovery_dir = nexus_home() / "recovery"
+                        recovery_dir.mkdir(parents=True, exist_ok=True)
+                        patch = recovery_dir / f"{self.conversation_id}-workspace.diff"
+                        patch.write_text(diff, encoding="utf-8")
+                    report["recovery_patch"] = str(patch)
+                cleanup = self.worktree.discard()
+                report["workspace_discarded"] = not cleanup["errors"]
+                report["errors"].extend(cleanup["errors"])
+            except Exception as exc:
+                report["errors"].append(f"Workspace cleanup failed: {exc}")
+        return report
 
     # ── Tool Execution (with safety, hooks, reflection) ──────────────────
 
@@ -1327,7 +1721,7 @@ class Agent:
         started = time.monotonic()
         from nexus.tools import tool_context
 
-        with tool_context(self.working_dir, self.history):
+        with tool_context(self.working_dir, self.history, self.conversation_id):
             result, success = self._execute_tool_with_safety_impl(
                 name,
                 args,
@@ -1426,6 +1820,31 @@ class Agent:
             )
         if self.allowed_tools and name not in self.allowed_tools:
             return False, "", (f"❌ BLOCKED: {name} is not in the active tool allowlist.", False)
+        if self._active_plan is not None and self._enforce_plan_tool_contract:
+            current = next(
+                (step for step in self._active_plan.steps if step.status == TaskStatus.IN_PROGRESS),
+                None,
+            )
+            if current is not None:
+                step_tools = set(current.tools_needed) | {
+                    "read_file",
+                    "search_code",
+                    "list_directory",
+                    "find_files",
+                    "get_project_structure",
+                    "repo_context",
+                    "repo_symbols",
+                    "repo_impact",
+                }
+                if name not in step_tools:
+                    return (
+                        False,
+                        "",
+                        (
+                            f"❌ BLOCKED: {name} is outside the active plan step's tool contract.",
+                            False,
+                        ),
+                    )
         if not self.mode_policy.may_edit and (
             name in mutation_tools
             or name in ("run_command", "run_process", "process_run")
@@ -2030,7 +2449,7 @@ class Agent:
                     command="generated-code-validator",
                     exit_code=0 if not code_failures else 1,
                     raw_output="\n".join(check.format() for check in code_checks),
-                    metadata={"check_type": "build"},
+                    metadata={"check_type": "syntax"},
                 )
             self.evidence.append(
                 kind="file_mutation",
@@ -2404,9 +2823,9 @@ class Agent:
         return full_content, tool_calls
 
     def _handle_tool_calls_interactive(
-        self, tool_calls: list[dict]
+        self, tool_calls: list[dict], *, emit_ui: bool = True
     ) -> tuple[list[dict], list[bool]]:
-        """Execute tool calls with UI output and return tool result messages."""
+        """Execute tool calls, optionally rendering interactive progress."""
         results = []
         successes = []
         for tc in tool_calls:
@@ -2416,7 +2835,8 @@ class Agent:
             except json.JSONDecodeError:
                 args = {}
 
-            ui.print_tool_call(name, args)
+            if emit_ui:
+                ui.print_tool_call(name, args)
 
             exec_msg = f"Executing {name}..."
             if name == "write_file":
@@ -2433,14 +2853,20 @@ class Agent:
                     cmd_val = shlex.join(str(item) for item in args.get("argv", []))
                 exec_msg = f"Running command: {cmd_val[:60]}..."
 
-            with ui.console.status(f"[bold {ui.ORANGE}]⚡ {exec_msg}[/]", spinner="bouncingBar"):
+            if emit_ui:
+                with ui.console.status(
+                    f"[bold {ui.ORANGE}]⚡ {exec_msg}[/]", spinner="bouncingBar"
+                ):
+                    result, success = self._execute_tool_with_safety(name, args)
+            else:
                 result, success = self._execute_tool_with_safety(name, args)
 
-            ui.print_tool_result(result, success)
+            if emit_ui:
+                ui.print_tool_result(result, success)
 
             # Reflection
             verdict = self.reflector.reflect(name, args, result)
-            if verdict.verdict == ReflectionVerdict.ESCALATE:
+            if emit_ui and verdict.verdict == ReflectionVerdict.ESCALATE:
                 ui.print_warning(f"⚠ Reflection: {verdict.suggestion}")
 
             # Cap tool content for context memory efficiency
@@ -2504,6 +2930,7 @@ class Agent:
         plan: Any,
         interactive: bool = False,
         emit_ui: bool = False,
+        max_turns_override: int | None = None,
     ) -> tuple[str, list[dict]]:
         """Run a standard hosted-model execution loop (single-node)."""
         _run_id = (
@@ -2511,15 +2938,16 @@ class Agent:
         )
         session = ExecutionSession(
             provider=self.client,
-            max_turns=self.max_turns,
+            max_turns=max_turns_override or self.max_turns,
             model_id=self.model_cfg["id"],
             run_id=_run_id,
+            ledger=self.run_ledger,
         )
         engine = session.interactive
 
         def handle_tool(name, args):
             tc = [{"id": f"call_{time.time()}", "name": name, "arguments": json.dumps(args)}]
-            res, successes = self._handle_tool_calls_interactive(tc)
+            res, successes = self._handle_tool_calls_interactive(tc, emit_ui=emit_ui)
             return successes[0], res[0]["content"]
 
         engine.tool_executor = handle_tool
@@ -2551,6 +2979,14 @@ class Agent:
                 elif event.type == EventType.MODEL_REQUEST_COMPLETED:
                     if live:
                         live.stop()
+                    accumulated_events.append(
+                        {
+                            "type": "model_turn",
+                            "model": event.model,
+                            "usage": event.usage,
+                            "node": "hosted",
+                        }
+                    )
                 elif event.type == EventType.MODEL_STREAM_CHUNK:
                     if live and live._is_active:
                         live.stop()
@@ -2623,28 +3059,71 @@ class Agent:
         if plan and hasattr(plan, "steps"):
             current_step = next((s for s in plan.steps if s.status == TaskStatus.IN_PROGRESS), None)
             if current_step:
-                # Run strict checks before marking task COMPLETED
-                syntax_check = self.verifier.verify_syntax()
-                import_check = self.verifier.verify_imports()
-                if not syntax_check.passed or not import_check.passed:
-                    err_msg = ""
-                    if not syntax_check.passed:
-                        err_msg += f"Syntax error: {syntax_check.output}\n"
-                    if not import_check.passed:
-                        err_msg += f"Import error: {import_check.output}\n"
-                    self.planner.advance_step(current_step.id, TaskStatus.FAILED, err_msg)
-                elif any(
-                    e.get("status") == "failed" for e in accumulated_events if isinstance(e, dict)
-                ):
+                tool_events = [
+                    event
+                    for event in accumulated_events
+                    if isinstance(event, dict) and event.get("type") == "tool_call"
+                ]
+                successful_tools = {
+                    str(event.get("name", ""))
+                    for event in tool_events
+                    if event.get("success", False)
+                }
+                mutation_tools = {"write_file", "edit_file", "patch_file", "multi_edit"}
+                expected_tools = set(current_step.tools_needed)
+                expected_mutation = bool(expected_tools & mutation_tools)
+                expected_command = bool(expected_tools & {"run_command", "run_process"})
+                mutated = bool(successful_tools & mutation_tools)
+                contract_missing = (
+                    (expected_mutation and not mutated)
+                    or (expected_command and not successful_tools & {"run_command", "run_process"})
+                    or (expected_tools and not successful_tools)
+                )
+                response_failed = (
+                    (content or "").lstrip().upper().startswith(("ERROR:", "BLOCKED:"))
+                )
+                if response_failed or contract_missing:
                     self.planner.advance_step(
-                        current_step.id, TaskStatus.FAILED, "Errors encountered during step"
+                        current_step.id,
+                        TaskStatus.FAILED,
+                        (
+                            "The model stopped with an execution error."
+                            if response_failed
+                            else "The step ended without satisfying its required tool contract."
+                        ),
                     )
+                elif mutated:
+                    # Read-only diagnostic steps may inspect a broken tree. A
+                    # mutating step must leave syntax and imports coherent.
+                    syntax_check = self.verifier.verify_syntax()
+                    import_check = self.verifier.verify_imports()
+                    syntax_ok = syntax_check.status in {
+                        CheckStatus.PASSED,
+                        CheckStatus.NOT_APPLICABLE,
+                    }
+                    imports_ok = import_check.status in {
+                        CheckStatus.PASSED,
+                        CheckStatus.NOT_APPLICABLE,
+                    }
+                    if syntax_ok and imports_ok:
+                        self.planner.advance_step(
+                            current_step.id,
+                            TaskStatus.COMPLETED,
+                            "Step executed successfully",
+                        )
+                    else:
+                        err_msg = ""
+                        if not syntax_ok:
+                            err_msg += f"Syntax error: {syntax_check.output}\n"
+                        if not imports_ok:
+                            err_msg += f"Import error: {import_check.output}\n"
+                        self.planner.advance_step(current_step.id, TaskStatus.FAILED, err_msg)
                 else:
                     self.planner.advance_step(
                         current_step.id, TaskStatus.COMPLETED, "Step executed successfully"
                     )
 
-        if plan and plan.is_complete():
+        if plan and plan.is_complete:
             if emit_ui:
                 ui.print_info("📋 Plan complete. Running verification...")
             try:
@@ -3049,7 +3528,9 @@ class Agent:
 
         final_text = nova_result.assistant_text
         if proposal_failed:
-            final_text += "\n\nOne or more guarded file operations failed; completion is unverified."
+            final_text += (
+                "\n\nOne or more guarded file operations failed; completion is unverified."
+            )
         if test_failed:
             final_text += "\n\nThe model-declared acceptance test failed; completion is unverified."
         final_content = self._guard_completion_claims(final_text)
@@ -3073,6 +3554,32 @@ class Agent:
             working_dir=self.working_dir,
         )
         result = orchestrator.run_single(subagent)
+
+        evidence_record = self.evidence.append(
+            kind="subagent",
+            claim=f"subagent {template_name} completed its bounded task",
+            status="verified" if result.succeeded else "failed",
+            raw_output=result.summary,
+            metadata={
+                "task": task,
+                "duration_ms": result.duration_ms,
+                "tool_calls": result.tool_calls_made,
+                "files_touched": result.files_touched,
+                "errors": result.errors,
+            },
+        )
+        if self.run_ledger.turn_dir:
+            self.run_ledger.append_event(
+                "subagent_finished",
+                status="verified" if result.succeeded else "failed",
+                detail=result.summary[:1000],
+                metadata={
+                    "subagent": template_name,
+                    "task": task,
+                    "evidence_id": evidence_record.id,
+                    "files_touched": result.files_touched,
+                },
+            )
 
         self.hooks.fire(
             HookEvent.ON_SUBAGENT_COMPLETE,

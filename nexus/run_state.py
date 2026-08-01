@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -18,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from nexus.paths import nexus_home
+from nexus.storage import exclusive_file_lock, read_jsonl_prefix, recover_jsonl_suffix
 
 RUN_SCHEMA_VERSION = "nexus.run.v2"
 
@@ -72,7 +74,7 @@ def _json_default(value: Any) -> Any:
 def _atomic_write_json(path: Path, value: Any) -> None:
     """Atomically replace *path* with formatted JSON."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         temporary.write_text(
             json.dumps(value, indent=2, ensure_ascii=False, default=_json_default) + "\n",
@@ -138,66 +140,73 @@ class RunLedger:
         metadata: dict[str, Any] | None = None,
     ) -> str:
         """Start and persist the next turn in this conversation."""
-        session = self._read_json(self.session_path) or {"turns": []}
-        turn_number = len(session.get("turns", [])) + 1
-        self.turn_id = f"turn-{turn_number:04d}"
-        self.turn_dir = self.session_dir / self.turn_id
-        self.turn_dir.mkdir(parents=True, exist_ok=False)
-        (self.turn_dir / "checkpoints").mkdir()
-        (self.turn_dir / "patches").mkdir()
-        (self.turn_dir / "tests").mkdir()
-        self._event_counter = 0
-        self._checkpoint_counter = 0
-
-        normalized_analysis = {
-            key: item.value if isinstance(item, Enum) else item
-            for key, item in (analysis or {}).items()
-        }
-        request_record = {
-            "schema_version": RUN_SCHEMA_VERSION,
-            "session_id": self.session_id,
-            "turn_id": self.turn_id,
-            "request": request,
-            "working_dir": self.working_dir,
-            "analysis": normalized_analysis,
-            "metadata": metadata or {},
-            "created_at": _utc_now(),
-        }
-        _atomic_write_json(self.turn_dir / "request.json", request_record)
-        if plan is not None:
-            self.record_plan(plan)
-            plan_steps = (
-                getattr(plan, "steps", []) if not isinstance(plan, dict) else plan.get("steps", [])
-            )
-            self.record_tasks(plan_steps)
-        else:
-            self.record_tasks([])
-        _atomic_write_json(self.turn_dir / "costs.json", {})
-        for filename in ("events.jsonl", "model_calls.jsonl", "tool_calls.jsonl"):
-            (self.turn_dir / filename).touch()
-
-        state = {
-            "schema_version": RUN_SCHEMA_VERSION,
-            "session_id": self.session_id,
-            "turn_id": self.turn_id,
-            "status": RunStatus.RUNNING.value,
-            "started_at": request_record["created_at"],
-            "updated_at": request_record["created_at"],
-            "event_count": 0,
-            "checkpoint_count": 0,
-        }
-        _atomic_write_json(self.turn_dir / "state.json", state)
-
-        session.setdefault("turns", []).append(
-            {
+        with exclusive_file_lock(self.session_path):
+            session = self._read_json(self.session_path) or {"turns": []}
+            existing_numbers = [
+                int(path.name.removeprefix("turn-"))
+                for path in self.session_dir.glob("turn-*")
+                if path.is_dir() and path.name.removeprefix("turn-").isdigit()
+            ]
+            turn_number = max([len(session.get("turns", [])), *existing_numbers], default=0) + 1
+            self.turn_id = f"turn-{turn_number:04d}"
+            self.turn_dir = self.session_dir / self.turn_id
+            self.turn_dir.mkdir(parents=True, exist_ok=False)
+            (self.turn_dir / "checkpoints").mkdir()
+            (self.turn_dir / "patches").mkdir()
+            (self.turn_dir / "tests").mkdir()
+            self._event_counter = 0
+            self._checkpoint_counter = 0
+            normalized_analysis = {
+                key: item.value if isinstance(item, Enum) else item
+                for key, item in (analysis or {}).items()
+            }
+            request_record = {
+                "schema_version": RUN_SCHEMA_VERSION,
+                "session_id": self.session_id,
                 "turn_id": self.turn_id,
-                "request": request[:300],
+                "request": request,
+                "working_dir": self.working_dir,
+                "analysis": normalized_analysis,
+                "metadata": metadata or {},
+                "created_at": _utc_now(),
+            }
+            _atomic_write_json(self.turn_dir / "request.json", request_record)
+            if plan is not None:
+                self.record_plan(plan)
+                plan_steps = (
+                    getattr(plan, "steps", [])
+                    if not isinstance(plan, dict)
+                    else plan.get("steps", [])
+                )
+                self.record_tasks(plan_steps)
+            else:
+                self.record_tasks([])
+            _atomic_write_json(self.turn_dir / "costs.json", {})
+            for filename in ("events.jsonl", "model_calls.jsonl", "tool_calls.jsonl"):
+                (self.turn_dir / filename).touch()
+
+            state = {
+                "schema_version": RUN_SCHEMA_VERSION,
+                "session_id": self.session_id,
+                "turn_id": self.turn_id,
                 "status": RunStatus.RUNNING.value,
                 "started_at": request_record["created_at"],
+                "updated_at": request_record["created_at"],
+                "event_count": 0,
+                "checkpoint_count": 0,
             }
-        )
-        session["updated_at"] = _utc_now()
-        _atomic_write_json(self.session_path, session)
+            _atomic_write_json(self.turn_dir / "state.json", state)
+
+            session.setdefault("turns", []).append(
+                {
+                    "turn_id": self.turn_id,
+                    "request": request[:300],
+                    "status": RunStatus.RUNNING.value,
+                    "started_at": request_record["created_at"],
+                }
+            )
+            session["updated_at"] = _utc_now()
+            _atomic_write_json(self.session_path, session)
         return self.turn_id
 
     def record_plan(self, plan: Any) -> None:
@@ -253,6 +262,18 @@ class RunLedger:
         usage: dict[str, Any] | None = None,
         task_id: int | str | None = None,
         detail: str = "",
+        provider: str = "",
+        request_id: str = "",
+        started_at: str = "",
+        completed_at: str = "",
+        duration_ms: int = 0,
+        attempt: int = 1,
+        physical_attempt: int = 1,
+        retry_number: int = 0,
+        fallback_from: str = "",
+        estimated_cost_usd: float = 0.0,
+        has_tool_calls: bool = False,
+        error_category: str = "",
     ) -> str:
         """Append redacted model-call metadata without persisting prompts or secrets."""
         return self._append_jsonl(
@@ -264,6 +285,18 @@ class RunLedger:
                 "usage": usage or {},
                 "task_id": task_id,
                 "detail": detail,
+                "provider": provider,
+                "request_id": request_id,
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "duration_ms": max(0, int(duration_ms or 0)),
+                "attempt": max(1, int(attempt or 1)),
+                "physical_attempt": max(1, int(physical_attempt or 1)),
+                "retry_number": max(0, int(retry_number or 0)),
+                "fallback_from": fallback_from,
+                "estimated_cost_usd": max(0.0, float(estimated_cost_usd or 0.0)),
+                "has_tool_calls": bool(has_tool_calls),
+                "error_category": error_category,
             },
             prefix="model",
         )
@@ -323,22 +356,17 @@ class RunLedger:
         metadata: dict[str, Any] | None = None,
     ) -> str:
         """Append one durable event and return its stable identifier."""
-        turn_dir = self._require_turn()
-        self._event_counter += 1
-        event_id = f"event-{self._event_counter:06d}"
-        record = {
-            "schema_version": RUN_SCHEMA_VERSION,
-            "id": event_id,
-            "timestamp_utc": _utc_now(),
-            "kind": kind,
-            "status": status,
-            "detail": detail,
-            "metadata": metadata or {},
-        }
-        with (turn_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False, default=_json_default) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+        event_id = self._append_jsonl(
+            "events.jsonl",
+            {
+                "kind": kind,
+                "status": status,
+                "detail": detail,
+                "metadata": metadata or {},
+            },
+            prefix="event",
+        )
+        self._event_counter = max(self._event_counter, int(event_id.rsplit("-", 1)[-1]))
         self._update_state(event_count=self._event_counter)
         return event_id
 
@@ -426,14 +454,15 @@ class RunLedger:
         self.record_costs(costs or {})
         self._update_state(status=status.value, completed_at=report["completed_at"])
 
-        session = self._read_json(self.session_path) or {}
-        for item in session.get("turns", []):
-            if item.get("turn_id") == self.turn_id:
-                item["status"] = status.value
-                item["completed_at"] = report["completed_at"]
-                break
-        session["updated_at"] = report["completed_at"]
-        _atomic_write_json(self.session_path, session)
+        with exclusive_file_lock(self.session_path):
+            session = self._read_json(self.session_path) or {}
+            for item in session.get("turns", []):
+                if item.get("turn_id") == self.turn_id:
+                    item["status"] = status.value
+                    item["completed_at"] = report["completed_at"]
+                    break
+            session["updated_at"] = report["completed_at"]
+            _atomic_write_json(self.session_path, session)
         return report
 
     def mark_rolled_back(self, detail: str) -> None:
@@ -479,12 +508,7 @@ class RunLedger:
         self.turn_dir = turn_dir
         self.turn_id = turn_dir.name
         events_path = turn_dir / "events.jsonl"
-        try:
-            self._event_counter = sum(
-                1 for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()
-            )
-        except OSError:
-            self._event_counter = 0
+        self._event_counter = len(read_jsonl_prefix(events_path)[0])
         self._checkpoint_counter = len(list((turn_dir / "checkpoints").glob("*.json")))
         return {
             "request": self._read_json(turn_dir / "request.json") or {},
@@ -539,10 +563,11 @@ class RunLedger:
     def _update_state(self, **updates: Any) -> None:
         turn_dir = self._require_turn()
         state_path = turn_dir / "state.json"
-        state = self._read_json(state_path) or {}
-        state.update(updates)
-        state["updated_at"] = _utc_now()
-        _atomic_write_json(state_path, state)
+        with exclusive_file_lock(state_path):
+            state = self._read_json(state_path) or {}
+            state.update(updates)
+            state["updated_at"] = _utc_now()
+            _atomic_write_json(state_path, state)
 
     def _append_jsonl(
         self,
@@ -553,23 +578,39 @@ class RunLedger:
     ) -> str:
         turn_dir = self._require_turn()
         path = turn_dir / filename
-        count = 0
-        try:
-            count = sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
-        except OSError:
-            pass
-        record_id = f"{prefix}-{count + 1:06d}"
-        record = {
-            "schema_version": RUN_SCHEMA_VERSION,
-            "id": record_id,
-            "timestamp_utc": _utc_now(),
-            **payload,
-        }
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(record, ensure_ascii=False, default=_json_default) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
+        with exclusive_file_lock(path):
+            records, corruption = read_jsonl_prefix(path)
+            recovery: dict[str, Any] | None = None
+            if corruption:
+                backup = recover_jsonl_suffix(path, records)
+                recovery = {**corruption, "backup": str(backup)}
+            record_id = f"{prefix}-{len(records) + 1:06d}"
+            record = {
+                "schema_version": RUN_SCHEMA_VERSION,
+                "id": record_id,
+                "timestamp_utc": _utc_now(),
+                **payload,
+            }
+            if recovery:
+                record["storage_recovery"] = recovery
+            encoded = (json.dumps(record, ensure_ascii=False, default=_json_default) + "\n").encode(
+                "utf-8"
+            )
+            descriptor = os.open(path, os.O_CREAT | os.O_APPEND | os.O_WRONLY, 0o600)
+            try:
+                os.write(descriptor, encoded)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
         return record_id
+
+    def read_jsonl(self, filename: str) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+        """Read a run JSONL artifact while preserving a valid prefix on corruption."""
+
+        if filename not in {"events.jsonl", "model_calls.jsonl", "tool_calls.jsonl"}:
+            raise ValueError(f"Unsupported run JSONL artifact: {filename}")
+        turn_dir = self.turn_dir or self._latest_turn_dir()
+        return read_jsonl_prefix(turn_dir / filename) if turn_dir else ([], None)
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any] | None:

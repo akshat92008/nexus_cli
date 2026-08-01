@@ -218,7 +218,12 @@ Environment:
     parser.add_argument(
         "--max-hosted-calls",
         type=int,
-        help="Hard ceiling for hosted model calls in each request run",
+        help="Hard ceiling for logical hosted model calls in each request run",
+    )
+    parser.add_argument(
+        "--max-provider-attempts",
+        type=int,
+        help="Hard ceiling for physical provider HTTP attempts, including retries/fallbacks",
     )
     parser.add_argument(
         "--max-prompt-tokens",
@@ -936,7 +941,28 @@ def non_interactive_exit_code(content: str, events: list[dict]) -> int:
     return 2 if any(marker in lowered for marker in failure_markers) else 0
 
 
+def _close_and_exit(agent: Agent, exit_code: int) -> None:
+    """Release session-owned resources before terminating the CLI process."""
+
+    agent.close()
+    raise SystemExit(exit_code)
+
+
+def _configure_output_streams(streams=None) -> None:
+    """Use UTF-8 for redirected Windows output and other legacy locales."""
+
+    for stream in streams or (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (LookupError, OSError, ValueError):
+            pass
+
+
 def main():
+    _configure_output_streams()
     if _handle_run_management():
         return
     if _handle_workspace_commands():
@@ -1094,6 +1120,7 @@ def main():
             max_turns=args.max_turns,
             workspace_isolation=((args.workspace or automatic_workspace) and not args.no_workspace),
             max_hosted_calls=args.max_hosted_calls,
+            max_provider_attempts=args.max_provider_attempts,
             max_prompt_tokens=args.max_prompt_tokens,
             max_completion_tokens=args.max_completion_tokens,
             max_cost_usd=args.max_cost_usd,
@@ -1118,20 +1145,20 @@ def main():
         ]
         if not candidates or not agent.load_conversation(candidates[0]["id"]):
             ui.print_error("No resumable conversation found for this directory.")
-            sys.exit(1)
+            _close_and_exit(agent, 1)
     elif args.resume:
         if agent.load_conversation(args.resume):
             ui.print_success(f"Resumed conversation: {args.resume}")
         else:
             ui.print_error(f"Could not find conversation: {args.resume}")
-            sys.exit(1)
+            _close_and_exit(agent, 1)
 
     if args.resume_run:
         try:
             content, events = agent.resume_interrupted(args.resume_run)
         except ValueError as exc:
             ui.print_error(str(exc))
-            sys.exit(2)
+            _close_and_exit(agent, 2)
         exit_code = non_interactive_exit_code(content, events)
         final_report = agent.run_ledger.resume_summary().get("final_report", {})
         status = final_report.get("status")
@@ -1155,7 +1182,7 @@ def main():
             )
         else:
             print(content)
-        sys.exit(exit_code)
+        _close_and_exit(agent, exit_code)
 
     # Custom system prompt
     if args.system:
@@ -1181,7 +1208,7 @@ def main():
                 )
             else:
                 print(result)
-            sys.exit(0 if success else 2)
+            _close_and_exit(agent, 0 if success else 2)
         if args.print_mode or args.output_format != "text":
             content, events = agent.run_non_interactive(args.prompt)
             exit_code = non_interactive_exit_code(content, events)
@@ -1229,7 +1256,7 @@ def main():
                     print(FinalReportGenerator.generate(final_report_path))
                 except Exception:
                     pass
-            sys.exit(exit_code)
+            _close_and_exit(agent, exit_code)
         else:
             if getattr(agent, "worktree", None) and agent.worktree.info:
                 ui.console.print(f"\n  [bold green]Workspace Active:[/] {agent.worktree.info.path}")
@@ -1253,10 +1280,13 @@ def main():
                 print(FinalReportGenerator.generate(final_report_path))
             except Exception:
                 pass
-            sys.exit(exit_code)
+            _close_and_exit(agent, exit_code)
 
     # Interactive mode
-    run_interactive(agent)
+    try:
+        run_interactive(agent)
+    finally:
+        agent.close()
 
 
 if __name__ == "__main__":

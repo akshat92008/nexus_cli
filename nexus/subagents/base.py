@@ -119,10 +119,14 @@ Begin working on the task now."""
 
     def process_result(self, content: str, tool_events: list[dict]) -> SubagentResult:
         """Process the raw agent output into a structured result."""
+        errors = [e.get("result", "")[:200] for e in tool_events if not e.get("success", True)]
+        failed = bool(errors) or (content or "").lstrip().upper().startswith(
+            ("ERROR:", "BLOCKED:", "❌ EXECUTION FAILED")
+        )
         self._result = SubagentResult(
             subagent_name=self.name,
             task=self.task,
-            status=SubagentStatus.COMPLETED,
+            status=SubagentStatus.FAILED if failed else SubagentStatus.COMPLETED,
             summary=content[:2000] if content else "No output",
             tool_calls_made=len(tool_events),
             files_touched=list(
@@ -132,7 +136,7 @@ Begin working on the task now."""
                     if e.get("args", {}).get("path")
                 )
             ),
-            errors=[e.get("result", "")[:200] for e in tool_events if not e.get("success", True)],
+            errors=errors,
         )
         return self._result
 

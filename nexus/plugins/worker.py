@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from nexus.process_io import filtered_subprocess_env, readline_with_timeout
+
 logger = logging.getLogger(__name__)
 
 _WORKER_TIMEOUT = 30  # seconds per RPC call
@@ -252,14 +254,10 @@ class PluginWorker:
             main()
         """)
 
-        # Build filtered environment
-        import os
-
-        env = {
-            "PATH": os.environ.get("PATH", ""),
-            "LANG": os.environ.get("LANG", "en_US.UTF-8"),
-            "HOME": os.environ.get("HOME", ""),
-        }
+        # Build a filtered environment while retaining variables required to
+        # start child processes on Windows (notably SystemRoot).
+        env = filtered_subprocess_env()
+        env.setdefault("LANG", "en_US.UTF-8")
         for key in self.manifest.required_env:
             if key in self.allowed_env:
                 env[key] = self.allowed_env[key]
@@ -281,15 +279,10 @@ class PluginWorker:
                 cwd=str(self.workspace_root or self.plugin_dir),
             )
 
-            # Wait for ready signal
-            import select
-
-            ready, _, _ = select.select([self._process.stdout], [], [], self.timeout)
-            if not ready:
+            line = readline_with_timeout(self._process.stdout, self.timeout)
+            if line is None:
                 self.stop()
                 return PluginWorkerResult(False, error="Plugin worker timed out during startup")
-
-            line = self._process.stdout.readline()
             if not line:
                 self.stop()
                 return PluginWorkerResult(False, error="Plugin worker produced no output")
@@ -318,13 +311,10 @@ class PluginWorker:
             self._process.stdin.write(json.dumps(request) + "\n")
             self._process.stdin.flush()
 
-            import select
-
-            ready, _, _ = select.select([self._process.stdout], [], [], self.timeout)
-            if not ready:
+            line = readline_with_timeout(self._process.stdout, self.timeout)
+            if line is None:
+                self.stop()
                 return PluginWorkerResult(False, error="Worker call timed out")
-
-            line = self._process.stdout.readline()
             if not line:
                 return PluginWorkerResult(False, error="Worker produced no output")
 

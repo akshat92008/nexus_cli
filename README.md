@@ -124,9 +124,11 @@ nexus run --prompt "plan the authentication migration" --mode plan
 nexus run --prompt "implement the feature and test it" --mode review
 nexus run --prompt "implement the feature and test it" --mode autonomous
 
-# Hard hosted-usage limits
-nexus --max-hosted-calls 8 --max-prompt-tokens 100000 \
-  --max-completion-tokens 30000 --max-cost 1.00 \
+# Hard logical-call, physical-attempt, token, and configured-cost limits
+nexus --max-hosted-calls 8 --max-provider-attempts 12 \
+  --max-prompt-tokens 100000 --max-completion-tokens 30000 \
+  --max-cost-usd 1.00 --input-price-per-million 0.50 \
+  --output-price-per-million 1.50 \
   "fix the failing integration tests"
 
 # Local, budget, quality, and CI policy presets
@@ -240,7 +242,7 @@ checkpoint, then continues only pending or failed work.
 
 ## Built-in tools
 
-Nexus exposes 34 built-in tools across file editing, repository intelligence,
+Nexus exposes 38 built-in tools across file editing, repository intelligence,
 LSP/Tree-sitter navigation, shell-free and managed processes, Git, web
 retrieval, API checks, browser workflows, database integrity, and bounded
 security analysis. Tool execution is wrapped by scope, policy, approval,

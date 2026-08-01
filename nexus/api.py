@@ -5,6 +5,8 @@ Supports multi-key NVIDIA rotation and a compatible Groq fallback.
 
 import os
 import time
+from datetime import datetime, timezone
+from typing import Any, Callable
 
 from nexus.openai_compat import OpenAI
 
@@ -31,6 +33,56 @@ GROQ_MODEL_MAP = {
     "meta/llama-3.1-70b-instruct": "openai/gpt-oss-120b",
 }
 DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+
+
+def _response_usage(value: Any) -> dict[str, int]:
+    usage = getattr(value, "usage", None)
+    if usage is None:
+        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    result = {}
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        item = usage.get(key, 0) if isinstance(usage, dict) else getattr(usage, key, 0)
+        result[key] = int(item or 0)
+    if not result["total_tokens"]:
+        result["total_tokens"] = result["prompt_tokens"] + result["completion_tokens"]
+    return result
+
+
+class _ObservedStream:
+    """Finalize physical-attempt telemetry when a provider stream is consumed."""
+
+    def __init__(self, stream: Any, finish: Callable[[str, dict[str, Any]], None]):
+        self._stream = stream
+        self._finish = finish
+        self._finished = False
+
+    def __iter__(self):
+        usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        request_id = ""
+        try:
+            for chunk in self._stream:
+                request_id = request_id or str(getattr(chunk, "id", "") or "")
+                current = _response_usage(chunk)
+                for key in usage:
+                    usage[key] = max(usage[key], current[key])
+                yield chunk
+        except BaseException as exc:
+            self._complete(
+                "failed",
+                {
+                    "error": str(exc) or type(exc).__name__,
+                    "request_id": request_id,
+                    "usage": usage,
+                },
+            )
+            raise
+        else:
+            self._complete("verified", {"request_id": request_id, "usage": usage})
+
+    def _complete(self, status: str, metadata: dict[str, Any]) -> None:
+        if not self._finished:
+            self._finished = True
+            self._finish(status, metadata)
 
 
 def _load_env_file():
@@ -108,11 +160,20 @@ class NvidiaClient:
     NVIDIA model fallbacks, and seamless Groq API ultimate failover.
     """
 
-    def __init__(self, api_key: str | None = None, timeout: float = DEFAULT_NVIDIA_TIMEOUT):
+    def __init__(
+        self,
+        api_key: str | None = None,
+        timeout: float = DEFAULT_NVIDIA_TIMEOUT,
+        *,
+        attempt_controller: Any = None,
+        attempt_observer: Callable[[dict[str, Any]], None] | None = None,
+    ):
         _load_env_file()
         self.primary_key = api_key or os.environ.get("NVIDIA_API_KEY", "")
         self.api_key = self.primary_key
         self.timeout = timeout
+        self._attempt_controller = attempt_controller
+        self._attempt_observer = attempt_observer
         self.custom_base_url = os.environ.get("NEXUS_OPENAI_BASE_URL", "").strip().rstrip("/")
         self.custom_api_key = os.environ.get("NEXUS_OPENAI_API_KEY", "").strip()
         self.custom_model = os.environ.get("NEXUS_MODEL_ID", "").strip()
@@ -184,6 +245,62 @@ class NvidiaClient:
     def all_keys(self) -> list[str]:
         """Legacy compatibility property for existing codebase."""
         return self.nvidia_keys
+
+    @property
+    def attempt_telemetry_enabled(self) -> bool:
+        return self._attempt_observer is not None
+
+    def _provider_request(
+        self,
+        *,
+        provider: str,
+        model: str,
+        request: Callable[[], Any],
+        streaming: bool,
+        fallback_from: str = "",
+        attempt_number: int = 1,
+    ) -> Any:
+        physical_attempt = 1
+        if self._attempt_controller is not None:
+            physical_attempt = self._attempt_controller.before_provider_attempt(provider, model)
+        started = datetime.now(timezone.utc)
+
+        def finish(status: str, metadata: dict[str, Any]) -> None:
+            if self._attempt_observer is None:
+                return
+            completed = datetime.now(timezone.utc)
+            self._attempt_observer(
+                {
+                    "provider": provider,
+                    "model": model,
+                    "status": status,
+                    "attempt": max(1, int(attempt_number)),
+                    "physical_attempt": physical_attempt,
+                    "fallback_from": fallback_from,
+                    "started_at": started.isoformat(),
+                    "completed_at": completed.isoformat(),
+                    "duration_ms": int((completed - started).total_seconds() * 1000),
+                    "request_id": metadata.get("request_id", ""),
+                    "usage": metadata.get("usage", {}),
+                    "error": metadata.get("error", ""),
+                }
+            )
+
+        try:
+            response = request()
+        except Exception as exc:
+            finish("failed", {"error": str(exc)})
+            raise
+        if streaming:
+            return _ObservedStream(response, finish)
+        finish(
+            "verified",
+            {
+                "request_id": str(getattr(response, "id", "") or ""),
+                "usage": _response_usage(response),
+            },
+        )
+        return response
 
     def get_next_key(self, provider: str = "nvidia") -> str | None:
         """Get the next active key via Round-Robin selection."""
@@ -270,9 +387,15 @@ class NvidiaClient:
                     max_retries=0,
                 )
                 effective_model = self.custom_model or model_id
-                return custom_client.chat.completions.create(
+                return self._provider_request(
+                    provider="custom",
                     model=effective_model,
-                    **kwargs,
+                    streaming=stream,
+                    attempt_number=len(errors) + 1,
+                    request=lambda: custom_client.chat.completions.create(
+                        model=effective_model,
+                        **kwargs,
+                    ),
                 )
             except Exception as exc:
                 errors.append(f"Custom OpenAI-compatible endpoint: {exc}")
@@ -293,7 +416,15 @@ class NvidiaClient:
                 attempted += 1
                 try:
                     client = self._get_nvidia_client(key)
-                    resp = client.chat.completions.create(model=model_id, **kwargs)
+                    resp = self._provider_request(
+                        provider="nvidia",
+                        model=model_id,
+                        streaming=stream,
+                        attempt_number=len(errors) + 1,
+                        request=lambda client=client, model_id=model_id: (
+                            client.chat.completions.create(model=model_id, **kwargs)
+                        ),
+                    )
                     self.current_key_idx = (idx + 1) % len(self.nvidia_keys)
                     self.api_key = key
                     self.client = client
@@ -328,7 +459,16 @@ class NvidiaClient:
                         continue
                     try:
                         client = self._get_nvidia_client(key)
-                        resp = client.chat.completions.create(model=fb_model, **kwargs)
+                        resp = self._provider_request(
+                            provider="nvidia",
+                            model=fb_model,
+                            streaming=stream,
+                            fallback_from=model_id,
+                            attempt_number=len(errors) + 1,
+                            request=lambda client=client, fb_model=fb_model: (
+                                client.chat.completions.create(model=fb_model, **kwargs)
+                            ),
+                        )
                         self.current_key_idx = (idx + 1) % len(self.nvidia_keys)
                         self.api_key = key
                         self.client = client
@@ -373,7 +513,16 @@ class NvidiaClient:
                 for g_key in self.groq_keys:
                     try:
                         groq_client = self._get_groq_client(g_key)
-                        return groq_client.chat.completions.create(model=g_model, **groq_kwargs)
+                        return self._provider_request(
+                            provider="groq",
+                            model=g_model,
+                            streaming=stream,
+                            fallback_from=model_id,
+                            attempt_number=len(errors) + 1,
+                            request=lambda groq_client=groq_client, g_model=g_model: (
+                                groq_client.chat.completions.create(model=g_model, **groq_kwargs)
+                            ),
+                        )
                     except Exception as e:
                         err_str = str(e)
                         errors.append(f"Groq API Fallback ({g_model}): {err_str}")
@@ -403,7 +552,16 @@ class NvidiaClient:
                     or self.custom_model
                     or model_id
                 )
-                return or_client.chat.completions.create(model=openrouter_model, **or_kwargs)
+                return self._provider_request(
+                    provider="openrouter",
+                    model=openrouter_model,
+                    streaming=stream,
+                    fallback_from=model_id,
+                    attempt_number=len(errors) + 1,
+                    request=lambda: or_client.chat.completions.create(
+                        model=openrouter_model, **or_kwargs
+                    ),
+                )
             except Exception as e:
                 errors.append(f"OpenRouter Fallback: {e}")
 

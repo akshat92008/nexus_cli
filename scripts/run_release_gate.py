@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 import shutil
 import subprocess
@@ -22,11 +23,21 @@ def run(command: list[str], *, cwd: Path = REPO, env: dict[str, str] | None = No
     subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
+def wheel_install_command(python: str, target: Path, wheel: Path) -> list[str]:
+    """Build a wheel smoke-install command for pip-full and uv-managed venvs."""
+
+    if importlib.util.find_spec("pip") is not None:
+        installer = [python, "-m", "pip", "install"]
+    elif uv := shutil.which("uv"):
+        installer = [uv, "pip", "install", "--python", python]
+    else:
+        raise RuntimeError("release gate requires pip or uv to smoke-install the wheel")
+    return [*installer, "--no-deps", "--target", str(target), str(wheel)]
+
+
 def main() -> int:
     python = sys.executable
-    commit_sha = subprocess.check_output(
-        ["git", "rev-parse", "HEAD"], cwd=REPO, text=True
-    ).strip()
+    commit_sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
     run([python, "-m", "ruff", "check", "nexus", "tests", "scripts"])
     run([python, "-m", "pytest", "-q"])
     run([python, "-m", "compileall", "-q", "nexus", "tests"])
@@ -35,8 +46,24 @@ def main() -> int:
         root = Path(temp)
         # Copy the whole repo to the temp directory so concurrent builds don't collide
         build_src = root / "src_copy"
-        shutil.copytree(REPO, build_src, ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", "dist", "build", "*.egg-info", "legacy", "verification_evidence", "coding_agent", "bakeoff", "runs"))
-        
+        shutil.copytree(
+            REPO,
+            build_src,
+            ignore=shutil.ignore_patterns(
+                ".git",
+                ".venv",
+                "__pycache__",
+                "dist",
+                "build",
+                "*.egg-info",
+                "legacy",
+                "verification_evidence",
+                "coding_agent",
+                "bakeoff",
+                "runs",
+            ),
+        )
+
         dist = root / "dist"
         run([python, "-m", "build", "--outdir", str(dist)], cwd=build_src)
 
@@ -64,19 +91,7 @@ def main() -> int:
         wheel_sha256 = hashlib.sha256(wheels[0].read_bytes()).hexdigest()
 
         installed = root / "installed"
-        run(
-            [
-                python,
-                "-m",
-                "pip",
-                "install",
-                "--no-deps",
-                "--target",
-                str(installed),
-                str(wheels[0]),
-            ],
-            cwd=build_src
-        )
+        run(wheel_install_command(python, installed, wheels[0]), cwd=build_src)
         smoke_env = dict(os.environ)
         smoke_env["PYTHONPATH"] = str(installed)
         run(
