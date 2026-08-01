@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from nexus.process_io import readline_with_timeout
+from nexus.process_io import filtered_subprocess_env, readline_with_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -254,14 +254,10 @@ class PluginWorker:
             main()
         """)
 
-        # Build filtered environment
-        import os
-
-        env = {
-            "PATH": os.environ.get("PATH", ""),
-            "LANG": os.environ.get("LANG", "en_US.UTF-8"),
-            "HOME": os.environ.get("HOME", ""),
-        }
+        # Build a filtered environment while retaining variables required to
+        # start child processes on Windows (notably SystemRoot).
+        env = filtered_subprocess_env()
+        env.setdefault("LANG", "en_US.UTF-8")
         for key in self.manifest.required_env:
             if key in self.allowed_env:
                 env[key] = self.allowed_env[key]
