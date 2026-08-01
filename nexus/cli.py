@@ -948,7 +948,21 @@ def _close_and_exit(agent: Agent, exit_code: int) -> None:
     raise SystemExit(exit_code)
 
 
+def _configure_output_streams(streams=None) -> None:
+    """Use UTF-8 for redirected Windows output and other legacy locales."""
+
+    for stream in streams or (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if not callable(reconfigure):
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (LookupError, OSError, ValueError):
+            pass
+
+
 def main():
+    _configure_output_streams()
     if _handle_run_management():
         return
     if _handle_workspace_commands():

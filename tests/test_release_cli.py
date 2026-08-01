@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import io
 import subprocess
 import sys
 import urllib.error
 from pathlib import Path
 
-from nexus.cli import non_interactive_exit_code
+from nexus.cli import _configure_output_streams, non_interactive_exit_code
 from nexus.doctor import run_doctor
 from nexus.nova_runtime import OllamaClient
 from nexus.webapp.server import _is_allowed_web_origin, _is_sensitive_path
@@ -117,3 +118,15 @@ def test_release_gate_prefers_pip_when_available(monkeypatch):
     )
 
     assert command[:4] == ["/venv/python", "-m", "pip", "install"]
+
+
+def test_cli_reconfigures_legacy_output_streams_to_utf8():
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252")
+
+    _configure_output_streams((stream,))
+    stream.write("✓")
+    stream.flush()
+
+    assert stream.encoding.lower().replace("-", "") == "utf8"
+    assert raw.getvalue() == "✓".encode()
