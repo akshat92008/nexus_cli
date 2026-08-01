@@ -46,7 +46,7 @@ This report separates model generation ability from Nexus enforcement. “Guarde
   risk, retry ceilings, checks, and tool budgets.
 - Model switching plus visible per-subtask Nova/Ceiling routing reasons, retries, escalations, and free-first counters.
 
-### 34 built-in tools
+### 38 built-in tools
 
 - Files: read, write, edit, line patch, batch edit, metadata, and diff.
 - Search/context: regex search, glob discovery, project tree, RepoGraph
@@ -81,7 +81,8 @@ This report separates model generation ability from Nexus enforcement. “Guarde
   `/run-status` reports the durable state and latest checkpoint.
 - Compiler/semantic failures roll back real-workspace writes; two-node candidate failures remain isolated.
 - Completion prose that claims tests passed without recorded passing evidence is prefixed with `UNVERIFIED TEST CLAIM`.
-- Hard hosted-call and token limits are enforced. Currency limits are enforced
+- Hard logical hosted-call, physical provider-attempt, and token limits are
+  enforced. Currency limits are enforced
   only when the user supplies explicit provider prices, avoiding fabricated
   cost claims.
 - Modifying CLI and web sessions automatically create a dedicated Git
@@ -132,8 +133,8 @@ cloud, mobile, IDE, and Remote Control services are not Nexus features.
 - The release gate also runs Ruff, byte-compilation, sdist/wheel builds, an
   isolated wheel-target install, packaged Nova and web backend imports,
   `nexus --version`, and `nexus --doctor`.
-- A real eight-scenario matrix achieved 8/8 with native compilers/runtime checks: `verification_evidence/20260727T021905Z/manifest.json`.
-- Later repeated matrices are intentionally retained and include 7/8 and 5/8 runs. They demonstrate model nondeterminism and that failures were not relabeled as passes.
-- Evidence-complete transcripts and copied JSONL trails are under `verification_evidence/`; each manifest records exact commands, return codes, expected output, actual output, workspace, and per-step verdict.
+- Historical scenario matrices are published as tagged CI artifacts rather than
+  asserted from files that are not shipped in the source distribution. Failed
+  scenarios remain failures; they are not relabeled as passes.
 
 No benchmark percentage beyond these recorded runs is claimed.

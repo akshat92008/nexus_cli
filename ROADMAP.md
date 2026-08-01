@@ -59,7 +59,7 @@ machine. No unavailable adapter is presented as verified.
 | Extensions | Implemented | Versioned provider/tool/policy protocols, skills, hooks, plugins, subagents, and stdio MCP |
 | Headless operation | Implemented | `nexus run`, JSON/JSONL, CI policy preset, meaningful process status, and diagnostics |
 | Web interface | Implemented | Loopback-only Starlette/WebSocket UI with automatic workspace and sensitive-file controls |
-| Cost controls | Implemented | Hard hosted-call, prompt-token, completion-token, and configured-currency ceilings plus persisted usage reports |
+| Cost controls | Implemented | Separate logical hosted-call and physical provider-attempt ceilings, token and configured-currency limits, plus attempt-level persisted usage reports |
 | Run contract and final report | Implemented | Complete canonical artifact layout and transparent objective, checks, permissions, network, provider, cost, assumption, and risk fields |
 | Public benchmarks | Implemented | Versioned manifest, disposable copies, typed verification, scope/cost/retry metrics, and JSON output |
 

@@ -15,6 +15,7 @@ import json
 import os
 import secrets
 import threading
+from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -99,7 +100,7 @@ def _get_agent(session_id: str) -> Agent:
         # Evict oldest agents if we exceed the limit
         if len(_agents) >= MAX_AGENTS:
             oldest_key = next(iter(_agents))
-            del _agents[oldest_key]
+            _agents.pop(oldest_key).close(discard_workspace=True)
             _agent_locks.pop(oldest_key, None)
         _agents[session_id] = Agent(
             api_key=_api_key,
@@ -395,7 +396,7 @@ async def ws_chat(websocket: WebSocket):
             if msg_type == "new_chat":
                 # Create a fresh session
                 if session_id in _agents:
-                    del _agents[session_id]
+                    _agents.pop(session_id).close(discard_workspace=True)
                     _agent_locks.pop(session_id, None)
                 import time
 
@@ -469,6 +470,8 @@ def create_app(
     """Create the Starlette application with isolated per-session agents."""
     global _api_key, _default_model, _working_dir, _web_token, _agent_options
 
+    for existing_agent in _agents.values():
+        existing_agent.close(discard_workspace=True)
     _agents.clear()
     _agent_locks.clear()
     _web_token = secrets.token_hex(16)
@@ -503,7 +506,17 @@ def create_app(
         Mount("/static", StaticFiles(directory=str(static_dir)), name="static"),
     ]
 
-    app = Starlette(routes=routes)
+    @asynccontextmanager
+    async def lifespan(_app):
+        try:
+            yield
+        finally:
+            for existing_agent in list(_agents.values()):
+                existing_agent.close(discard_workspace=True)
+            _agents.clear()
+            _agent_locks.clear()
+
+    app = Starlette(routes=routes, lifespan=lifespan)
 
     # Add CORS middleware for cross-origin access
     app.add_middleware(

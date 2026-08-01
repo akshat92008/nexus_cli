@@ -8,7 +8,10 @@ Architecture:
 
 import json
 import os
+import shlex
+import shutil
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -180,20 +183,29 @@ class VerificationEngine:
         working_dir: str,
         custom_commands: dict[str, str] | None = None,
     ):
-        self.working_dir = working_dir
+        self.root = Path(working_dir).expanduser().resolve()
+        if not self.root.is_dir():
+            raise ValueError(f"Verification root does not exist: {self.root}")
+        self.working_dir = str(self.root)
         self.project_type = self._detect_project_type()
         self.commands = self._resolve_commands(custom_commands or {})
 
     def verify_syntax(self) -> CheckResult:
-        """Run py_compile across python files."""
-        import subprocess
+        """Compile Python sources without importing or executing project code."""
         import time
 
         start = time.time()
+        if not any(self._iter_python_files()):
+            return CheckResult(
+                CheckType.SYNTAX,
+                CheckStatus.NOT_APPLICABLE,
+                "",
+                duration_ms=int((time.time() - start) * 1000),
+            )
 
         try:
             result = subprocess.run(
-                ["python", "-m", "compileall", "-q", "."],
+                [os.environ.get("PYTHON", "python"), "-m", "compileall", "-q", "-f", "."],
                 cwd=self.root,
                 capture_output=True,
                 text=True,
@@ -203,7 +215,7 @@ class VerificationEngine:
             return CheckResult(
                 check_type=CheckType.SYNTAX,
                 status=CheckStatus.PASSED if passed else CheckStatus.FAILED,
-                command="python -m compileall -q .",
+                command="python -m compileall -q -f .",
                 output=result.stderr or result.stdout,
                 duration_ms=int((time.time() - start) * 1000),
             )
@@ -211,43 +223,116 @@ class VerificationEngine:
             return CheckResult(CheckType.SYNTAX, CheckStatus.ERROR, "", str(e))
 
     def verify_imports(self) -> CheckResult:
-        """Flag missing imports in Python files."""
+        """Resolve Python imports without importing or executing project code.
+
+        Relative and repository-local imports are checked against the source
+        tree.  Standard-library and installed third-party top-level modules are
+        resolved with ``find_spec``.  This intentionally does not claim that a
+        referenced attribute exists inside an external package.
+        """
         import ast
+        import importlib.util
+        import sys
         import time
 
         start = time.time()
 
-        errors = []
-        import sys
+        paths = list(self._iter_python_files())
+        if not paths:
+            return CheckResult(
+                CheckType.IMPORTS,
+                CheckStatus.NOT_APPLICABLE,
+                "",
+                duration_ms=int((time.time() - start) * 1000),
+            )
 
-        set(sys.stdlib_module_names)
+        errors: list[str] = []
+        stdlib_modules = set(getattr(sys, "stdlib_module_names", ()))
+        source_roots = [self.root]
+        for candidate in (self.root / "src", self.root / "lib"):
+            if candidate.is_dir():
+                source_roots.append(candidate)
+        local_top_levels = {
+            path.name if path.is_dir() else path.stem
+            for source_root in source_roots
+            for path in source_root.iterdir()
+            if (path.is_dir() and (path / "__init__.py").is_file())
+            or (path.is_file() and path.suffix == ".py")
+        }
 
-        for path in self.root.rglob("*.py"):
-            if "venv" in path.parts or ".venv" in path.parts or "__pycache__" in path.parts:
-                continue
+        def local_module_exists(parts: list[str]) -> bool:
+            if not parts:
+                return True
+            return any(
+                (source_root.joinpath(*parts)).with_suffix(".py").is_file()
+                or (source_root.joinpath(*parts) / "__init__.py").is_file()
+                for source_root in source_roots
+            )
+
+        def relative_module_exists(source: Path, level: int, module: str | None) -> bool:
+            package_parts = list(source.relative_to(self.root).parent.parts)
+            ascend = max(0, level - 1)
+            if ascend > len(package_parts):
+                return False
+            base = package_parts[: len(package_parts) - ascend]
+            return local_module_exists([*base, *((module or "").split("."))])
+
+        for path in paths:
             try:
-                tree = ast.parse(path.read_text("utf-8"))
+                tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
                 for node in ast.walk(tree):
                     if isinstance(node, ast.Import):
-                        for _name in node.names:
-                            # We can't perfectly verify third-party imports without a full env,
-                            # but we can try to catch obvious syntax errors or missing local files
-                            pass
+                        for alias in node.names:
+                            parts = alias.name.split(".")
+                            top = parts[0]
+                            if top in local_top_levels and not local_module_exists(parts):
+                                errors.append(
+                                    f"{path.relative_to(self.root)}: missing local import {alias.name}"
+                                )
+                            elif top not in local_top_levels and top not in stdlib_modules:
+                                try:
+                                    resolved = importlib.util.find_spec(top)
+                                except (ImportError, AttributeError, ValueError):
+                                    resolved = None
+                                if resolved is None:
+                                    errors.append(
+                                        f"{path.relative_to(self.root)}: unresolved import {alias.name}"
+                                    )
                     elif isinstance(node, ast.ImportFrom):
-                        pass
+                        if node.level:
+                            if not relative_module_exists(path, node.level, node.module):
+                                dotted = "." * node.level + (node.module or "")
+                                errors.append(
+                                    f"{path.relative_to(self.root)}: missing relative import {dotted}"
+                                )
+                            continue
+                        if not node.module:
+                            continue
+                        parts = node.module.split(".")
+                        top = parts[0]
+                        if top in local_top_levels and not local_module_exists(parts):
+                            errors.append(
+                                f"{path.relative_to(self.root)}: missing local import {node.module}"
+                            )
+                        elif top not in local_top_levels and top not in stdlib_modules:
+                            try:
+                                resolved = importlib.util.find_spec(top)
+                            except (ImportError, AttributeError, ValueError):
+                                resolved = None
+                            if resolved is None:
+                                errors.append(
+                                    f"{path.relative_to(self.root)}: unresolved import {node.module}"
+                                )
             except SyntaxError as e:
                 errors.append(f"{path.relative_to(self.root)}: {e}")
-            except Exception:
-                pass
-
-        # Since full import verification requires site-packages, we will just use a basic check or rely on mypy/pyright.
-        # However, the user specifically asked: "Add verify_imports() to parse all .py files using ast and flag missing imports."
+            except (OSError, UnicodeError) as exc:
+                errors.append(f"{path.relative_to(self.root)}: could not inspect imports: {exc}")
 
         passed = len(errors) == 0
         return CheckResult(
             check_type=CheckType.IMPORTS,
             status=CheckStatus.PASSED if passed else CheckStatus.FAILED,
-            command="ast.parse",
+            command="nexus:resolve_python_imports",
             output="\n".join(errors),
             error_count=len(errors),
             duration_ms=int((time.time() - start) * 1000),
@@ -257,6 +342,8 @@ class VerificationEngine:
         """Run all applicable verification checks."""
         if checks is None:
             checks = [
+                CheckType.SYNTAX,
+                CheckType.IMPORTS,
                 CheckType.LINT,
                 CheckType.TYPE_CHECK,
                 CheckType.TEST,
@@ -282,6 +369,10 @@ class VerificationEngine:
 
     def run_check(self, check_type: CheckType) -> CheckResult:
         """Run a single verification check."""
+        if check_type == CheckType.SYNTAX:
+            return self.verify_syntax()
+        if check_type == CheckType.IMPORTS:
+            return self.verify_imports()
         if check_type == CheckType.SECURITY:
             return self._run_security()
         if check_type == CheckType.DATABASE:
@@ -346,6 +437,25 @@ class VerificationEngine:
 
         return "unknown"
 
+    def _iter_python_files(self):
+        ignored = {
+            ".git",
+            ".nexusai",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".mypy_cache",
+            "__pycache__",
+            "node_modules",
+            ".venv",
+            "venv",
+            "dist",
+            "build",
+        }
+        for path in self.root.rglob("*.py"):
+            relative = path.relative_to(self.root)
+            if not any(part in ignored for part in relative.parts):
+                yield path
+
     def _resolve_commands(self, custom: dict[str, str]) -> dict[str, str]:
         """Resolve verification commands, preferring custom over defaults."""
         defaults = _DEFAULT_COMMANDS.get(self.project_type, {})
@@ -363,6 +473,17 @@ class VerificationEngine:
                 }
                 resolved_key = key_map.get(key, key)
                 resolved[resolved_key] = cmd
+
+        if self.project_type == "python":
+            interpreter = shlex.quote(os.environ.get("PYTHON") or sys.executable)
+            resolved = {
+                key: (
+                    interpreter + command[len("python") :]
+                    if command.startswith("python ")
+                    else command
+                )
+                for key, command in resolved.items()
+            }
 
         # Check if tools are actually available (for Python projects)
         if self.project_type == "python":
@@ -399,16 +520,7 @@ class VerificationEngine:
 
     def _command_exists(self, cmd: str) -> bool:
         """Check if a command is available."""
-        try:
-            result = subprocess.run(
-                ["which", cmd],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            return result.returncode == 0
-        except (subprocess.TimeoutExpired, OSError):
-            return False
+        return shutil.which(cmd) is not None
 
     def _execute_check(self, check_type: CheckType, command: str) -> CheckResult:
         """Execute a verification command and parse the result."""

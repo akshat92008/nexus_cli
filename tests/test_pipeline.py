@@ -28,6 +28,7 @@ def test_pipeline_preserves_ledger_and_emits_hooks():
         "model_routing",
         "execution",
         "verification",
+        "review",
         "evidence",
         "completion",
     ]

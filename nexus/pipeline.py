@@ -3,7 +3,7 @@ Canonical Execution Pipeline for Nexus CLI.
 
 Defines the single authoritative execution flow consumed by all modes:
     UserPrompt → RepoUnderstanding → Planning → ContextSelection →
-    ModelRouting → Execution → Verification → RepairLoop → Evidence → Completion
+    ModelRouting → Execution → Verification → RepairLoop → IndependentReview → Evidence → Completion
 
 Every mode (interactive, non-interactive, Nova, two-node, CI) calls this same
 pipeline, eliminating duplicated business logic.
@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
+from nexus.planner import TaskStatus
 from nexus.run_state import RunStatus
 
 if TYPE_CHECKING:
@@ -44,6 +45,7 @@ class PipelineStage(str, Enum):
     EXECUTION = "execution"
     VERIFICATION = "verification"
     REPAIR = "repair"
+    REVIEW = "review"
     EVIDENCE = "evidence"
     COMPLETION = "completion"
 
@@ -169,10 +171,12 @@ class ExecutionPipeline:
         stage_results.append(exec_result["stage_result"])
         if not exec_result["stage_result"].success:
             result.response = exec_result.get("response", "❌ Execution failed.")
+            result.events = exec_result.get("events", [])
+            result.model_turns = exec_result.get("model_turns", 0)
             result.total_duration_ms = int((time.monotonic() - pipeline_start) * 1000)
             report = self._agent._finish_managed_run(
                 result.response,
-                [],
+                result.events,
                 status_override=RunStatus.FAILED,
             )
             result.status = report.get("status", RunStatus.FAILED.value)
@@ -196,12 +200,25 @@ class ExecutionPipeline:
                 ver_result = self._stage_verification()
                 stage_results.append(ver_result)
 
-        # ── Stage 8: Evidence ─────────────────────────────────────────────────
+        # ── Stage 8: Independent review ──────────────────────────────────────
+        review_result = self._stage_review(routing_mode, ver_result.success)
+        stage_results.append(review_result)
+        if ver_result.success and not review_result.success and routing_mode == "hosted":
+            repair_result = self._stage_repair(user_input, review_result)
+            stage_results.append(repair_result)
+            if repair_result.success:
+                result.recovered_from_error = True
+                ver_result = self._stage_verification()
+                stage_results.append(ver_result)
+                review_result = self._stage_review(routing_mode, ver_result.success)
+                stage_results.append(review_result)
+
+        # ── Stage 9: Evidence ─────────────────────────────────────────────────
         stage_results.append(self._stage_evidence())
 
         report = self._agent._finish_managed_run(response, events)
 
-        # ── Stage 9: Completion ───────────────────────────────────────────────
+        # ── Stage 10: Completion ──────────────────────────────────────────────
         result.response = response
         result.events = events
         result.status = report.get("status", RunStatus.UNVERIFIED.value)
@@ -246,9 +263,7 @@ class ExecutionPipeline:
                 metadata={"refreshed": False, "warning": str(exc)},
             )
 
-    def _stage_planning(
-        self, user_input: str
-    ) -> tuple[dict[str, Any], Any, StageResult]:
+    def _stage_planning(self, user_input: str) -> tuple[dict[str, Any], Any, StageResult]:
         """Classify intent and generate or retrieve the execution plan."""
         t = time.monotonic()
         try:
@@ -263,6 +278,19 @@ class ExecutionPipeline:
                 plan = self._agent.planner.create_plan(
                     user_input, analysis, repo_summary=repo_summary
                 )
+                verification = self._agent._applicable_verification(  # noqa: SLF001
+                    analysis["intent"], analysis.get("skills_needed", [])
+                )
+                plan.verification_steps = verification
+                plan.acceptance_criteria = self._agent.planner._generate_acceptance_criteria(
+                    user_input,
+                    analysis["intent"],
+                    verification,
+                )
+                for step in plan.steps:
+                    step.acceptance_criteria = list(plan.acceptance_criteria)
+                    if step.checks:
+                        step.checks = list(verification)
             return (
                 analysis,
                 plan,
@@ -338,14 +366,25 @@ class ExecutionPipeline:
             elif routing_mode == "two_node":
                 response, events = agent._run_two_node_turn(user_input, analysis, emit_ui=emit_ui)  # noqa: SLF001
             else:
-                response, events = agent._run_hosted_turn(  # noqa: SLF001
-                    user_input, analysis, plan, interactive=interactive, emit_ui=emit_ui
+                response, events = self._run_hosted_execution(  # noqa: SLF001
+                    user_input,
+                    analysis,
+                    plan,
+                    interactive=interactive,
+                    emit_ui=emit_ui,
                 )
+            execution_failed = bool(
+                (response or "").lstrip().upper().startswith(("ERROR:", "BLOCKED:"))
+                or (plan is not None and plan.has_failures)
+            )
             return {
                 "stage_result": StageResult(
                     stage=PipelineStage.EXECUTION,
-                    success=True,
+                    success=not execution_failed,
                     duration_ms=int((time.monotonic() - t) * 1000),
+                    error="Execution stopped before the requested work was complete."
+                    if execution_failed
+                    else "",
                 ),
                 "response": response,
                 "events": events,
@@ -366,6 +405,93 @@ class ExecutionPipeline:
                 "events": [],
             }
 
+    def _run_hosted_execution(
+        self,
+        user_input: str,
+        analysis: dict[str, Any],
+        plan: Any,
+        *,
+        interactive: bool,
+        emit_ui: bool,
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Execute every ready plan step under one global model-turn budget."""
+
+        agent = self._agent
+        if plan is None or not getattr(plan, "steps", None):
+            return agent._run_hosted_turn(  # noqa: SLF001
+                user_input,
+                analysis,
+                plan,
+                interactive=interactive,
+                emit_ui=emit_ui,
+            )
+
+        all_events: list[dict[str, Any]] = []
+        responses: list[str] = []
+        turns_used = 0
+        while not plan.is_complete and not plan.has_failures:
+            current = next(
+                (step for step in plan.steps if step.status == TaskStatus.IN_PROGRESS),
+                None,
+            )
+            if current is None:
+                current = plan.next_step
+                if current is None:
+                    break
+                agent.planner.advance_step(current.id, TaskStatus.IN_PROGRESS)
+
+            remaining = max(0, agent.max_turns - turns_used)
+            if remaining == 0:
+                agent.planner.advance_step(
+                    current.id,
+                    TaskStatus.FAILED,
+                    f"Global model-turn budget ({agent.max_turns}) exhausted.",
+                )
+                break
+
+            step_budget = min(remaining, max(2, int(current.max_tool_calls) + 1))
+            step_prompt = (
+                f"Original objective:\n{user_input}\n\n"
+                f"Autonomous plan step {current.id + 1}/{len(plan.steps)}: "
+                f"{current.title}\n{current.description}\n\n"
+                "Complete this step now. Inspect actual repository state, use tools as needed, "
+                "and do not claim success without tool-backed evidence. Do not commit, push, "
+                "deploy, or expand the task scope."
+            )
+            agent._enforce_plan_tool_contract = True  # noqa: SLF001
+            try:
+                response, events = agent._run_hosted_turn(  # noqa: SLF001
+                    step_prompt,
+                    analysis,
+                    plan,
+                    interactive=interactive,
+                    emit_ui=emit_ui,
+                    max_turns_override=step_budget,
+                )
+            finally:
+                agent._enforce_plan_tool_contract = False  # noqa: SLF001
+            responses.append(response)
+            all_events.extend(events)
+            turns_used += sum(
+                1
+                for event in events
+                if isinstance(event, dict) and event.get("type") == "model_turn"
+            )
+            agent.run_ledger.record_tasks(plan.steps)
+            agent.run_ledger.record_plan(plan)
+            if current.status == TaskStatus.COMPLETED:
+                agent.run_ledger.checkpoint(
+                    f"plan-step-{current.id}-completed",
+                    plan=plan,
+                    metadata={"task_id": current.id, "model_turns_used": turns_used},
+                )
+            if (response or "").lstrip().upper().startswith(("ERROR:", "BLOCKED:")):
+                if current.status == TaskStatus.IN_PROGRESS:
+                    agent.planner.advance_step(current.id, TaskStatus.FAILED, response[:2000])
+                break
+
+        return (responses[-1] if responses else ""), all_events
+
     def _stage_verification(self) -> StageResult:
         """Run post-execution verification checks."""
         t = time.monotonic()
@@ -373,8 +499,10 @@ class ExecutionPipeline:
             evidence = self._agent.evidence.records()[
                 getattr(self._agent, "_turn_evidence_start", 0) :
             ]
-            mutations = [e for e in evidence if e.get("kind") == "file_mutation"]
-            checks = [e for e in evidence if e.get("kind") == "verification_check"]
+            mutations = self._agent._effective_evidence(evidence, "file_mutation")  # noqa: SLF001
+            checks = self._agent._effective_evidence(  # noqa: SLF001
+                evidence, "verification_check"
+            )
             engine_checks = [item for item in checks if item.get("tool") == "verification_engine"]
             if mutations and not engine_checks:
                 self._agent._record_verification_report(  # noqa: SLF001
@@ -383,10 +511,10 @@ class ExecutionPipeline:
                 evidence = self._agent.evidence.records()[
                     getattr(self._agent, "_turn_evidence_start", 0) :
                 ]
-                checks = [e for e in evidence if e.get("kind") == "verification_check"]
-            verified_mutations = all(
-                item.get("status") == "verified" for item in mutations
-            )
+                checks = self._agent._effective_evidence(  # noqa: SLF001
+                    evidence, "verification_check"
+                )
+            verified_mutations = all(item.get("status") == "verified" for item in mutations)
             verified_checks = bool(checks) and all(
                 item.get("status") == "verified" for item in checks
             )
@@ -399,9 +527,7 @@ class ExecutionPipeline:
                     "mutations": len(mutations),
                     "verified": sum(1 for e in mutations if e.get("status") == "verified"),
                     "checks": len(checks),
-                    "checks_passed": sum(
-                        1 for e in checks if e.get("status") == "verified"
-                    ),
+                    "checks_passed": sum(1 for e in checks if e.get("status") == "verified"),
                 },
                 error=""
                 if verified
@@ -450,6 +576,57 @@ class ExecutionPipeline:
                 success=False,
                 duration_ms=int((time.monotonic() - t) * 1000),
                 error=str(exc),
+            )
+
+    def _stage_review(self, routing_mode: str, verification_succeeded: bool) -> StageResult:
+        """Require a fail-closed review after deterministic verification."""
+
+        t = time.monotonic()
+        if not verification_succeeded:
+            return StageResult(
+                stage=PipelineStage.REVIEW,
+                success=False,
+                duration_ms=int((time.monotonic() - t) * 1000),
+                metadata={"skipped": True},
+                error="Independent review withheld because deterministic verification failed.",
+            )
+        if routing_mode == "nova":
+            return StageResult(
+                stage=PipelineStage.REVIEW,
+                success=True,
+                duration_ms=int((time.monotonic() - t) * 1000),
+                metadata={"local_guardrails": True},
+            )
+        if routing_mode == "two_node":
+            evidence = self._agent.evidence.records()[
+                getattr(self._agent, "_turn_evidence_start", 0) :
+            ]
+            reviews = [item for item in evidence if item.get("kind") == "independent_review"]
+            approved = bool(reviews) and reviews[-1].get("status") == "verified"
+            return StageResult(
+                stage=PipelineStage.REVIEW,
+                success=approved,
+                duration_ms=int((time.monotonic() - t) * 1000),
+                metadata={"review_records": len(reviews)},
+                error="Two-node reviewer did not approve the final candidate."
+                if not approved
+                else "",
+            )
+        try:
+            approved, summary = self._agent._run_independent_review()  # noqa: SLF001
+            return StageResult(
+                stage=PipelineStage.REVIEW,
+                success=approved,
+                duration_ms=int((time.monotonic() - t) * 1000),
+                metadata={"summary": summary[:1000]},
+                error="" if approved else summary[:2000],
+            )
+        except Exception as exc:
+            return StageResult(
+                stage=PipelineStage.REVIEW,
+                success=False,
+                duration_ms=int((time.monotonic() - t) * 1000),
+                error=f"Independent review failed closed: {exc}",
             )
 
     def _stage_evidence(self) -> StageResult:

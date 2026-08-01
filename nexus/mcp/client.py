@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from nexus.paths import nexus_home
+from nexus.process_io import readline_with_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -206,13 +207,10 @@ class MCPConnection:
                 self._process.stdin.write(line)
                 self._process.stdin.flush()
 
-                # Read response
-                import select
-
-                ready, _, _ = select.select([self._process.stdout], [], [], 30.0)
-                if not ready:
+                response_line = readline_with_timeout(self._process.stdout, 30.0)
+                if response_line is None:
+                    self.disconnect()
                     return None
-                response_line = self._process.stdout.readline()
                 if response_line:
                     return json.loads(response_line)
             except (BrokenPipeError, json.JSONDecodeError, OSError):

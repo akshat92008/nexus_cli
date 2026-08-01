@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -37,6 +38,7 @@ class GitWorktreeSession:
         session_id: str,
         *,
         state_root: str | Path | None = None,
+        force_copy: bool = False,
     ):
         self.repository = Path(repository).expanduser().resolve()
         self.session_id = session_id
@@ -49,12 +51,13 @@ class GitWorktreeSession:
         self.path = root / "worktrees" / session_id
         self.info_path = root / "worktrees" / f"{session_id}.json"
         self.info: WorktreeInfo | None = None
+        self.force_copy = force_copy
 
     def create(self) -> WorktreeInfo:
         """Create and return an isolated worktree on a dedicated branch."""
         if self.path.exists():
             raise WorktreeError(f"Worktree path already exists: {self.path}")
-        if not (self.repository / ".git").exists():
+        if self.force_copy or not (self.repository / ".git").exists():
             return self._create_temporary_copy()
         top = self._git(["rev-parse", "--show-toplevel"]).strip()
         if Path(top).resolve() != self.repository:
@@ -186,12 +189,38 @@ class GitWorktreeSession:
             return ""
         if self.info.backend == "git-worktree":
             result = subprocess.run(
-                ["git", "diff", self.info.base_commit],
+                ["git", "diff", "--binary", self.info.base_commit],
                 cwd=self.path,
                 capture_output=True,
                 text=True,
+                timeout=30,
             )
-            return result.stdout
+            if result.returncode != 0:
+                raise WorktreeError((result.stderr or result.stdout).strip())
+            patches = [result.stdout]
+            untracked = subprocess.run(
+                ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+                cwd=self.path,
+                capture_output=True,
+                timeout=30,
+            )
+            if untracked.returncode != 0:
+                raise WorktreeError(untracked.stderr.decode(errors="replace").strip())
+            for encoded_path in untracked.stdout.split(b"\0"):
+                if not encoded_path:
+                    continue
+                relative = os.fsdecode(encoded_path)
+                addition = subprocess.run(
+                    ["git", "diff", "--no-index", "--binary", "--", os.devnull, relative],
+                    cwd=self.path,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if addition.returncode not in {0, 1}:
+                    raise WorktreeError((addition.stderr or addition.stdout).strip())
+                patches.append(addition.stdout)
+            return "".join(patches)
         else:
             # Python-native unified diff — cross-platform, no Unix diff required
             import difflib
@@ -412,41 +441,71 @@ class GitWorktreeSession:
             try:
                 _sync(src, dst)
             except OSError as exc:
-                raise WorktreeError(f"Failed to sync temporary copy: {exc}") from exc
+                rollback_error = ""
+                try:
+                    _sync(backup, dst)
+                except OSError as rollback_exc:
+                    rollback_error = f" Rollback also failed: {rollback_exc}."
+                detail = (
+                    "Source was restored from the pre-apply backup."
+                    if not rollback_error
+                    else f"Recovery copy remains at {backup}.{rollback_error}"
+                )
+                raise WorktreeError(f"Failed to sync temporary copy: {exc}. {detail}") from exc
 
-    def discard(self) -> None:
-        """Discard the worktree or temporary copy and clean up metadata."""
+    def discard(self) -> dict[str, object]:
+        """Discard an isolated workspace and report every cleanup result."""
+
+        report: dict[str, object] = {"removed": [], "errors": []}
         if not self.info:
-            return
+            return report
         if self.info.backend == "git-worktree":
-            subprocess.run(
+            removed = subprocess.run(
                 ["git", "worktree", "remove", "--force", self.path],
                 cwd=self.repository,
                 capture_output=True,
+                text=True,
             )
-            subprocess.run(
+            if removed.returncode == 0:
+                report["removed"].append(str(self.path))
+            else:
+                report["errors"].append((removed.stderr or removed.stdout).strip())
+            branch = subprocess.run(
                 ["git", "branch", "-D", self.info.branch],
                 cwd=self.repository,
                 capture_output=True,
+                text=True,
             )
+            if branch.returncode == 0:
+                report["removed"].append(self.info.branch)
+            else:
+                report["errors"].append((branch.stderr or branch.stdout).strip())
         else:
-            if Path(self.path).exists():
-                shutil.rmtree(self.path, ignore_errors=True)
-            baseline = Path(str(self.path) + "_baseline")
-            if baseline.exists():
-                shutil.rmtree(baseline, ignore_errors=True)
+            for target in (Path(self.path), Path(str(self.path) + "_baseline")):
+                if not target.exists():
+                    continue
+                try:
+                    shutil.rmtree(target)
+                    report["removed"].append(str(target))
+                except OSError as exc:
+                    report["errors"].append(f"{target}: {exc}")
             # We explicitly keep the backup directory in case the user needs it
-        if self.info_path.exists():
-            self.info_path.unlink(missing_ok=True)
-        self.info = None
+        if not report["errors"]:
+            try:
+                self.info_path.unlink(missing_ok=True)
+                report["removed"].append(str(self.info_path))
+                self.info = None
+            except OSError as exc:
+                report["errors"].append(f"{self.info_path}: {exc}")
+        return report
 
 
 class WorkspaceManager:
     """Manages global isolation sessions for Nexus."""
 
     def __init__(self, state_root: str | Path | None = None):
-        root = Path(state_root).expanduser().resolve() if state_root else nexus_home()
-        self.worktrees_dir = root / "worktrees"
+        self.state_root = Path(state_root).expanduser().resolve() if state_root else nexus_home()
+        self.worktrees_dir = self.state_root / "worktrees"
 
     def list_worktrees(self) -> list[WorktreeInfo]:
         """List all active isolated worktrees."""
@@ -474,7 +533,12 @@ class WorkspaceManager:
         try:
             data = json.loads(info_path.read_text(encoding="utf-8"))
             info = WorktreeInfo(**data)
-            session = GitWorktreeSession(info.source_repository, session_id)
+            session = GitWorktreeSession(
+                info.source_repository,
+                session_id,
+                state_root=self.state_root,
+                force_copy=info.backend == "temporary-copy",
+            )
             session.info = info
             session.path = Path(info.path)
             return session

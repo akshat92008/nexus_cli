@@ -54,6 +54,7 @@ class ExecutionSession:
                 max_turns=self.max_turns,
                 model_id=self.model_id,
                 run_id=self.run_id,
+                ledger=self.ledger,
             )
         return self._interactive_kernel
 

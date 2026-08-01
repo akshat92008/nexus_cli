@@ -19,6 +19,7 @@ import mimetypes
 import os
 import re
 import shlex
+import signal
 import subprocess
 import urllib.error
 import urllib.parse
@@ -32,11 +33,13 @@ from nexus.paths import nexus_home
 
 _tool_working_dir = contextvars.ContextVar("tool_working_dir", default=None)
 _tool_history = contextvars.ContextVar("tool_history", default=None)
+_tool_owner = contextvars.ContextVar("tool_owner", default="")
 
 
 @contextmanager
-def tool_context(working_dir: str, history=None):
+def tool_context(working_dir: str, history=None, owner: str = ""):
     token_dir = _tool_working_dir.set(str(working_dir))
+    token_owner = _tool_owner.set(owner)
     token_hist = None
     if history is not None:
         token_hist = _tool_history.set(history)
@@ -44,6 +47,7 @@ def tool_context(working_dir: str, history=None):
         yield
     finally:
         _tool_working_dir.reset(token_dir)
+        _tool_owner.reset(token_owner)
         if token_hist is not None:
             _tool_history.reset(token_hist)
 
@@ -617,6 +621,8 @@ TOOL_DEFINITIONS = [
                     },
                     "max_length": {
                         "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100000,
                         "description": "Maximum characters to return (default: 10000).",
                     },
                 },
@@ -638,6 +644,8 @@ TOOL_DEFINITIONS = [
                     },
                     "max_results": {
                         "type": "integer",
+                        "minimum": 1,
+                        "maximum": 20,
                         "description": "Maximum number of results (default: 5).",
                     },
                 },
@@ -1522,7 +1530,8 @@ def tool_process_run(
                 stderr=stderr_f,
                 cwd=work_dir,
                 env=safe_env,
-                start_new_session=True,
+                start_new_session=os.name != "nt",
+                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
             )
         finally:
             # Close file handles in the parent — the child process
@@ -1538,6 +1547,8 @@ def tool_process_run(
             "stderr_log": str(stderr_log),
             "started": datetime.now().isoformat(),
             "process": proc,
+            "process_group": proc.pid,
+            "owner": _tool_owner.get(),
         }
 
         return (
@@ -1582,15 +1593,55 @@ def tool_process_stop(pid: int) -> str:
     record = _bg_processes.get(pid)
     if not record:
         return f"❌ PID {pid} is not a Nexus-managed background process"
-    proc = record["process"]
-    if proc.poll() is not None:
-        return f"✅ PID {pid} already exited with code {proc.returncode}"
     try:
-        proc.terminate()
-        proc.wait(timeout=5)
-        return f"✅ Terminated Nexus-managed PID {pid} (exit code {proc.returncode})"
+        _terminate_background_record(record)
+        _bg_processes.pop(pid, None)
+        return f"✅ Terminated Nexus-managed PID {pid}"
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"❌ PID {pid} could not be terminated: {exc}"
+
+
+def _terminate_background_record(record: dict) -> None:
+    """Stop a Nexus-owned process group, escalating after a short grace period."""
+
+    process = record["process"]
+    if process.poll() is not None:
+        return
+    if os.name == "nt":  # pragma: no cover - exercised in Windows CI
+        process.terminate()
+    else:
+        try:
+            os.killpg(int(record.get("process_group", process.pid)), signal.SIGTERM)
+        except ProcessLookupError:
+            return
+    try:
+        process.wait(timeout=5)
     except subprocess.TimeoutExpired:
-        return f"❌ PID {pid} did not terminate within 5 seconds"
+        if os.name == "nt":  # pragma: no cover - exercised in Windows CI
+            process.kill()
+        else:
+            try:
+                os.killpg(int(record.get("process_group", process.pid)), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        process.wait(timeout=5)
+
+
+def stop_owned_processes(owner: str) -> dict[str, object]:
+    """Terminate background processes created by one agent session."""
+
+    stopped: list[int] = []
+    errors: list[str] = []
+    for pid, record in list(_bg_processes.items()):
+        if record.get("owner") != owner:
+            continue
+        try:
+            _terminate_background_record(record)
+            stopped.append(pid)
+            _bg_processes.pop(pid, None)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            errors.append(f"PID {pid}: {exc}")
+    return {"stopped": stopped, "errors": errors}
 
 
 def tool_search_code(
@@ -2236,11 +2287,16 @@ def tool_web_fetch(url: str, max_length: int = 10000) -> str:
     """Fetch public HTTP(S) text while blocking SSRF and unsafe redirects."""
     from nexus.network_policy import NetworkPolicy
 
+    if not isinstance(url, str) or not url.strip() or len(url) > 4096:
+        return "❌ Network policy blocked URL: URL must contain 1-4096 characters"
     policy = NetworkPolicy(max_response_bytes=500_000)
     violation = policy.check_url(url)
     if violation:
         return f"❌ Network policy blocked URL ({violation.category}): {violation.reason}"
-    max_length = max(1, min(int(max_length or 10000), 100_000))
+    try:
+        max_length = max(1, min(int(max_length or 10000), 100_000))
+    except (TypeError, ValueError):
+        return "❌ max_length must be an integer between 1 and 100000"
     try:
         req = urllib.request.Request(
             url,
@@ -2284,6 +2340,12 @@ def tool_web_fetch(url: str, max_length: int = 10000) -> str:
 
 def tool_web_search(query: str, max_results: int = 5) -> str:
     """Search the web using DuckDuckGo HTML (no API key needed)."""
+    if not isinstance(query, str) or not query.strip() or len(query) > 500:
+        return "❌ Search query must contain 1-500 characters"
+    try:
+        max_results = max(1, min(int(max_results or 5), 20))
+    except (TypeError, ValueError):
+        return "❌ max_results must be an integer between 1 and 20"
     try:
         # Use DuckDuckGo HTML search
         encoded_query = urllib.parse.quote_plus(query)

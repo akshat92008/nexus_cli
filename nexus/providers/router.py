@@ -45,6 +45,13 @@ class FallbackRouter(Provider):
     def name(self) -> str:
         return f"Router (Active: {self._active_provider.name})"
 
+    @property
+    def attempt_telemetry_enabled(self) -> bool:
+        providers = [self._primary, *self._fallbacks]
+        return bool(providers) and all(
+            getattr(provider, "attempt_telemetry_enabled", False) for provider in providers
+        )
+
     # ── Fallback control ─────────────────────────────────────────────────────
 
     def switch_to_fallback(self) -> bool:
