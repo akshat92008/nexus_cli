@@ -2135,7 +2135,7 @@ class Agent:
                             False,
                         ),
                     )
-        if not self.mode_policy.may_edit and (
+        if not self.mode_policy.may_edit and not _user_initiated and (
             name in mutation_tools
             or name in ("run_command", "run_process", "process_run")
             or name.startswith("git_")

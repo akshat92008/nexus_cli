@@ -212,3 +212,106 @@ def test_provider_transport_honors_global_network_kill_switch(monkeypatch):
 
     with pytest.raises(RuntimeError, match="NEXUS_DISABLE_NETWORK"):
         client.chat_sync("test/model", [])
+
+
+# ─── Extended chaos / contract tests ─────────────────────────────────────────
+
+
+def test_timeout_primary_falls_back_successfully():
+    """Primary raises TimeoutError; fallback must succeed and deliver full response."""
+    primary = FakeProvider("primary", fail_sync=TimeoutError("provider timed out"))
+    fallback = FakeProvider("fallback", model_id="fb/model", sync_result="timeout_recovered")
+    router = FallbackRouter(primary, [fallback])
+    result = router.chat_sync("primary/model", [{"role": "user", "content": "hi"}])
+    assert result == "timeout_recovered"
+    assert fallback.requested_models == ["fb/model"]
+
+
+def test_retry_exhaustion_propagates_last_error():
+    """When all providers fail the router must raise — not silently return None."""
+    primary = FakeProvider("primary", fail_sync=ConnectionError("primary connection refused"))
+    fallback = FakeProvider("fallback", fail_sync=TimeoutError("fallback timeout"))
+    router = FallbackRouter(primary, [fallback])
+    with pytest.raises((ConnectionError, TimeoutError, RuntimeError)):
+        router.chat_sync("primary/model", [])
+
+
+def test_streaming_fallback_delivers_all_chunks():
+    """When primary fails before first chunk, fallback must deliver ALL chunks."""
+    def explode():
+        raise RuntimeError("stream refused")
+        yield "never"
+
+    fallback_chunks = ["chunk1", "chunk2", "chunk3"]
+    primary = FakeProvider("primary", stream_factory=explode)
+    fallback = FakeProvider(
+        "fallback",
+        model_id="fb/model",
+        stream_factory=lambda: iter(fallback_chunks),
+    )
+    router = FallbackRouter(primary, [fallback])
+    result = list(router.chat("primary/model", [], stream=True))
+    assert result == fallback_chunks
+
+
+def test_fallback_router_is_thread_safe_under_concurrent_chat():
+    """FallbackRouter used from 10 threads concurrently must not corrupt state."""
+    import threading
+
+    results: list = []
+    errors: list = []
+    lock = threading.Lock()
+
+    primary = FakeProvider("primary", sync_result="ok")
+    router = FallbackRouter(primary, [])
+
+    def call():
+        try:
+            result = router.chat_sync("primary/model", [{"role": "user", "content": "x"}])
+            with lock:
+                results.append(result)
+        except Exception as exc:
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=call) for _ in range(10)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert not errors, f"Thread-safety errors: {errors[:3]}"
+    assert len(results) == 10
+    assert all(r == "ok" for r in results)
+
+
+def test_fallback_not_triggered_on_sync_success():
+    """If the primary succeeds, the fallback must NEVER be called."""
+    primary = FakeProvider("primary", sync_result="primary_ok")
+    fallback = FakeProvider("fallback", sync_result="fallback_ok")
+    router = FallbackRouter(primary, [fallback])
+    result = router.chat_sync("primary/model", [{"role": "user", "content": "hi"}])
+    assert result == "primary_ok"
+    assert not fallback.requested_models, "Fallback must not be invoked when primary succeeds"
+
+
+def test_fallback_records_all_attempted_providers():
+    """The router must try all providers in chain before giving up."""
+    p1 = FakeProvider("p1", fail_sync=RuntimeError("p1 down"))
+    p2 = FakeProvider("p2", fail_sync=RuntimeError("p2 down"))
+    p3 = FakeProvider("p3", sync_result="ok")
+    router = FallbackRouter(p1, [p2, p3])
+    result = router.chat_sync("p1/model", [{"role": "user", "content": "x"}])
+    assert result == "ok"
+    assert p1.requested_models
+    assert p2.requested_models
+    assert p3.requested_models
+
+
+def test_streaming_preserves_empty_chunks_from_provider():
+    """Streaming must faithfully forward empty string chunks from the provider."""
+    chunks = ["", "data", "", "end", ""]
+    primary = FakeProvider("primary", stream_factory=lambda: iter(chunks))
+    router = FallbackRouter(primary, [])
+    result = list(router.chat("primary/model", [], stream=True))
+    assert result == chunks

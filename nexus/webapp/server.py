@@ -127,6 +127,27 @@ def _run_agent_locked(session_id: str, agent: Agent, message: str):
 # ─── HTTP Endpoints ──────────────────────────────────────────────────────────
 
 
+from starlette.responses import Response  # noqa: E402 — local import for clarity
+
+
+def _require_web_token(request) -> Response | None:
+    """Return a 403 response if the request does not carry the session token.
+
+    Accepted via:
+    * ``X-CSRF-Token`` header (for AJAX / fetch calls)
+    * ``token`` query parameter (for plain ``<a href>`` or EventSource links)
+
+    The web server binds to 127.0.0.1 only, so this is defence-in-depth
+    against other local processes, not an internet exposure.
+    """
+    from starlette.responses import JSONResponse as _JR
+    token_header = request.headers.get("X-CSRF-Token", "")
+    token_query = request.query_params.get("token", "")
+    if token_header == _web_token or token_query == _web_token:
+        return None
+    return _JR({"error": "Unauthorized — include the session token"}, status_code=403)
+
+
 async def index(request):
     """Serve the main web UI."""
     static_dir = Path(__file__).parent / "static"
@@ -139,6 +160,8 @@ async def index(request):
 
 async def api_models(request):
     """List all available models."""
+    if (err := _require_web_token(request)) is not None:
+        return err
     models = list_models()
     return JSONResponse(
         {
@@ -151,6 +174,8 @@ async def api_models(request):
 
 async def api_history(request):
     """List saved conversations."""
+    if (err := _require_web_token(request)) is not None:
+        return err
     memory = ConversationMemory()
     convs = memory.list_conversations(limit=20)
     return JSONResponse({"conversations": convs})
@@ -158,6 +183,8 @@ async def api_history(request):
 
 async def api_files(request):
     """Browse the file system."""
+    if (err := _require_web_token(request)) is not None:
+        return err
     path = request.query_params.get("path", _working_dir)
     try:
         p = _workspace_path(path)
@@ -209,6 +236,8 @@ async def api_files(request):
 
 async def api_file_content(request):
     """Read a file's content."""
+    if (err := _require_web_token(request)) is not None:
+        return err
     path = request.query_params.get("path", "")
     if not path:
         return JSONResponse({"error": "No path provided"}, status_code=400)
@@ -279,6 +308,8 @@ async def api_chat(request):
 
 async def api_tools(request):
     """List all available tools."""
+    if (err := _require_web_token(request)) is not None:
+        return err
     tools = []
     for td in TOOL_DEFINITIONS:
         fn = td["function"]
@@ -292,6 +323,8 @@ async def api_tools(request):
 
 
 async def api_pending_edits(request):
+    if (err := _require_web_token(request)) is not None:
+        return err
     session_id = request.query_params.get("session_id", "default")
     agent = _get_agent(session_id)
     return JSONResponse(

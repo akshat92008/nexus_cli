@@ -515,17 +515,35 @@ class RepoGraph:
         return list(dict.fromkeys(detected))
 
     def _iter_source_files(self) -> Iterable[Path]:
-        for path in sorted(self.root.rglob("*")):
-            if (
-                path.is_symlink()
-                or not path.is_file()
-                or path.suffix.lower() not in SUPPORTED_SUFFIXES
-            ):
-                continue
-            relative_parts = path.relative_to(self.root).parts
-            if any(part in IGNORED_PARTS for part in relative_parts):
-                continue
-            yield path
+        import os
+        paths = []
+        scanned_files = 0
+        for root, dirs, files in os.walk(self.root):
+            # Prune ignored directories in-place to avoid traversing them
+            dirs[:] = [
+                d for d in dirs 
+                if d not in IGNORED_PARTS 
+                and d not in {"Library", "Applications"}
+                and (not d.startswith(".") or d in {".github", ".vscode"})
+            ]
+            for file in files:
+                scanned_files += 1
+                if scanned_files > 50000:
+                    break
+                if file in IGNORED_PARTS:
+                    continue
+                path = Path(root) / file
+                if path.is_symlink() or not path.is_file():
+                    continue
+                if path.suffix.lower() not in SUPPORTED_SUFFIXES:
+                    continue
+                paths.append(path)
+                # Hard limit to avoid unbounded memory usage in massive directories
+                if len(paths) >= 20000:
+                    break
+            if scanned_files > 50000 or len(paths) >= 20000:
+                break
+        return sorted(paths)
 
     def _index_file(
         self,

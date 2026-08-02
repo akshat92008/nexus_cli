@@ -251,6 +251,14 @@ class ExecutionPipeline:
         """Refresh the repository graph index if stale."""
         t = time.monotonic()
         try:
+            if not (self._agent.working_dir / ".git").exists():
+                return StageResult(
+                    stage=PipelineStage.REPO_UNDERSTANDING,
+                    success=True,
+                    duration_ms=int((time.monotonic() - t) * 1000),
+                    metadata={"refreshed": False, "reason": "Not a git repository"},
+                )
+            
             updated = self._agent.repo_graph.build(force=False)
             return StageResult(
                 stage=PipelineStage.REPO_UNDERSTANDING,

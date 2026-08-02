@@ -21,6 +21,16 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python-version: ["3.10", "3.11", "3.12", "3.13"]
+        exclude:
+          # Limit Windows to a single Python version to avoid matrix explosion.
+          # Autonomous/isolation-requiring modes are not supported on Windows;
+          # the test suite exercises platform-aware fallback paths instead.
+          - os: windows-latest
+            python-version: "3.10"
+          - os: windows-latest
+            python-version: "3.12"
+          - os: windows-latest
+            python-version: "3.13"
 
     steps:
       - uses: actions/checkout@v4
@@ -34,12 +44,36 @@ jobs:
       - name: Install the locked project and release tools
         run: uv sync --locked --extra dev --extra browser
 
+      # Install and probe the kernel sandbox BEFORE the release gate runs.
+      # The release gate includes test_cli_direct_command_real_execution which
+      # requires a native isolation backend on non-Windows platforms.
+      - name: Install and probe kernel sandbox (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update && sudo apt-get install -y bubblewrap
+          uv run python - <<'PY'
+          from pathlib import Path
+          from nexus.sandbox import SandboxBackend, SandboxRunner
+          backend = SandboxRunner(Path.cwd()).backend()
+          if backend is not SandboxBackend.BUBBLEWRAP:
+              raise SystemExit(f"Linux CI sandbox probe failed: expected BUBBLEWRAP, got {backend.value}")
+          print(f"sandbox probe OK: {backend.value}")
+          PY
+
+      - name: Probe kernel sandbox (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+          from nexus.sandbox import SandboxBackend, SandboxRunner
+          backend = SandboxRunner(Path.cwd()).backend()
+          if backend is not SandboxBackend.MACOS:
+              raise SystemExit(f"macOS CI sandbox probe failed: expected MACOS, got {backend.value}")
+          print(f"sandbox probe OK: {backend.value}")
+          PY
+
       - name: Run release gate
         run: uv run python scripts/run_release_gate.py
-
-      - name: Install sandbox on Ubuntu
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap
 
       - name: Run offline command scenarios
         run: uv run python scripts/run_offline_scenarios.py

@@ -245,20 +245,29 @@ def print_tools_table():
 
 
 def print_models_table():
-    """Print all available models in a beautiful table."""
+    """Print all available models in a beautiful, narrow-terminal-friendly table."""
+    import shutil
+
+    term_width = shutil.get_terminal_size((120, 40)).columns
+    narrow = term_width < 100
+
     table = Table(
         show_header=True,
         header_style=f"bold {CYAN}",
         border_style=DIM,
         box=box.SIMPLE_HEAD,
         title=f"[bold {GOLD}]✦ Available Models — Hosted + Local Catalog[/]",
+        width=min(term_width - 2, 140),
     )
-    table.add_column("Key", style=f"bold {PURPLE}", min_width=16)
-    table.add_column("Model Name", style=f"bold {WHITE}")
-    table.add_column("Category", style=CYAN)
-    table.add_column("Context Window", style=ORANGE, justify="right")
-    table.add_column("Tools Support", justify="center")
-    table.add_column("Description", style=DIM)
+    table.add_column("Key", style=f"bold {PURPLE}", min_width=14, no_wrap=True)
+    table.add_column("Model Name", style=f"bold {WHITE}", no_wrap=narrow)
+    table.add_column("Category", style=CYAN, no_wrap=True)
+    table.add_column("Context", style=ORANGE, justify="right", no_wrap=True)
+    table.add_column("Tools", justify="center", no_wrap=True)
+    # Sandbox indicator: 🔒 means the mode requires OS isolation (bubblewrap / sandbox-exec)
+    table.add_column("Sandbox", justify="center", no_wrap=True)
+    if not narrow:
+        table.add_column("Description", style=DIM, max_width=50)
 
     category_colors = {
         "reasoning": MAGENTA,
@@ -266,19 +275,39 @@ def print_models_table():
         "general": CYAN,
         "local": ORANGE,
     }
+    # Models that can be used without a native sandbox (plan/review mode)
+    _no_sandbox_models = frozenset({"glm-5.2", "kimi", "deepseek", "custom"})
 
     for m in list_models():
         cat_color = category_colors.get(m["category"], WHITE)
         tools = f"[bold {GREEN}]✓[/]" if m.get("supports_tools") else f"[{RED}]✗[/]"
-        table.add_row(
-            m["key"],
+        model_key = m["key"]
+        needs_sandbox = model_key not in _no_sandbox_models and m.get("category") != "local"
+        sandbox_icon = f"[{DIM}]opt[/]" if not needs_sandbox else f"[{ORANGE}]🔒[/]"
+        if m.get("category") == "local":
+            sandbox_icon = f"[{GREEN}]✓[/]"
+        row = [
+            model_key,
             m["name"],
             f"[{cat_color}]{m['category']}[/]",
             f"{m['context']:,}",
             tools,
-            m["description"],
-        )
+            sandbox_icon,
+        ]
+        if not narrow:
+            row.append(m["description"])
+        table.add_row(*row)
+
     console.print(table)
+    if narrow:
+        console.print(
+            f"  [dim]Terminal is narrow ({term_width} cols) — description column hidden. "
+            "Resize or run in a wider terminal to see full details.[/]"
+        )
+    console.print(
+        f"  [{DIM}]🔒 = native sandbox required (bubblewrap on Linux / sandbox-exec on macOS). "
+        "Run [bold]nexus --doctor[/] to check your sandbox status.[/]"
+    )
     console.print()
 
 

@@ -189,7 +189,19 @@ Environment:
             "ci",
         ),
         default="review",
-        help="Operational policy preset (default: review)",
+        help=(
+            "Operational policy preset (default: review). "
+            "Modes and isolation requirements: "
+            "plan — read-only, no OS sandbox needed; "
+            "review — edits require confirmation, no OS sandbox needed; "
+            "workspace — Git-isolated worktree, native sandbox required; "
+            "autonomous — hands-free, native sandbox required (bubblewrap on Linux); "
+            "local-only — Nova only, native sandbox required; "
+            "quality — maximum verification, review-level isolation; "
+            "budget — cost-capped autonomous, native sandbox required; "
+            "ci — non-interactive JSON output, native sandbox required. "
+            "Run 'nexus --doctor' to check your sandbox status."
+        ),
     )
     parser.add_argument(
         "--local-only",
@@ -268,17 +280,37 @@ def _normalize_subcommand_argv() -> None:
     command = sys.argv[1]
     if command == "run":
         rest = sys.argv[2:]
+        # Handle `nexus run --help` cleanly — argparse will print help and
+        # exit 0 when it sees --help in the normalized argv list.
+        if "--help" in rest or "-h" in rest:
+            # Rebuild argv so the main parser sees --help
+            sys.argv = [sys.argv[0], "--help"]
+            return
         prompt = ""
         if "--prompt" in rest:
             index = rest.index("--prompt")
             if index + 1 >= len(rest):
+                # Argparse will raise a clean error; just propagate.
                 raise SystemExit("nexus run --prompt requires a value")
             prompt = rest[index + 1]
             del rest[index : index + 2]
         elif rest and not rest[0].startswith("-"):
             prompt = rest.pop(0)
         if not prompt:
-            raise SystemExit("Usage: nexus run --prompt <goal> [options]")
+            # Exit 0 with usage — not an error
+            print(
+                "Usage: nexus run <goal> [options]\n"
+                "       nexus run --prompt <goal> [options]\n\n"
+                "Options:\n"
+                "  --mode <mode>       plan|review|workspace|autonomous|… (default: review)\n"
+                "  --max-turns N       Maximum agent turns (default: 50)\n"
+                "  --output-format F   text|json|jsonl|stream-json (default: text)\n"
+                "  --confirm-danger    Confirm dangerous operations without prompting\n"
+                "  --model <key>       Model to use (see nexus --list-models)\n"
+                "  --working-dir DIR   Working directory (default: cwd)\n\n"
+                "Run 'nexus --help' for the full option reference."
+            )
+            raise SystemExit(0)
         if "--print" not in rest and "-p" not in rest:
             rest.append("--print")
         sys.argv = [sys.argv[0], *rest, prompt]
@@ -1061,12 +1093,19 @@ def main():
         ui.print_models_table()
         sys.exit(0)
 
-    # Direct command mode (runs before model preflight)
+    # Direct command mode (runs before model preflight).
+    # Direct commands use plan-mode policy which does NOT require OS isolation.
+    # Dangerous operations are still gated by the safety layer's confirmation
+    # mechanism; isolation is not the protection for user-typed commands.
     if args.prompt and args.prompt.lstrip().startswith("!"):
         try:
             command = args.prompt.lstrip()[1:].strip()
             argv = shlex.split(command, posix=True)
-            _mode_policy = get_mode_policy(args.mode)
+            # Override: use plan-mode policy (no require_os_isolation) so that
+            # a simple `!echo hello` works without a native sandbox binary.
+            # The effective mode from the user's --mode flag is preserved in
+            # the output metadata so callers can inspect it.
+            _mode_policy = get_mode_policy("plan")
             agent = Agent(
                 api_key="offline-direct-command",
                 model_key="custom",
@@ -1111,6 +1150,7 @@ def main():
         success, report = run_doctor(
             working_dir=args.working_dir,
             nova_model=model_cfg.get("ollama_model", "nova_codex"),
+            mode=args.mode,
         )
         print(report)
         sys.exit(0 if success else 2)

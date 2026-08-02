@@ -189,9 +189,45 @@ that merely looks safe from reading outside the authorized workspace.
 
 Nexus relies on kernel-level sandboxing for autonomous workflows (like the `autonomous` mode and CI presets) to enforce strict network and file-system boundaries for generated code execution:
 
-- **Linux**: Fully supported via `bubblewrap`.
-- **macOS**: Fully supported via `sandbox-exec`.
-- **Windows**: Limited support. Autonomous commands that require isolation will safely **fail closed** on Windows because no equivalent native sandbox backend is currently integrated. Direct commands and non-autonomous modes work as expected.
+See the **OS Sandbox Setup** section below for installation instructions before
+running autonomous or editing workflows.
+
+## OS Sandbox Setup
+
+Nexus uses kernel-level sandboxing for autonomous and editing workflows. Run
+`nexus --doctor` to check your sandbox status. Without a native backend, modes
+that require isolation (`review`, `workspace`, `autonomous`, `quality`, `budget`,
+`local-only`, `ci`) will fail closed rather than run with reduced safety.
+
+**Linux** — install `bubblewrap` before first use:
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install bubblewrap
+
+# Fedora / RHEL
+sudo dnf install bubblewrap
+
+# Arch
+sudo pacman -S bubblewrap
+```
+
+**macOS** — `sandbox-exec` ships with macOS. No additional installation is
+needed. The `nexus --doctor` command will confirm it is operational.
+
+**Windows** — there is no integrated native sandbox backend on Windows.
+Autonomous, quality, budget, local-only, and CI modes will fail closed with
+a clear error. Plan mode and direct `!command` execution work without a
+sandbox. For full capability on Windows, use WSL2 with bubblewrap installed.
+
+After installation, verify:
+
+```bash
+nexus --doctor
+# Sandbox: [✓] native backend: bubblewrap   (Linux)
+# Sandbox: [✓] native backend: sandbox-exec  (macOS)
+```
+
 ## Models
 
 Hosted model IDs are drawn from the NVIDIA NIM catalog. Provider availability
