@@ -130,6 +130,8 @@ class RoundRobinKeyPool:
 
     def get_next_key(self) -> str | None:
         """Select and return the next active round-robin key, skipping cooling-down keys."""
+        wait_time = 0
+        earliest_key = None
         with self._lock:
             if not self.keys:
                 return None
@@ -142,8 +144,12 @@ class RoundRobinKeyPool:
                     self.current_idx = (idx + 1) % len(self.keys)
                     return key
             earliest_key = min(self.keys, key=lambda k: self.cooldowns.get(k, 0))
+            wait_time = max(0, self.cooldowns[earliest_key] - now)
             self.current_idx = (self.keys.index(earliest_key) + 1) % len(self.keys)
-            return earliest_key
+
+        if wait_time > 0:
+            time.sleep(wait_time)
+        return earliest_key
 
     def mark_cooldown(self, key: str, duration: float | None = None):
         """Mark a key as temporarily cooling down (e.g. on HTTP 429 rate limit)."""

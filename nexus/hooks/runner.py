@@ -190,25 +190,20 @@ class HookRunner:
                             failure_policy=HookFailurePolicy.BLOCK,
                         )
 
-        cwd = self.working_dir or None
-        try:
-            result = subprocess.run(
-                command,
-                shell=False,  # SECURITY: Never use shell=True
-                capture_output=True,
-                text=True,
-                cwd=cwd,
-                timeout=30,
-            )
+        cwd = self.working_dir or "."
+        from nexus.process_gateway import ProcessExecutionGateway, ProcessRequest
+        
+        request = ProcessRequest.create(
+            purpose=f"hook_{hook.name}",
+            command=command,
+            workspace=cwd,
+            timeout_seconds=30,
+            isolation_policy="required",
+            network_policy="allow", # Hooks might need network access
+        )
+        result = ProcessExecutionGateway.run(request)
 
-            return HookResult(
-                hook_name=hook.name,
-                event=context.event,
-                success=result.returncode == 0,
-                output=result.stdout + result.stderr,
-                failure_policy=hook.failure_policy,
-            )
-        except subprocess.TimeoutExpired:
+        if result.timed_out:
             return HookResult(
                 hook_name=hook.name,
                 event=context.event,
@@ -216,22 +211,30 @@ class HookRunner:
                 output="Hook command timed out (30s)",
                 failure_policy=hook.failure_policy,
             )
-        except FileNotFoundError as e:
+        if result.blocked_reason:
             return HookResult(
                 hook_name=hook.name,
                 event=context.event,
                 success=False,
-                output=f"Command not found: {e}",
+                output=f"Command blocked: {result.blocked_reason}",
                 failure_policy=hook.failure_policy,
             )
-        except OSError as e:
+        if result.exit_code is None and not result.success:
             return HookResult(
                 hook_name=hook.name,
                 event=context.event,
                 success=False,
-                output=f"OS Error: {e}",
+                output=f"OS Error: {result.stderr}",
                 failure_policy=hook.failure_policy,
             )
+
+        return HookResult(
+            hook_name=hook.name,
+            event=context.event,
+            success=result.success,
+            output=result.stdout + "\n" + result.stderr,
+            failure_policy=hook.failure_policy,
+        )
 
     def is_blocked(self, event: HookEvent, context: HookContext | None = None) -> bool:
         """Check if an event would be blocked by any hook."""

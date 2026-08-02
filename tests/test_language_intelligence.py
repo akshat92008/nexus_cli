@@ -7,7 +7,7 @@ from nexus.language_intelligence import LanguageServicePool, LSPClient, LSPError
 
 @pytest.fixture
 def mock_subprocess():
-    with patch("subprocess.Popen") as mock_popen:
+    with patch("nexus.process_gateway.ProcessExecutionGateway.popen") as mock_popen:
         process = MagicMock()
         process.poll.return_value = None
         process.stdin = MagicMock()

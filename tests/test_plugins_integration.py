@@ -37,7 +37,7 @@ def register():
 """)
 
     loader = PluginLoader(
-        working_dir=str(project_dir), plugins_enabled=True, trust_checker=lambda x: True
+        working_dir=str(project_dir), plugins_enabled=True, trust_checker=lambda x, expected_digest=None: True
     )
 
     # Manually load the plugin directory since discover_local_plugins might require specific layout
@@ -106,7 +106,7 @@ class RpcPlugin:
     )
 
     loader = PluginLoader(
-        working_dir=str(project_dir), plugins_enabled=True, trust_checker=lambda _path: True
+        working_dir=str(project_dir), plugins_enabled=True, trust_checker=lambda _path, expected_digest=None: True
     )
     plugin = loader._load_plugin_dir(plugin_dir, "local")
     assert plugin is not None

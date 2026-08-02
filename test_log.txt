@@ -1,0 +1,80 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.2, pytest-9.1.1, pluggy-1.6.0
+Using --randomly-seed=622753009
+rootdir: /Users/ashishsingh/Desktop/product
+configfile: pyproject.toml
+plugins: cov-7.1.0, timeout-2.4.0, randomly-4.1.0, anyio-4.14.2
+collected 490 items
+
+tests/test_final_runtime.py ..............                               [  2%]
+tests/test_code_validation.py .............                              [  5%]
+tests/test_agent_services.py .......................................     [ 13%]
+tests/test_models.py .........                                           [ 15%]
+tests/test_repair_loop.py .                                              [ 15%]
+tests/test_memory.py .........                                           [ 17%]
+tests/test_workspace_edge_cases.py ..                                    [ 17%]
+tests/test_skills.py ..                                                  [ 18%]
+tests/test_engines.py ..........                                         [ 20%]
+tests/test_e2e_full_workflow.py .                                        [ 20%]
+tests/test_nova_backend.py .............                                 [ 23%]
+tests/test_runtime_engine.py ...                                         [ 23%]
+tests/test_behavioral.py ........                                        [ 25%]
+tests/test_agent_coverage.py ....                                        [ 26%]
+tests/test_report.py ...                                                 [ 26%]
+tests/test_webapp_coverage.py .....                                      [ 27%]
+tests/test_planner.py .........                                          [ 29%]
+tests/test_release_gates.py ...                                          [ 30%]
+tests/test_pipeline.py .                                                 [ 30%]
+tests/test_cli_responsiveness.py ....                                    [ 31%]
+tests/test_sandbox.py ......                                             [ 32%]
+tests/test_power_hardening.py ......                                     [ 33%]
+tests/test_long_term_runtime.py ...........                              [ 35%]
+tests/test_release_cli.py .............                                  [ 38%]
+tests/test_package_guard.py .....                                        [ 39%]
+tests/test_e2e_installed_wheel.py ..............s                        [ 42%]
+tests/test_two_node_backend.py ....                                      [ 43%]
+tests/test_api_resilience.py ...........                                 [ 45%]
+tests/test_long_horizon_qualification.py ........                        [ 47%]
+tests/test_tools.py .......................................              [ 55%]
+tests/test_history.py .........                                          [ 57%]
+tests/test_mcp_registry.py .                                             [ 57%]
+tests/test_agent_safety.py ........                                      [ 58%]
+tests/test_provider_chaos.py ..............                              [ 61%]
+tests/test_github.py ....                                                [ 62%]
+tests/test_launch_reliability_contracts.py .....................         [ 66%]
+tests/test_benchmark_security.py .                                       [ 67%]
+tests/test_process_io.py ..                                              [ 67%]
+tests/test_repo_graph.py ....                                            [ 68%]
+tests/test_launch_blockers_regression.py ......                          [ 69%]
+tests/test_evidence_and_approvals.py .....                               [ 70%]
+tests/test_extensions_integration.py ...                                 [ 71%]
+tests/test_webapp_security.py ...                                        [ 71%]
+tests/test_cli_coverage.py .....................                         [ 76%]
+tests/test_launch_hardening.py ..........................                [ 81%]
+tests/test_sdk_contract.py ..                                            [ 81%]
+tests/test_network_policy.py ......                                      [ 83%]
+tests/test_mcp_integration.py .                                          [ 83%]
+tests/test_recovery.py ..                                                [ 83%]
+tests/test_hooks_integration.py .                                        [ 83%]
+tests/test_algorithms.py .................                               [ 87%]
+tests/test_e2e_providers.py ...                                          [ 87%]
+tests/test_sandbox_stress.py ............s.s................             [ 94%]
+tests/test_stress_concurrent.py ........s...                             [ 96%]
+tests/test_dashboard.py ...                                              [ 97%]
+tests/test_baseline_verification.py ...                                  [ 97%]
+tests/test_plugins_integration.py ..                                     [ 98%]
+tests/test_language_intelligence.py ....                                 [ 99%]
+tests/test_api_round_robin.py ....                                       [100%]
+
+=============================== warnings summary ===============================
+tests/test_webapp_coverage.py:4
+  /Users/ashishsingh/Desktop/product/tests/test_webapp_coverage.py:4: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_e2e_installed_wheel.py:100: Install-instruction check only validated on Linux
+SKIPPED [1] tests/test_sandbox_stress.py:35: Linux-only assertion
+SKIPPED [1] tests/test_sandbox_stress.py:55: Windows-only assertion
+SKIPPED [1] tests/test_stress_concurrent.py:90: Native sandbox available — test only relevant for restricted backend
+================== 486 passed, 4 skipped, 1 warning in 34.65s ==================

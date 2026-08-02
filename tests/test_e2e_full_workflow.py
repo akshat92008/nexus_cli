@@ -255,6 +255,8 @@ def test_full_autonomous_agent_workflow(tmp_path, monkeypatch):
     content, events = agent.run_non_interactive(prompt)
     report = agent.export_final_report()
 
+    print("EVENTS:", events)
+    print("REPORT:", report)
     assert report["status"] == "VERIFIED", report
     assert any(
         event.get("type") == "tool_call"

@@ -124,23 +124,27 @@ class GeneratedCodeValidator:
                 None,
             )
 
-        try:
-            result = subprocess.run(
-                command,
-                cwd=self.workspace_dir,
-                capture_output=True,
-                text=True,
-                timeout=self.timeout,
-                env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "CI": "true"},
-            )
-            output = (result.stdout + result.stderr).strip() or "compiler produced no output"
-            return CodeCheck(str(path), command, result.returncode == 0, output, result.returncode)
-        except subprocess.TimeoutExpired:
+        from nexus.process_gateway import ProcessExecutionGateway, ProcessRequest
+        request = ProcessRequest.create(
+            purpose="code_validation",
+            command=command,
+            workspace=self.workspace_dir,
+            timeout_seconds=self.timeout,
+            env_additions={"PYTHONDONTWRITEBYTECODE": "1", "CI": "true"},
+            isolation_policy="required",
+        )
+        result = ProcessExecutionGateway.run(request)
+        if result.timed_out:
             return CodeCheck(
                 str(path), command, False, f"compiler timed out after {self.timeout}s", None
             )
-        except OSError as exc:
-            return CodeCheck(str(path), command, False, f"compiler could not run: {exc}", None)
+        if result.blocked_reason:
+            return CodeCheck(str(path), command, False, f"compiler could not run: {result.blocked_reason}", None)
+        if result.exit_code is None and not result.success:
+            return CodeCheck(str(path), command, False, f"compiler could not run: {result.stderr}", None)
+            
+        output = (result.stdout + "\n" + result.stderr).strip() or "compiler produced no output"
+        return CodeCheck(str(path), command, result.success, output, result.exit_code)
 
     @staticmethod
     def _entrypoint_reason(path: Path, text: str, prompt: str) -> str:

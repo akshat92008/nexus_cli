@@ -128,11 +128,18 @@ def test_benchmark_automatically_resumes_same_run_until_verified(tmp_path, monke
     )
     agent_commands = []
 
-    def fake_run(command, **kwargs):
+
+    from nexus.sandbox import CommandResult, SandboxBackend
+    import nexus.process_gateway
+    agent_commands = []
+    
+    def fake_gateway_run(req):
+        command = " ".join(req.command)
         if "nexus" in command:
             agent_commands.append(command)
             index = len(agent_commands)
             status = "FAILED" if index == 1 else "VERIFIED"
+            import json
             payload = {
                 "session_id": "session",
                 "run": {
@@ -142,21 +149,27 @@ def test_benchmark_automatically_resumes_same_run_until_verified(tmp_path, monke
                     "metadata": {},
                 },
             }
-            return subprocess.CompletedProcess(
-                command,
-                2 if index == 1 else 0,
+            return CommandResult(
+                argv=list(req.command),
+                cwd=str(req.workspace),
+                backend=SandboxBackend.RESTRICTED,
+                success=index != 1,
+                exit_code=2 if index == 1 else 0,
                 stdout=json.dumps(payload),
                 stderr="",
+                timed_out=False
             )
-        return subprocess.CompletedProcess(command, 0, stdout=b"ok\n", stderr=b"")
-
-    monkeypatch.setattr("nexus.benchmark.subprocess.run", fake_run)
-    monkeypatch.setattr(SandboxRunner, "_backend_cache", SandboxBackend.RESTRICTED)
-    monkeypatch.setattr(
-        BenchmarkRunner,
-        "_preflight",
-        lambda _self: SimpleNamespace(ready=True),
-    )
+        return CommandResult(
+            argv=list(req.command),
+            cwd=str(req.workspace),
+            backend=SandboxBackend.RESTRICTED,
+            success=True,
+            exit_code=0,
+            stdout="ok\n",
+            stderr="",
+            timed_out=False
+        )
+    monkeypatch.setattr(nexus.process_gateway.ProcessExecutionGateway, "run", fake_gateway_run)
 
     result = BenchmarkRunner(BenchmarkSuite.load(manifest)).run().results[0]
 

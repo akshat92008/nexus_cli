@@ -249,32 +249,34 @@ class BudgetedClient:
     def _wrap_stream(self, stream: Any, prompt_estimate: int) -> Any:
         usage_recorded = False
         completion_parts: list[str] = []
-        for chunk in stream:
-            usage = getattr(chunk, "usage", None)
-            if usage is not None:
-                prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
-                completion = int(getattr(usage, "completion_tokens", 0) or 0)
-                if prompt or completion:
-                    self._budget_controller.record_usage(
-                        prompt or prompt_estimate,
-                        completion,
-                    )
-                    usage_recorded = True
-            for choice in getattr(chunk, "choices", []) or []:
-                delta = getattr(choice, "delta", None)
-                content = getattr(delta, "content", None)
-                if content:
-                    completion_parts.append(str(content))
-                for tool_call in getattr(delta, "tool_calls", []) or []:
-                    function = getattr(tool_call, "function", None)
-                    completion_parts.append(str(getattr(function, "name", "") or ""))
-                    completion_parts.append(str(getattr(function, "arguments", "") or ""))
-            yield chunk
-        if not usage_recorded:
-            self._budget_controller.record_usage(
-                prompt_estimate,
-                self._estimate_text("".join(completion_parts)),
-            )
+        try:
+            for chunk in stream:
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+                    completion = int(getattr(usage, "completion_tokens", 0) or 0)
+                    if prompt or completion:
+                        self._budget_controller.record_usage(
+                            prompt or prompt_estimate,
+                            completion,
+                        )
+                        usage_recorded = True
+                for choice in getattr(chunk, "choices", []) or []:
+                    delta = getattr(choice, "delta", None)
+                    content = getattr(delta, "content", None)
+                    if content:
+                        completion_parts.append(str(content))
+                    for tool_call in getattr(delta, "tool_calls", []) or []:
+                        function = getattr(tool_call, "function", None)
+                        completion_parts.append(str(getattr(function, "name", "") or ""))
+                        completion_parts.append(str(getattr(function, "arguments", "") or ""))
+                yield chunk
+        finally:
+            if not usage_recorded:
+                self._budget_controller.record_usage(
+                    prompt_estimate,
+                    self._estimate_text("".join(completion_parts)),
+                )
 
     def _record_response_usage(self, response: Any, prompt_estimate: int) -> None:
         usage = getattr(response, "usage", None)

@@ -11,7 +11,7 @@ import pytest
 @pytest.fixture(autouse=True)
 def isolate_tool_context_and_detect_resource_leaks():
     """Reset ContextVars and reject non-daemon threads leaked by a test."""
-    from nexus import reset_global_state
+    from tests.support.global_state import reset_global_state
     reset_global_state()
     baseline_threads = {thread.ident for thread in threading.enumerate()}
     yield

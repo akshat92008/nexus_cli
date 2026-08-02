@@ -1,0 +1,415 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.13.2, pytest-9.1.1, pluggy-1.6.0
+rootdir: /Users/ashishsingh/Desktop/product
+configfile: pyproject.toml
+plugins: langsmith-0.10.13, anyio-4.8.0
+collected 469 items
+
+tests/test_agent_coverage.py ....                                        [  0%]
+tests/test_agent_safety.py ........                                      [  2%]
+tests/test_agent_services.py ........................................    [ 11%]
+tests/test_algorithms.py .................                               [ 14%]
+tests/test_api_resilience.py ...........                                 [ 17%]
+tests/test_baseline_verification.py ...                                  [ 17%]
+tests/test_behavioral.py ........                                        [ 19%]
+tests/test_cli_coverage.py ........F..                                   [ 21%]
+tests/test_cli_responsiveness.py ....                                    [ 22%]
+tests/test_code_validation.py .............                              [ 25%]
+tests/test_dashboard.py ...                                              [ 26%]
+tests/test_e2e_full_workflow.py .                                        [ 26%]
+tests/test_e2e_installed_wheel.py .....sFFF...F..                        [ 29%]
+tests/test_e2e_providers.py ..F                                          [ 30%]
+tests/test_engines.py ..........                                         [ 32%]
+tests/test_evidence_and_approvals.py .....                               [ 33%]
+tests/test_extensions_integration.py ...                                 [ 33%]
+tests/test_final_runtime.py ..............                               [ 36%]
+tests/test_github.py ....                                                [ 37%]
+tests/test_history.py .........                                          [ 39%]
+tests/test_hooks_integration.py .                                        [ 39%]
+tests/test_language_intelligence.py ....                                 [ 40%]
+tests/test_launch_blockers_regression.py F.....                          [ 42%]
+tests/test_launch_hardening.py ..........................                [ 47%]
+tests/test_launch_reliability_contracts.py .....................         [ 52%]
+tests/test_long_horizon_qualification.py ........                        [ 53%]
+tests/test_long_term_runtime.py ...........                              [ 56%]
+tests/test_mcp_integration.py .                                          [ 56%]
+tests/test_memory.py .........                                           [ 58%]
+tests/test_models.py .........                                           [ 60%]
+tests/test_network_policy.py ......                                      [ 61%]
+tests/test_nova_backend.py .............                                 [ 64%]
+tests/test_package_guard.py .....                                        [ 65%]
+tests/test_pipeline.py .                                                 [ 65%]
+tests/test_planner.py .........                                          [ 67%]
+tests/test_plugins_integration.py ..                                     [ 67%]
+tests/test_process_io.py ..                                              [ 68%]
+tests/test_provider_chaos.py ..FF.....F..F.                              [ 71%]
+tests/test_recovery.py ..                                                [ 71%]
+tests/test_release_cli.py .............                                  [ 74%]
+tests/test_release_gates.py ...                                          [ 75%]
+tests/test_repair_loop.py .                                              [ 75%]
+tests/test_repo_graph.py ....                                            [ 76%]
+tests/test_report.py ...                                                 [ 76%]
+tests/test_runtime_engine.py ...                                         [ 77%]
+tests/test_sandbox.py ......                                             [ 78%]
+tests/test_sandbox_stress.py .s.s...........................             [ 85%]
+tests/test_sdk_contract.py ..                                            [ 85%]
+tests/test_skills.py ..                                                  [ 86%]
+tests/test_stress_concurrent.py ..s.........                             [ 88%]
+tests/test_tools.py .......................................              [ 97%]
+tests/test_two_node_backend.py ....                                      [ 97%]
+tests/test_webapp_coverage.py .....                                      [ 98%]
+tests/test_webapp_security.py ...                                        [ 99%]
+tests/test_workspace_edge_cases.py ..                                    [100%]
+
+=================================== FAILURES ===================================
+____________________ test_cli_direct_command_real_execution ____________________
+
+tmp_path = PosixPath('/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/pytest-of-ashishsingh/pytest-674/test_cli_direct_command_real_e0')
+
+    def test_cli_direct_command_real_execution(tmp_path):
+        import subprocess
+        # Run a real harmless direct command via subprocess to avoid mock gaps.
+        # Direct commands use the plan-mode policy which does NOT require OS
+        # isolation, so the command should succeed on all platforms where a
+        # sandbox backend is available, and produce a structured JSON result.
+        result = subprocess.run(
+            [sys.executable, "-m", "nexus", "--output-format", "json", "!echo real_test_hello"],
+            env={**os.environ, "NVIDIA_API_KEY": "test"},
+            capture_output=True,
+            text=True,
+        )
+        import json
+    
+        if sys.platform == "win32":
+            # Windows has no integrated native sandbox backend. The restricted-
+            # process fallback is used by default for plan-mode direct commands,
+            # which does NOT require OS isolation. So the echo should succeed.
+            # If it fails for any other reason the returncode will be 2.
+            if result.returncode == 0:
+                data = json.loads(result.stdout)
+                assert data["name"] == "run_process"
+                # echo may not produce output on all Windows shells; just check shape.
+            else:
+                # Acceptable: Windows subprocess environment may differ.
+                assert result.returncode in (0, 2)
+        else:
+            # On Linux and macOS a native sandbox backend is available in CI
+            # (bubblewrap or sandbox-exec). The plan-mode policy does not
+            # require OS isolation, so restricted-process is also acceptable.
+>           assert result.returncode == 0, (
+                f"Expected exit 0 but got {result.returncode}.\n"
+                f"stdout: {result.stdout[:500]}\nstderr: {result.stderr[:500]}"
+            )
+E           AssertionError: Expected exit 0 but got 1.
+E             stdout: {"type": "tool_call", "name": "run_process", "result": "\u2705 $ echo real_test_hello\n[sandbox=sandbox-exec network=off duration_ms=11]\nreal_test_hello", "success": true}
+E             
+E             stderr: Traceback (most recent call last):
+E               File "<frozen runpy>", line 198, in _run_module_as_main
+E               File "<frozen runpy>", line 88, in _run_code
+E               File "/Users/ashishsingh/Desktop/product/nexus/__main__.py", line 6, in <module>
+E                 main()
+E                 ~~~~^^
+E               File "/Users/ashishsingh/Desktop/product/nexus/cli.py", line 1143, in main
+E                 _close_and_exit(agent, 0 if success else 2)
+E                 ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E               File "/Users/ashishsingh/Desktop/product/nexus/cli.py", line 1007, in _close_and
+E           assert 1 == 0
+E            +  where 1 = CompletedProcess(args=['/Library/Frameworks/Python.framework/Versions/3.13/bin/python3', '-m', 'nexus', '--output-form...                         ^^^^^^^^^^^^^^^^^^^^\nAttributeError: \'Agent\' object has no attribute \'keep_workspace\'\n').returncode
+
+tests/test_cli_coverage.py:158: AssertionError
+___________________ test_installed_direct_command_echo_json ____________________
+
+    def test_installed_direct_command_echo_json():
+        """``nexus --output-format json '!echo hello'`` must succeed and return JSON."""
+        result = _nexus("--output-format", "json", "!echo hello_nexus_e2e")
+        if sys.platform == "win32":
+            assert result.returncode in (0, 2)
+            return
+>       assert result.returncode == 0, (
+            f"Direct !command failed.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+E       AssertionError: Direct !command failed.
+E         stdout: {"type": "tool_call", "name": "run_process", "result": "\u2705 $ echo hello_nexus_e2e\n[sandbox=sandbox-exec network=off duration_ms=11]\nhello_nexus_e2e", "success": true}
+E         
+E         stderr: Traceback (most recent call last):
+E           File "<frozen runpy>", line 198, in _run_module_as_main
+E           File "<frozen runpy>", line 88, in _run_code
+E           File "/Users/ashishsingh/Desktop/product/nexus/__main__.py", line 6, in <module>
+E             main()
+E             ~~~~^^
+E           File "/Users/ashishsingh/Desktop/product/nexus/cli.py", line 1143, in main
+E             _close_and_exit(agent, 0 if success else 2)
+E             ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           File "/Users/ashishsingh/Desktop/product/nexus/cli.py", line 1007, in _close_and_exit
+E             agent.close(discard_workspace=not agent.keep_workspace)
+E                                               ^^^^^^^^^^^^^^^^^^^^
+E         AttributeError: 'Agent' object has no attribute 'keep_workspace'
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/Library/Frameworks/Python.framework/Versions/3.13/bin/python3', '-m', 'nexus', '--output-form...                         ^^^^^^^^^^^^^^^^^^^^\nAttributeError: \'Agent\' object has no attribute \'keep_workspace\'\n').returncode
+
+tests/test_e2e_installed_wheel.py:118: AssertionError
+_______ test_installed_direct_command_plan_mode_does_not_require_sandbox _______
+
+    def test_installed_direct_command_plan_mode_does_not_require_sandbox():
+        """Direct commands with --mode plan must NOT require bubblewrap."""
+        result = _nexus("--mode", "plan", "--output-format", "json", "!echo plan_mode_ok")
+        if sys.platform == "win32":
+            assert result.returncode in (0, 2)
+            return
+>       assert result.returncode == 0, (
+            f"!command in plan mode failed.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+        )
+E       AssertionError: !command in plan mode failed.
+E         stdout: {"type": "tool_call", "name": "run_process", "result": "\u2705 $ echo plan_mode_ok\n[sandbox=sandbox-exec network=off duration_ms=10]\nplan_mode_ok", "success": true}
+E         
+E         stderr: Traceback (most recent call last):
+E           File "<frozen runpy>", line 198, in _run_module_as_main
+E           File "<frozen runpy>", line 88, in _run_code
+E           File "/Users/ashishsingh/Desktop/product/nexus/__main__.py", line 6, in <module>
+E             main()
+E             ~~~~^^
+E           File "/Users/ashishsingh/Desktop/product/nexus/cli.py", line 1143, in main
+E             _close_and_exit(agent, 0 if success else 2)
+E             ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E           File "/Users/ashishsingh/Desktop/product/nexus/cli.py", line 1007, in _close_and_exit
+E             agent.close(discard_workspace=not agent.keep_workspace)
+E                                               ^^^^^^^^^^^^^^^^^^^^
+E         AttributeError: 'Agent' object has no attribute 'keep_workspace'
+E         
+E       assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/Library/Frameworks/Python.framework/Versions/3.13/bin/python3', '-m', 'nexus', '--mode', 'pla...                         ^^^^^^^^^^^^^^^^^^^^\nAttributeError: \'Agent\' object has no attribute \'keep_workspace\'\n').returncode
+
+tests/test_e2e_installed_wheel.py:133: AssertionError
+___________ test_installed_direct_command_dangerous_requires_confirm ___________
+
+    def test_installed_direct_command_dangerous_requires_confirm():
+        """Dangerous commands without --confirm-danger must be held as PENDING."""
+        result = _nexus("!rm -rf ./nonexistent_sentinel_dir_12345")
+        output = result.stdout + result.stderr
+        # Either the command was blocked by safety or returned pending confirmation
+>       assert result.returncode in (0, 2)
+E       AssertionError: assert 1 in (0, 2)
+E        +  where 1 = CompletedProcess(args=['/Library/Frameworks/Python.framework/Versions/3.13/bin/python3', '-m', 'nexus', '!rm -rf ./non...                         ^^^^^^^^^^^^^^^^^^^^\nAttributeError: \'Agent\' object has no attribute \'keep_workspace\'\n').returncode
+
+tests/test_e2e_installed_wheel.py:146: AssertionError
+______________________ test_installed_output_format_jsonl ______________________
+
+    def test_installed_output_format_jsonl():
+        """``--output-format jsonl '!echo hi'`` must produce newline-delimited JSON."""
+        if sys.platform == "win32":
+            pytest.skip("JSONL direct command on Windows may vary")
+        result = _nexus("--output-format", "jsonl", "!echo jsonl_test")
+>       assert result.returncode == 0
+E       AssertionError: assert 1 == 0
+E        +  where 1 = CompletedProcess(args=['/Library/Frameworks/Python.framework/Versions/3.13/bin/python3', '-m', 'nexus', '--output-form...                         ^^^^^^^^^^^^^^^^^^^^\nAttributeError: \'Agent\' object has no attribute \'keep_workspace\'\n').returncode
+
+tests/test_e2e_installed_wheel.py:198: AssertionError
+______________________ test_hosted_rate_limit_exhaustion _______________________
+
+    def test_hosted_rate_limit_exhaustion():
+        provider = FakeProvider([{"content": "hello"}], simulate_rate_limit=True)
+        engine = ExecutionEngine(provider, max_turns=5, model_id="fake")
+    
+>       events = list(engine.run(messages=[{"role": "user", "content": "hi"}]))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_e2e_providers.py:151: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+nexus/runtime/kernel.py:196: in run
+    yield from self.run_interactive(
+nexus/runtime/kernel.py:234: in run_interactive
+    stream = self.provider.chat(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tests.test_e2e_providers.FakeProvider object at 0x10b7c79d0>
+model_id = 'fake', messages = [{'role': 'user', 'content': 'hi'}], tools = None
+stream = True, max_tokens = None, temperature = None
+
+    def chat(self, model_id, messages, tools=None, stream=False, max_tokens=None, temperature=None):
+        if self.simulate_rate_limit and not self.rate_limit_raised:
+            self.rate_limit_raised = True
+>           raise Exception("429 Rate limit exceeded")
+E           Exception: 429 Rate limit exceeded
+
+tests/test_e2e_providers.py:26: Exception
+___________________ test_sandbox_credentials_leak_prevention ___________________
+
+tmp_path = PosixPath('/private/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/pytest-of-ashishsingh/pytest-674/test_sandbox_credentials_leak_0')
+
+    def test_sandbox_credentials_leak_prevention(tmp_path):
+        sandbox = SandboxRunner(workspace=str(tmp_path))
+    
+        # Mock environment
+        os.environ["NEXUS_API_KEY"] = "secret123"
+        os.environ["NEXUS_TOKEN"] = "token123"
+        os.environ["NEXUS_SECRET_SAUCE"] = "sauce123"
+        os.environ["NEXUS_SAFE_VAR"] = "safe123"
+        os.environ["PATH"] = "/bin:/usr/bin"
+        os.environ["PYTHONPATH"] = "/usr/lib/python"
+        os.environ["NODE_PATH"] = "/usr/lib/node"
+    
+        env = sandbox._filtered_env({})
+    
+        # Assert sensitive keys are rejected
+        assert "NEXUS_API_KEY" not in env
+        assert "NEXUS_TOKEN" not in env
+        assert "NEXUS_SECRET_SAUCE" not in env
+    
+        # Assert safe key is kept
+        assert "PATH" in env
+    
+        # Assert PYTHONPATH and NODE_PATH are not in the default filtered env
+>       assert "PYTHONPATH" not in env
+E       AssertionError: assert 'PYTHONPATH' not in {'TMPDIR': '/var/folders/3t/t_zmxljd573839_bvb_mkc180000gn/T/', 'LANG': 'C.UTF-8', 'PATH': '/bin:/usr/bin', 'NEXUS_SAFE_VAR': 'safe123', ...}
+
+tests/test_launch_blockers_regression.py:38: AssertionError
+_______________ test_sync_fallback_uses_fallback_provider_model ________________
+
+    def test_sync_fallback_uses_fallback_provider_model():
+        primary = FakeProvider("primary", fail_sync=RuntimeError("429"))
+        fallback = FakeProvider("fallback", model_id="fallback/frontier", sync_result="recovered")
+        router = FallbackRouter(primary, [fallback])
+    
+>       assert router.chat_sync("primary/frontier", []) == "recovered"
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_provider_chaos.py:140: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+nexus/providers/router.py:180: in chat_sync
+    return provider.chat_sync(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tests.test_provider_chaos.FakeProvider object at 0x10b7c17f0>
+model_id = 'primary/frontier', messages = [], tools = None, max_tokens = None
+temperature = None, kwargs = {}
+
+    def chat_sync(
+        self,
+        model_id,
+        messages,
+        tools=None,
+        max_tokens=None,
+        temperature=None,
+        **kwargs,
+    ):
+        self.requested_models.append(model_id)
+        if self.fail_sync:
+>           raise self.fail_sync
+E           RuntimeError: 429
+
+tests/test_provider_chaos.py:81: RuntimeError
+_________ test_stream_falls_back_when_primary_fails_before_first_chunk _________
+
+    def test_stream_falls_back_when_primary_fails_before_first_chunk():
+        def fail_before_output() -> Iterable[str]:
+            raise RuntimeError("connection reset")
+            yield "unreachable"
+    
+        primary = FakeProvider("primary", stream_factory=fail_before_output)
+        fallback = FakeProvider(
+            "fallback",
+            model_id="fallback/model",
+            stream_factory=lambda: iter(["recovered"]),
+        )
+        router = FallbackRouter(primary, [fallback])
+    
+>       assert list(router.chat("primary/model", [], stream=True)) == ["recovered"]
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_provider_chaos.py:157: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+nexus/providers/router.py:158: in _stream_with_fallback
+    for chunk in response:
+                 ^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def fail_before_output() -> Iterable[str]:
+>       raise RuntimeError("connection reset")
+E       RuntimeError: connection reset
+
+tests/test_provider_chaos.py:146: RuntimeError
+_________________ test_streaming_fallback_delivers_all_chunks __________________
+
+    def test_streaming_fallback_delivers_all_chunks():
+        """When primary fails before first chunk, fallback must deliver ALL chunks."""
+        def explode():
+            raise RuntimeError("stream refused")
+            yield "never"
+    
+        fallback_chunks = ["chunk1", "chunk2", "chunk3"]
+        primary = FakeProvider("primary", stream_factory=explode)
+        fallback = FakeProvider(
+            "fallback",
+            model_id="fb/model",
+            stream_factory=lambda: iter(fallback_chunks),
+        )
+        router = FallbackRouter(primary, [fallback])
+>       result = list(router.chat("primary/model", [], stream=True))
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_provider_chaos.py:253: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+nexus/providers/router.py:158: in _stream_with_fallback
+    for chunk in response:
+                 ^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+    def explode():
+>       raise RuntimeError("stream refused")
+E       RuntimeError: stream refused
+
+tests/test_provider_chaos.py:242: RuntimeError
+________________ test_fallback_records_all_attempted_providers _________________
+
+    def test_fallback_records_all_attempted_providers():
+        """The router must try all providers in chain before giving up."""
+        p1 = FakeProvider("p1", fail_sync=RuntimeError("p1 down"))
+        p2 = FakeProvider("p2", fail_sync=RuntimeError("p2 down"))
+        p3 = FakeProvider("p3", sync_result="ok")
+        router = FallbackRouter(p1, [p2, p3])
+>       result = router.chat_sync("p1/model", [{"role": "user", "content": "x"}])
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+tests/test_provider_chaos.py:304: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+nexus/providers/router.py:180: in chat_sync
+    return provider.chat_sync(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <tests.test_provider_chaos.FakeProvider object at 0x10fa0d650>
+model_id = 'p1/model', messages = [{'role': 'user', 'content': 'x'}]
+tools = None, max_tokens = None, temperature = None, kwargs = {}
+
+    def chat_sync(
+        self,
+        model_id,
+        messages,
+        tools=None,
+        max_tokens=None,
+        temperature=None,
+        **kwargs,
+    ):
+        self.requested_models.append(model_id)
+        if self.fail_sync:
+>           raise self.fail_sync
+E           RuntimeError: p1 down
+
+tests/test_provider_chaos.py:81: RuntimeError
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_e2e_installed_wheel.py:100: Install-instruction check only validated on Linux
+SKIPPED [1] tests/test_sandbox_stress.py:38: Linux-only assertion
+SKIPPED [1] tests/test_sandbox_stress.py:58: Windows-only assertion
+SKIPPED [1] tests/test_stress_concurrent.py:91: Native sandbox available — test only relevant for restricted backend
+FAILED tests/test_cli_coverage.py::test_cli_direct_command_real_execution - A...
+FAILED tests/test_e2e_installed_wheel.py::test_installed_direct_command_echo_json
+FAILED tests/test_e2e_installed_wheel.py::test_installed_direct_command_plan_mode_does_not_require_sandbox
+FAILED tests/test_e2e_installed_wheel.py::test_installed_direct_command_dangerous_requires_confirm
+FAILED tests/test_e2e_installed_wheel.py::test_installed_output_format_jsonl
+FAILED tests/test_e2e_providers.py::test_hosted_rate_limit_exhaustion - Excep...
+FAILED tests/test_launch_blockers_regression.py::test_sandbox_credentials_leak_prevention
+FAILED tests/test_provider_chaos.py::test_sync_fallback_uses_fallback_provider_model
+FAILED tests/test_provider_chaos.py::test_stream_falls_back_when_primary_fails_before_first_chunk
+FAILED tests/test_provider_chaos.py::test_streaming_fallback_delivers_all_chunks
+FAILED tests/test_provider_chaos.py::test_fallback_records_all_attempted_providers
+================== 11 failed, 454 passed, 4 skipped in 18.41s ==================

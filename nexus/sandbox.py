@@ -247,36 +247,78 @@ class SandboxRunner:
                 stderr=subprocess.PIPE,
                 **kwargs
             )
+            import threading
+            stdout_chunks = []
+            stderr_chunks = []
+            stdout_truncated = [False]
+            stderr_truncated = [False]
+
+            def read_stream(stream, chunks, truncated_flag, limit):
+                bytes_read = 0
+                while True:
+                    chunk = stream.read(8192)
+                    if not chunk:
+                        break
+                    bytes_read += len(chunk)
+                    if bytes_read > limit:
+                        truncated_flag[0] = True
+                        allowed = limit - (bytes_read - len(chunk))
+                        if allowed > 0:
+                            chunks.append(chunk[:allowed])
+                        try:
+                            if os.name == "posix":
+                                import signal
+                                os.killpg(process.pid, signal.SIGTERM)
+                            else:
+                                process.terminate()
+                        except OSError:
+                            pass
+                        # drain
+                        while stream.read(65536):
+                            pass
+                        break
+                    chunks.append(chunk)
+
+            stdout_thread = threading.Thread(target=read_stream, args=(process.stdout, stdout_chunks, stdout_truncated, spec.max_output_bytes), daemon=True)
+            stderr_thread = threading.Thread(target=read_stream, args=(process.stderr, stderr_chunks, stderr_truncated, spec.max_output_bytes), daemon=True)
+            
+            stdout_thread.start()
+            stderr_thread.start()
+
             try:
-                stdout_data, stderr_data = process.communicate(timeout=spec.timeout_seconds)
+                process.wait(timeout=spec.timeout_seconds)
                 completed_returncode = process.returncode
                 timed_out = False
             except subprocess.TimeoutExpired:
                 timed_out = True
                 if os.name == "posix":
                     try:
+                        import signal
                         os.killpg(process.pid, signal.SIGTERM)
                     except OSError:
                         pass
                     try:
-                        process.communicate(timeout=0.5)
+                        process.wait(timeout=0.5)
                     except subprocess.TimeoutExpired:
                         try:
+                            import signal
                             os.killpg(process.pid, signal.SIGKILL)
                         except OSError:
                             pass
                 else:
                     subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
-                stdout_data, stderr_data = process.communicate()
+                process.wait()
                 completed_returncode = None
             
+            stdout_thread.join()
+            stderr_thread.join()
+            
             duration = int((time.monotonic() - started) * 1000)
-            stdout, stdout_cut = self._decode_bounded(
-                stdout_data or b"", spec.max_output_bytes
-            )
-            stderr, stderr_cut = self._decode_bounded(
-                stderr_data or b"", spec.max_output_bytes
-            )
+            
+            stdout = b"".join(stdout_chunks).decode("utf-8", errors="replace").rstrip()
+            stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace").rstrip()
+            stdout_cut = stdout_truncated[0]
+            stderr_cut = stderr_truncated[0]
             
             if timed_out:
                 return CommandResult(

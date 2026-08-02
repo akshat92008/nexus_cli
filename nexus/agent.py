@@ -262,7 +262,9 @@ class Agent:
         enable_nova_fallback: bool = False,
         plugins_enabled: bool = False,
         tools_enabled: bool = True,
+        cancel_event: Any = None,
     ):
+        self.cancel_event = cancel_event
         self.source_working_dir = str(Path(working_dir or os.getcwd()).resolve())
         self.conversation_id = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         self.worktree: GitWorktreeSession | None = None
@@ -1897,6 +1899,26 @@ class Agent:
             return self.mcp.call_tool(name, args)
         else:
             return execute_tool(name, args)
+    def _snapshot_workspace(self) -> dict[str, float]:
+        """Snapshot the actual workspace before execution."""
+        snapshot = {}
+        ignored = {".git", ".nexusai", "node_modules", "venv", ".venv", "__pycache__", "history", ".pytest_cache"}
+        wd = Path(self.working_dir)
+        try:
+            for path in wd.rglob("*"):
+                if path.is_file() and not any(part in ignored for part in path.parts):
+                    snapshot[str(path)] = path.stat().st_mtime
+        except OSError:
+            pass
+        return snapshot
+
+    def _reconcile_workspace(self, before_snapshot: dict[str, float], after_snapshot: dict[str, float]) -> list[str]:
+        """Reconcile filesystem/Git changes after a potentially mutating command."""
+        changed = []
+        for path, mtime in after_snapshot.items():
+            if path not in before_snapshot or before_snapshot[path] != mtime:
+                changed.append(path)
+        return changed
 
     def _execute_tool_with_safety_impl(
         self,
@@ -2181,6 +2203,10 @@ class Agent:
             args["require_os_isolation"] = True
 
         # ── 5. Execute
+        before_snapshot = None
+        if name in ("run_command", "run_process", "process_run"):
+            before_snapshot = self._snapshot_workspace()
+
         result = self._dispatch_tool_execution(name, args)
 
         success = not result.startswith(("❌", "⏰", "⏸️"))
@@ -2192,6 +2218,23 @@ class Agent:
 
         if package_warning_text:
             result = package_warning_text + "\n" + result
+
+        # Reconcile filesystem changes for shell commands
+        if success and name in ("run_command", "run_process", "process_run") and before_snapshot is not None:
+            after_snapshot = self._snapshot_workspace()
+            mutations = self._reconcile_workspace(before_snapshot, after_snapshot)
+            for mutated_file in mutations:
+                self.history.record_change(mutated_file, name, None, f"Mutated implicitly by {name}")
+                verif, det, arts = verify_mutation("edit_file", {"path": mutated_file}, self.working_dir)
+                self.evidence.append(
+                    kind="file_mutation",
+                    claim=f"undeclared mutation detected by {name} in {mutated_file}",
+                    status="verified" if verif else "failed",
+                    tool=name,
+                    artifacts=arts,
+                    raw_output="",
+                    metadata={"verification": det},
+                )
 
         # ── Verified-completion evidence
         if success and name in mutation_tools:
@@ -2764,7 +2807,7 @@ class Agent:
 
         try:
             for event in events:
-                if self._cancelled:
+                if self._cancelled or (self.cancel_event and self.cancel_event.is_set()):
                     if live:
                         live.stop()
                     return "❌ Run cancelled by the user.", accumulated_events

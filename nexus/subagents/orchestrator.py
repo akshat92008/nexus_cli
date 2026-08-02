@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from nexus.subagents.base import BaseSubagent, SubagentResult, SubagentStatus
 
@@ -201,9 +202,11 @@ class SubagentOrchestrator:
         by_agent: dict[int, SubagentResult] = {}
 
         if read_only:
+            import threading
+            cancel_event = threading.Event()
             executor = ThreadPoolExecutor(max_workers=min(self.max_workers, len(read_only)))
             future_to_subagent = {
-                executor.submit(self._execute_subagent, subagent): subagent
+                executor.submit(self._execute_subagent, subagent, cancel_event): subagent
                 for subagent in read_only
             }
             try:
@@ -214,9 +217,11 @@ class SubagentOrchestrator:
                     except LookupError as exc:
                         by_agent[id(subagent)] = self._failed_result(subagent, exc)
             except FuturesTimeoutError:
+                cancel_event.set()
                 for future, subagent in future_to_subagent.items():
                     if id(subagent) not in by_agent:
-                        future.cancel()
+                        # Wait for them to exit cooperatively, or just record them as timed out.
+                        # We don't block here.
                         by_agent[id(subagent)] = self._failed_result(
                             subagent,
                             TimeoutError(f"Subagent exceeded the {self.timeout}s team timeout."),
@@ -261,7 +266,7 @@ class SubagentOrchestrator:
             errors=[str(error)],
         )
 
-    def _execute_subagent(self, subagent: BaseSubagent) -> SubagentResult:
+    def _execute_subagent(self, subagent: BaseSubagent, cancel_event: Any = None) -> SubagentResult:
         """Execute a single subagent using a fresh Agent instance."""
         start_time = time.monotonic()
         started_at = datetime.now().isoformat()
@@ -299,6 +304,7 @@ class SubagentOrchestrator:
                 allowed_tools=list(subagent.allowed_tools),
                 max_turns=subagent.max_iterations,
                 workspace_isolation=False,
+                cancel_event=cancel_event,
             )
 
             # Override system prompt with subagent's prompt

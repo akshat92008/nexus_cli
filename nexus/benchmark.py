@@ -440,9 +440,19 @@ class BenchmarkRunner:
                 ),
             )
             before = _fingerprints(workspace)
-            env = dict(os.environ)
-            env["PYTHONPATH"] = str(Path(__file__).resolve().parent.parent)
-            env["NEXUS_HOME"] = str(state_root)
+            env = {
+                "PYTHONPATH": str(Path(__file__).resolve().parent.parent),
+                "NEXUS_HOME": str(state_root),
+            }
+            allowed_keys = [
+                "NEXUS_MODEL", "NEXUS_OPENAI_API_KEY", "NEXUS_ANTHROPIC_API_KEY",
+                "OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "NEXUS_GEMINI_API_KEY",
+                "NEXUS_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"
+            ]
+            for key in allowed_keys:
+                if key in os.environ:
+                    env[key] = os.environ[key]
+
             attempts: list[dict[str, Any]] = []
             run_ids: list[str] = []
             resume_from = ""
@@ -457,27 +467,33 @@ class BenchmarkRunner:
             for attempt_number in range(1, task.max_attempts + 1):
                 command = self._agent_command(task, workspace, resume_from=resume_from)
                 attempt_started = time.monotonic()
-                try:
-                    process = subprocess.run(
-                        command,
-                        cwd=workspace,
-                        env=env,
-                        capture_output=True,
-                        text=True,
-                        timeout=task.timeout_seconds,
-                    )
-                    final_process = {
-                        "returncode": process.returncode,
-                        "stdout": process.stdout,
-                        "stderr": process.stderr,
-                        "timed_out": False,
-                    }
-                except subprocess.TimeoutExpired as exc:
+                from nexus.process_gateway import ProcessExecutionGateway, ProcessRequest
+                request = ProcessRequest.create(
+                    purpose="benchmark_agent",
+                    command=command,
+                    workspace=Path.cwd(), # Use trusted cwd to prevent module shadowing
+                    trust_level="trusted",
+                    timeout_seconds=task.timeout_seconds,
+                    env_additions=env,
+                    isolation_policy="optional",
+                    network_policy="allow",
+                    allowed_sensitive_env_keys=allowed_keys,
+                )
+                result = ProcessExecutionGateway.run(request)
+                
+                if result.timed_out:
                     final_process = {
                         "returncode": None,
-                        "stdout": _as_text(exc.stdout),
-                        "stderr": _as_text(exc.stderr),
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
                         "timed_out": True,
+                    }
+                else:
+                    final_process = {
+                        "returncode": result.exit_code,
+                        "stdout": result.stdout,
+                        "stderr": result.stderr,
+                        "timed_out": False,
                     }
 
                 final_payload = _last_json_object(final_process["stdout"])
@@ -530,15 +546,17 @@ class BenchmarkRunner:
             ]
             missing_expected = [path for path in task.expected_changed_files if path not in changed]
             checks = []
+            from nexus.process_gateway import ProcessExecutionGateway, ProcessRequest
             for argv in task.verification:
-                result = SandboxRunner(workspace).run(
-                    CommandSpec.create(
-                        argv,
-                        workspace,
-                        timeout_seconds=min(task.timeout_seconds, 300),
-                        network=False,
-                    )
+                req = ProcessRequest.create(
+                    purpose="benchmark_verification",
+                    command=argv,
+                    workspace=workspace,
+                    timeout_seconds=min(task.timeout_seconds, 300),
+                    network_policy="deny",
+                    isolation_policy="required",
                 )
+                result = ProcessExecutionGateway.run(req)
                 checks.append(result.to_dict())
             run_report = final_payload.get("run", {}) if isinstance(final_payload, dict) else {}
             quality_gates = _quality_gates(

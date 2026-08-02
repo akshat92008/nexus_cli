@@ -803,10 +803,23 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
         if not trust_parts or not trust_parts[0]:
             ui.console.print(agent.get_trust_summary())
         elif len(trust_parts) == 2 and trust_parts[0] in ("approve", "reject"):
+            target_path = Path(trust_parts[1]).expanduser().resolve()
+            expected_digest = None
+            if target_path.name == "plugin.json" or (target_path.is_dir() and (target_path / "plugin.json").is_file()):
+                from nexus.plugins.manifest import PluginManifest, PluginLoadError
+                from nexus.plugins.worker import compute_plugin_hash
+                manifest_file = target_path if target_path.name == "plugin.json" else target_path / "plugin.json"
+                try:
+                    manifest = PluginManifest.from_file(manifest_file)
+                    expected_digest = compute_plugin_hash(manifest_file.parent, manifest)
+                    target_path = manifest_file
+                except Exception:
+                    pass
+
             decision = (
-                agent.trust.approve(trust_parts[1])
+                agent.trust.approve(str(target_path), expected_digest=expected_digest)
                 if trust_parts[0] == "approve"
-                else agent.trust.reject(trust_parts[1])
+                else agent.trust.reject(str(target_path), expected_digest=expected_digest)
             )
             agent.project_mem.reload()
             agent._load_rules_and_preferences()

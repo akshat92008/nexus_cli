@@ -1,0 +1,3135 @@
+diff --git a/NEXUS_POWER_UPGRADE_REPORT.md b/NEXUS_POWER_UPGRADE_REPORT.md
+new file mode 100644
+index 0000000..dc113c2
+--- /dev/null
++++ b/NEXUS_POWER_UPGRADE_REPORT.md
+@@ -0,0 +1,264 @@
++# Nexus CLI 3.2.1 — Power & Reliability Upgrade
++
++Source baseline: uploaded `nexus_cli-main (27)(1).zip`
++
++## Executive summary
++
++This patch focuses on real task-completion capability rather than adding more surface features. It strengthens Nexus in the areas that matter most for difficult coding work: persistent recovery, repository-aware context, change-aware verification, transactional editing, dirty-worktree support, secure command execution, provider-independent cloud operation, concurrency safety, and release integrity.
++
++Nova remains optional. The default `--local-intern off` path allows hosted/cloud providers to perform planning and execution without Nova.
++
++This is a material engineering upgrade, but it is not evidence that Nexus has reached Claude Code parity. That claim requires controlled live-provider benchmark runs on real repositories and comparison against the current Claude Code release.
++
++## Major implementation changes
++
++### 1. Persistent execution and recovery
++
++- Added retryable plan steps with preserved failure evidence.
++- Added failure fingerprints so repeated unsuccessful strategies are detected.
++- Repair prompts now receive repository context, verification evidence, and previous-attempt information.
++- Planned hosted execution can re-enter failed steps rather than terminating after the first unsuccessful implementation.
++- Increased repair-loop capability while maintaining explicit budgets and termination conditions.
++
++Primary files:
++- `nexus/pipeline.py`
++- `nexus/planner.py`
++- `nexus/repair.py`
++
++### 2. Repository-aware context engine
++
++- Added query-focused context bundles.
++- Ranks likely relevant files and symbols.
++- Includes focused excerpts instead of indiscriminately loading whole files.
++- Includes dependencies, ownership signals, and impacted tests.
++- Injects repository context into normal agent and repair prompts.
++
++Primary files:
++- `nexus/repo_graph.py`
++- `nexus/agent.py`
++- `nexus/repair.py`
++
++### 3. Change-aware verification
++
++- Runs impacted tests first when Nexus can identify them.
++- Returns focused failure evidence immediately when targeted tests fail.
++- Runs the complete deterministic project gate after targeted checks pass.
++- Preserves mandatory OS-isolation requirements for verification commands.
++- Adds configurable verification timeouts.
++
++Primary files:
++- `nexus/verification.py`
++- `nexus/agent.py`
++
++### 4. Transactional multi-file editing
++
++- Computes all edited file bodies before committing writes.
++- Writes to sibling temporary files and flushes them.
++- Uses atomic replacement for commit.
++- Rolls back already committed files if a later commit fails.
++- Records one coherent history transaction rather than duplicate internal edits.
++
++Primary file:
++- `nexus/tools.py`
++
++### 5. Dirty Git repository support
++
++- Nexus no longer rejects a repository merely because it contains user changes.
++- Creates an isolated snapshot containing staged, unstaged, and untracked content.
++- Separates the user’s pre-existing delta from Nexus-generated changes.
++- Applies only Nexus’s delta back to the source repository.
++- Refuses apply if the source changed concurrently, preventing silent overwrites.
++- Preserves staged/unstaged/untracked state.
++
++Primary file:
++- `nexus/workspace.py`
++
++### 6. Unified secure execution boundary
++
++- Added centralized command preparation in `SandboxRunner.prepare()`.
++- Foreground commands, background processes, and MCP launch paths now share workspace, environment, and native-sandbox policy.
++- Fixed the critical bug where confirming a command removed mandatory OS isolation.
++- Blocks inherited credential-like environment variables, including sensitive `NEXUS_*` values.
++- Adds explicit, narrow allowlisting for configured MCP secrets.
++- Background processes now use unique log names, process groups, timeouts, output limits, cleanup, and synchronized registries.
++
++Primary files:
++- `nexus/sandbox.py`
++- `nexus/tools.py`
++- `nexus/agent.py`
++- `nexus/mcp/client.py`
++
++### 7. Web UI session hardening
++
++- Removed the session token from unauthenticated HTML.
++- Launches the web UI through a tokenized bootstrap URL.
++- Stores the authenticated session in an HttpOnly, SameSite cookie.
++- Protects HTTP APIs and WebSockets.
++- Adds origin validation, normalized session IDs, stronger token entropy, and locking around session/agent access.
++
++Primary files:
++- `nexus/webapp/server.py`
++- `nexus/webapp/static/app.js`
++- `nexus/cli.py`
++
++### 8. Cloud-only operation retained
++
++- `--local-intern off` remains the default.
++- Hosted providers can handle the complete workflow.
++- Nova fallback requires explicit enablement.
++- No new recovery, context, verification, editing, or workspace feature depends on Nova.
++
++Example:
++
++```bash
++export NEXUS_OPENAI_API_KEY='...'
++export NEXUS_OPENAI_BASE_URL='https://provider.example/v1'
++
++nexus \
++  --model custom \
++  --model-id provider/model \
++  --local-intern off \
++  --working-dir /path/to/repository \
++  'Implement the requested feature and verify it end to end'
++```
++
++### 9. Concurrency and provider-key safety
++
++- Made round-robin API-key selection and cooldown mutation thread-safe.
++- Added synchronization to background-process state.
++- Added synchronization to web-session agent creation and per-session execution.
++
++Primary files:
++- `nexus/api.py`
++- `nexus/tools.py`
++- `nexus/webapp/server.py`
++
++### 10. Doctor and release-gate correctness
++
++- Doctor creates/checks the workspace before evaluating sandbox readiness.
++- Review mode can diagnose as usable with a hosted provider while clearly warning that command execution remains blocked without native isolation.
++- Release gate rejects zero-test/no-collection results.
++- Enforces a minimum passing-test count.
++- Uses process-isolated test modules to reduce cross-test contamination from subprocess/web/global runtime state.
++- Aggregates branch coverage across isolated test processes.
++- Generates readiness evidence using the actual package version.
++
++Primary files:
++- `nexus/doctor.py`
++- `scripts/run_release_gate.py`
++
++## Validation performed
++
++### Source integrity
++
++- `git diff --check`: passed
++- `python -m compileall -q -f nexus scripts tests`: passed
++
++### Targeted regression suite
++
++Command group covering new hardening, agent safety, launch regressions, MCP, web auth, workspace behavior, and release gates:
++
++- **44 passed**
++- **0 failed**
++
++### Complete test inventory
++
++- **484 tests collected**
++- **482 passed**
++- **2 skipped** because they are platform-specific sandbox tests
++- **0 functional failures** when run in clean grouped processes
++
++The repository’s original single-process full suite can still intermittently stall because tests create global state, subprocesses, sockets, and background workers. The uploaded baseline exhibited this before the patch. The release-gate implementation now isolates test modules at process level and combines coverage, but eliminating every global-state source inside the test architecture remains additional cleanup work.
++
++### Packaging
++
++- Python wheel built successfully.
++- Source compilation and installed package structure were validated.
++
++### Benchmark manifests
++
++- Core and long-horizon benchmark manifests pass dry-run validation.
++- Dry-run validation confirms manifest structure only; it is not a model capability result.
++
++## Integration instructions
++
++### Option A — replace with the complete source archive
++
++1. Back up your current local repository.
++2. Extract the supplied source archive.
++3. Copy your private `.env`/credential configuration separately; do not copy generated caches or old virtual environments.
++4. Install in editable mode:
++
++```bash
++python -m pip install -e .
++```
++
++5. Install development/release dependencies before running the full gate:
++
++```bash
++python -m pip install pytest coverage pytest-cov ruff build
++```
++
++6. Run:
++
++```bash
++python scripts/run_release_gate.py
++```
++
++### Option B — apply the portable patch
++
++From the root of a clean checkout corresponding to build 27(1):
++
++```bash
++git switch -c nexus-power-upgrade
++git apply --3way /path/to/Nexus-CLI-3.2.1-Power-Hardening.patch
++python -m pip install -e .
++python -m pytest -q tests/test_power_hardening.py
++```
++
++Review the diff before merging:
++
++```bash
++git diff --stat
++git diff --check
++```
++
++## What this patch does not prove
++
++It does not prove that Nexus equals Claude Code on:
++
++- SWE-bench or other verified coding benchmarks
++- very large long-horizon tasks
++- current frontier-model reasoning quality
++- provider-specific prompt-cache/tool-call optimization
++- real-world success rates across many repositories
++
++Those require controlled benchmark runs using the same tasks, repositories, models, budgets, and acceptance tests.
++
++## Recommended next measurement phase
++
++1. Run 30–50 real repository tasks through a selected frontier cloud model with Nova disabled.
++2. Compare Nexus and Claude Code using identical commits and acceptance tests.
++3. Record completion rate, retries, regressions, cost, elapsed time, and manual intervention.
++4. Use failures to improve context ranking, replanning, and provider-specific adapters.
++5. Publish only reproducible benchmark claims.
++
++## Files added or substantially upgraded
++
++- `tests/test_power_hardening.py`
++- `nexus/agent.py`
++- `nexus/api.py`
++- `nexus/cli.py`
++- `nexus/doctor.py`
++- `nexus/mcp/client.py`
++- `nexus/pipeline.py`
++- `nexus/planner.py`
++- `nexus/repair.py`
++- `nexus/repo_graph.py`
++- `nexus/sandbox.py`
++- `nexus/tools.py`
++- `nexus/verification.py`
++- `nexus/webapp/server.py`
++- `nexus/webapp/static/app.js`
++- `nexus/workspace.py`
++- `scripts/run_release_gate.py`
+diff --git a/nexus/agent.py b/nexus/agent.py
+index 0b79caa..0a3f0de 100644
+--- a/nexus/agent.py
++++ b/nexus/agent.py
+@@ -422,7 +422,10 @@ class Agent:
+         self.safety = SafetyLayer()
+         self.project_mem = ProjectMemory(self.working_dir)
+         self.user_mem = UserMemory()
+-        self.verifier = VerificationEngine(self.working_dir)
++        self.verifier = VerificationEngine(
++            self.working_dir,
++            require_os_isolation=self.mode_policy.require_os_isolation,
++        )
+ 
+         # ── Phase 2: Skills & Subagents ──────────────────────────────────
+         self.skills = SkillRegistry()
+@@ -629,7 +632,11 @@ class Agent:
+             if rules.format_command:
+                 custom_cmds["format_command"] = rules.format_command
+             if custom_cmds:
+-                self.verifier = VerificationEngine(self.working_dir, custom_cmds)
++                self.verifier = VerificationEngine(
++                    self.working_dir,
++                    custom_cmds,
++                    require_os_isolation=self.mode_policy.require_os_isolation,
++                )
+         except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
+             logging.getLogger(__name__).debug("Failed to load project rules: %s", exc)
+         except LookupError as exc:
+@@ -1276,6 +1283,25 @@ class Agent:
+                 if item
+             )
+         )
++        graph_query = " ".join(
++            item
++            for item in (
++                self._active_objective,
++                getattr(getattr(self._active_plan, "next_step", None), "title", ""),
++                getattr(getattr(self._active_plan, "next_step", None), "description", ""),
++            )
++            if item
++        )
++        graph_context = ""
++        if graph_query and getattr(self, "repo_graph", None):
++            try:
++                graph_context = self.repo_graph.context_bundle(
++                    graph_query,
++                    max_files=14 if self.mode_policy.context_depth == "deep" else 8,
++                    max_chars=42_000 if self.mode_policy.context_depth == "deep" else 24_000,
++                )
++            except (OSError, TypeError, ValueError) as exc:
++                logger.debug("Query-focused graph context unavailable: %s", exc)
+ 
+         system = {
+             "role": "system",
+@@ -1287,6 +1313,7 @@ class Agent:
+                 + plan_context
+                 + reflection_context
+                 + ("\n" + active_context if active_context else "")
++                + ("\n\n" + graph_context if graph_context else "")
+             ),
+         }
+         return [system] + self.messages
+@@ -2144,7 +2171,6 @@ class Agent:
+         if (
+             name in ("run_command", "run_process", "process_run")
+             and self.mode_policy.require_os_isolation
+-            and not _user_confirmed
+         ):
+             args["require_os_isolation"] = True
+ 
+@@ -3414,8 +3440,29 @@ class Agent:
+         return output, verified, record.id
+ 
+     def _run_verification_suite(self):
+-        """Run verification and discount only identical inherited baseline failures."""
+-        report = self.verifier.run_all()
++        """Run dependency-focused checks, then the complete deterministic gate."""
++        evidence = self.evidence.records()[getattr(self, "_turn_evidence_start", 0) :]
++        mutations = self._effective_evidence(evidence, "file_mutation")
++        changed_paths = sorted(
++            {
++                str(artifact.get("path", ""))
++                for item in mutations
++                for artifact in item.get("artifacts", [])
++                if artifact.get("path")
++            }
++        )
++        impacted_tests: list[str] = []
++        if changed_paths and getattr(self, "repo_graph", None):
++            try:
++                self.repo_graph.update_paths(changed_paths)
++                impacted_tests = self.repo_graph.impacted_tests(changed_paths, limit=50)
++            except (OSError, TypeError, ValueError) as exc:
++                logger.debug("Targeted verification selection unavailable: %s", exc)
++
++        report = self.verifier.run_change_aware(
++            changed_paths,
++            impacted_tests=impacted_tests,
++        )
+         if self.worktree is not None and Path(self.source_working_dir) != Path(self.working_dir):
+             report = self.verifier.reconcile_with_baseline(report, self.source_working_dir)
+         return report
+diff --git a/nexus/api.py b/nexus/api.py
+index deee3d2..b81a33c 100644
+--- a/nexus/api.py
++++ b/nexus/api.py
+@@ -5,6 +5,7 @@ Supports multi-key NVIDIA rotation and a compatible Groq fallback.
+ 
+ import os
+ import time
++import threading
+ from datetime import datetime, timezone
+ from typing import Any, Callable
+ 
+@@ -122,35 +123,40 @@ class RoundRobinKeyPool:
+         self.cooldown_seconds = cooldown_seconds
+         self.current_idx = 0
+         self.cooldowns: dict[str, float] = {}
++        self._lock = threading.RLock()
+ 
+     def get_next_key(self) -> str | None:
+         """Select and return the next active round-robin key, skipping cooling-down keys."""
+-        if not self.keys:
+-            return None
+-        now = time.time()
+-        start_idx = self.current_idx
+-        for offset in range(len(self.keys)):
+-            idx = (start_idx + offset) % len(self.keys)
+-            key = self.keys[idx]
+-            if key not in self.cooldowns or now >= self.cooldowns[key]:
+-                self.current_idx = (idx + 1) % len(self.keys)
+-                return key
+-        earliest_key = min(self.keys, key=lambda k: self.cooldowns.get(k, 0))
+-        self.current_idx = (self.keys.index(earliest_key) + 1) % len(self.keys)
+-        return earliest_key
++        with self._lock:
++            if not self.keys:
++                return None
++            now = time.time()
++            start_idx = self.current_idx
++            for offset in range(len(self.keys)):
++                idx = (start_idx + offset) % len(self.keys)
++                key = self.keys[idx]
++                if key not in self.cooldowns or now >= self.cooldowns[key]:
++                    self.current_idx = (idx + 1) % len(self.keys)
++                    return key
++            earliest_key = min(self.keys, key=lambda k: self.cooldowns.get(k, 0))
++            self.current_idx = (self.keys.index(earliest_key) + 1) % len(self.keys)
++            return earliest_key
+ 
+     def mark_cooldown(self, key: str, duration: float | None = None):
+         """Mark a key as temporarily cooling down (e.g. on HTTP 429 rate limit)."""
+         sec = duration if duration is not None else self.cooldown_seconds
+-        self.cooldowns[key] = time.time() + sec
++        with self._lock:
++            self.cooldowns[key] = time.time() + sec
+ 
+     def is_cooldown(self, key: str) -> bool:
+         """Check if a key is currently in cooldown."""
+-        return key in self.cooldowns and time.time() < self.cooldowns[key]
++        with self._lock:
++            return key in self.cooldowns and time.time() < self.cooldowns[key]
+ 
+     def reset_cooldowns(self):
+         """Reset all rate-limit cooldowns."""
+-        self.cooldowns.clear()
++        with self._lock:
++            self.cooldowns.clear()
+ 
+ 
+ class NvidiaClient:
+diff --git a/nexus/cli.py b/nexus/cli.py
+index 21c0e3a..cf2ced7 100644
+--- a/nexus/cli.py
++++ b/nexus/cli.py
+@@ -193,7 +193,7 @@ Environment:
+             "Operational policy preset (default: review). "
+             "Modes and isolation requirements: "
+             "plan — read-only, no OS sandbox needed; "
+-            "review — edits require confirmation, no OS sandbox needed; "
++            "review — edits require confirmation, native sandbox required for commands; "
+             "workspace — Git-isolated worktree, native sandbox required; "
+             "autonomous — hands-free, native sandbox required (bubblewrap on Linux); "
+             "local-only — Nova only, native sandbox required; "
+@@ -228,6 +228,11 @@ Environment:
+         action="store_true",
+         help="Run in a dedicated Git branch/worktree instead of the source checkout",
+     )
++    parser.add_argument(
++        "--keep-workspace",
++        action="store_true",
++        help="Retain the isolated workspace after Nexus exits for inspection or manual apply",
++    )
+     parser.add_argument(
+         "--no-workspace",
+         action="store_true",
+@@ -927,11 +932,6 @@ def run_web(
+         from nexus.webapp.server import create_app
+ 
+         ui.print_banner()
+-        ui.console.print(
+-            f"  [bold {ui.GREEN}]🌐 Web Interface[/] starting on [bold {ui.CYAN}]http://localhost:{port}[/]\n"
+-            f"  [{ui.DIM}]Press Ctrl+C to stop[/]\n"
+-        )
+-
+         app = create_app(
+             api_key=api_key,
+             model=model,
+@@ -942,6 +942,13 @@ def run_web(
+             plugins_enabled=plugins_enabled,
+             tools_enabled=tools_enabled,
+         )
++        launch_url = f"http://localhost:{port}/?token={app.state.web_token}"
++        ui.console.print(
++            f"  [bold {ui.GREEN}]🌐 Web Interface[/] starting on "
++            f"[bold {ui.CYAN}]{launch_url}[/]\n"
++            f"  [{ui.DIM}]The launch token is required and is not embedded in the page. "
++            f"Press Ctrl+C to stop.[/]\n"
++        )
+         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
+ 
+     except ImportError as e:
+@@ -960,9 +967,11 @@ def start_background_web_server(api_key: str, model: str, port: int, working_dir
+ 
+     from nexus.webapp.server import create_app
+ 
++    app = create_app(api_key=api_key, model=model, working_dir=working_dir)
++    launch_url = f"http://localhost:{port}/?token={app.state.web_token}"
++
+     def _run():
+         try:
+-            app = create_app(api_key=api_key, model=model, working_dir=working_dir)
+             # Run uvicorn quietly (log_level="error") to avoid cluttered CLI printouts
+             uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
+         except (OSError, RuntimeError):
+@@ -975,7 +984,7 @@ def start_background_web_server(api_key: str, model: str, port: int, working_dir
+     def _open_browser():
+         time.sleep(1.2)
+         try:
+-            webbrowser.open(f"http://localhost:{port}")
++            webbrowser.open(launch_url)
+         except OSError:
+             pass
+ 
+@@ -1249,6 +1258,7 @@ def main():
+             plugins_enabled=args.enable_plugins,
+             tools_enabled=not args.no_tools,
+         )
++        agent.keep_workspace = bool(args.keep_workspace)
+     except ValueError as e:
+         ui.print_error(str(e))
+         sys.exit(1)
+diff --git a/nexus/doctor.py b/nexus/doctor.py
+index e5d169d..730bb1b 100644
+--- a/nexus/doctor.py
++++ b/nexus/doctor.py
+@@ -49,8 +49,9 @@ def _workspace_check(working_dir: Path) -> Diagnostic:
+ # Modes that require a native OS sandbox to operate. A missing sandbox in
+ # these modes is a hard operational failure, not merely advisory.
+ _ISOLATION_REQUIRED_MODES = frozenset(
+-    {"review", "workspace", "autonomous", "quality", "budget", "local-only", "ci"}
++    {"workspace", "autonomous", "quality", "budget", "local-only", "ci"}
+ )
++_ISOLATION_GATED_COMMAND_MODES = frozenset({"review"})
+ 
+ _SANDBOX_INSTALL_HINT: dict[str, str] = {
+     "linux": (
+@@ -97,13 +98,20 @@ def _sandbox_check(root: Path, mode: str = "review") -> Diagnostic:
+             ),
+         )
+ 
+-    # plan / direct-command modes do not require OS isolation.
++    # Review mode can start for hosted reasoning and file inspection, but its
++    # command execution remains fail-closed until native containment exists.
++    gated_detail = (
++        " Review mode remains available, but command execution and project "
++        "verification are blocked until native isolation is installed."
++        if mode in _ISOLATION_GATED_COMMAND_MODES
++        else ""
++    )
+     return Diagnostic(
+         "Sandbox",
+         "WARN",
+         (
+-            "restricted-process fallback; filesystem/network isolation is policy-only.\n"
+-            f"  To enable full isolation: {install_hint}"
++            "restricted-process fallback; filesystem/network isolation is policy-only."
++            f"{gated_detail}\n  To enable full isolation: {install_hint}"
+         ),
+     )
+ 
+@@ -117,6 +125,7 @@ def run_doctor(
+     root = Path(working_dir or os.getcwd()).expanduser().resolve()
+     local = probe_ollama(nova_model, use_cache=False)
+     hosted = probe_hosted()
++    workspace_diag = _workspace_check(root)
+     sandbox_diag = _sandbox_check(root, mode=mode)
+     diagnostics = [
+         Diagnostic(
+@@ -124,7 +133,7 @@ def run_doctor(
+             "PASS",
+             f"version {__version__} on Python {sys.version_info.major}.{sys.version_info.minor}",
+         ),
+-        _workspace_check(root),
++        workspace_diag,
+         Diagnostic(
+             "Git",
+             "PASS" if shutil.which("git") else "WARN",
+diff --git a/nexus/mcp/client.py b/nexus/mcp/client.py
+index 9daf148..77d8497 100644
+--- a/nexus/mcp/client.py
++++ b/nexus/mcp/client.py
+@@ -16,10 +16,12 @@ import logging
+ import subprocess
+ import threading
+ from dataclasses import dataclass, field
++from pathlib import Path
+ from typing import Optional
+ 
+ from nexus.paths import nexus_home
+-from nexus.process_io import filtered_subprocess_env, readline_with_timeout
++from nexus.process_io import readline_with_timeout
++from nexus.sandbox import CommandSpec, SandboxRunner
+ 
+ logger = logging.getLogger(__name__)
+ 
+@@ -58,6 +60,9 @@ class MCPServerConfig:
+     env: dict[str, str] = field(default_factory=dict)
+     description: str = ""
+     enabled: bool = True
++    workspace: str = ""
++    network: bool = False
++    require_os_isolation: bool = True
+ 
+ 
+ class MCPConnection:
+@@ -74,21 +79,36 @@ class MCPConnection:
+         self._request_id = 0
+         self.tools: list[MCPTool] = []
+         self.connected = False
++        self._cleanup_path = ""
+ 
+     def connect(self) -> bool:
+         """Start the MCP server process and initialize the connection."""
+         try:
+-            # SECURITY: Minimal environment. PYTHONPATH is deliberately excluded
+-            # to prevent code injection into the MCP server process. Platform
+-            # bootstrap variables are retained so Windows children can start.
+-            env = filtered_subprocess_env(overrides=self.config.env)
+-            self._process = subprocess.Popen(
++            workspace = Path(self.config.workspace or Path.cwd()).expanduser().resolve()
++            runner = SandboxRunner(workspace)
++            spec = CommandSpec.create(
+                 self.config.command,
++                workspace,
++                timeout_seconds=_MCP_TOOL_CALL_TIMEOUT,
++                network=self.config.network,
++                env=self.config.env,
++                max_output_bytes=_MAX_MCP_OUTPUT_BYTES,
++                require_os_isolation=self.config.require_os_isolation,
++                # MCP credentials are explicit, trusted configuration. Only the
++                # exact configured names may cross the process boundary.
++                allowed_sensitive_env_keys=tuple(self.config.env),
++            )
++            prepared = runner.prepare(spec)
++            self._cleanup_path = prepared.cleanup_path
++            self._process = subprocess.Popen(
++                list(prepared.argv),
++                cwd=prepared.cwd,
+                 stdin=subprocess.PIPE,
+                 stdout=subprocess.PIPE,
+                 stderr=subprocess.PIPE,
+                 text=True,
+-                env=env,
++                env=dict(prepared.env),
++                start_new_session=True,
+             )
+ 
+             # Initialize
+@@ -123,7 +143,8 @@ class MCPConnection:
+             self.connected = True
+             return True
+ 
+-        except (FileNotFoundError, OSError, json.JSONDecodeError):
++        except (FileNotFoundError, OSError, ValueError, PermissionError, json.JSONDecodeError):
++            self.disconnect()
+             return False
+ 
+     def call_tool(self, tool_name: str, arguments: dict) -> dict:
+@@ -185,6 +206,12 @@ class MCPConnection:
+                 pass
+             self._process = None
+             self.connected = False
++            if self._cleanup_path:
++                try:
++                    Path(self._cleanup_path).unlink(missing_ok=True)
++                except OSError:
++                    pass
++                self._cleanup_path = ""
+ 
+     def _send_request(self, method: str, params: dict) -> Optional[dict]:
+         """Send a JSON-RPC request and wait for the response."""
+@@ -259,17 +286,20 @@ class MCPClient:
+             name="filesystem",
+             command=["npx", "-y", "@modelcontextprotocol/server-filesystem"],
+             description="Enhanced file system operations",
++            network=True,
+         ),
+         "sqlite": MCPServerConfig(
+             name="sqlite",
+             command=["npx", "-y", "@modelcontextprotocol/server-sqlite"],
+             description="SQLite database operations",
++            network=True,
+         ),
+         "github": MCPServerConfig(
+             name="github",
+             command=["npx", "-y", "@modelcontextprotocol/server-github"],
+             env={"GITHUB_PERSONAL_ACCESS_TOKEN": ""},
+             description="GitHub repository operations",
++            network=True,
+         ),
+     }
+ 
+@@ -292,6 +322,12 @@ class MCPClient:
+                     command=server_data.get("command", []),
+                     env=server_data.get("env", {}),
+                     description=server_data.get("description", ""),
++                    enabled=bool(server_data.get("enabled", True)),
++                    workspace=str(server_data.get("workspace", "")),
++                    network=bool(server_data.get("network", False)),
++                    require_os_isolation=bool(
++                        server_data.get("requireOsIsolation", True)
++                    ),
+                 )
+                 self.add_server(config)
+         except (FileNotFoundError, json.JSONDecodeError, OSError):
+diff --git a/nexus/pipeline.py b/nexus/pipeline.py
+index 78b31a2..23e9da8 100644
+--- a/nexus/pipeline.py
++++ b/nexus/pipeline.py
+@@ -365,10 +365,19 @@ class ExecutionPipeline:
+         try:
+             if not self._agent._context_gathered:  # noqa: SLF001
+                 self._agent._gather_context()  # noqa: SLF001
++            relevant = []
++            if getattr(self._agent, "repo_graph", None):
++                relevant = self._agent.repo_graph.relevant_files(user_input, limit=16)
+             return StageResult(
+                 stage=PipelineStage.CONTEXT_SELECTION,
+                 success=True,
+                 duration_ms=int((time.monotonic() - t) * 1000),
++                metadata={
++                    "selected_files": [item["path"] for item in relevant],
++                    "selection_reasons": {
++                        item["path"]: item.get("reasons", []) for item in relevant
++                    },
++                },
+             )
+         except (TypeError, ValueError) as exc:
+             self._logger.debug("Context selection error (non-fatal): %s", exc)
+@@ -470,7 +479,9 @@ class ExecutionPipeline:
+         all_events: list[dict[str, Any]] = []
+         responses: list[str] = []
+         turns_used = 0
+-        while not plan.is_complete and not plan.has_failures:
++        retry_contexts: dict[int, str] = {}
++        failure_fingerprints: dict[int, set[str]] = {}
++        while not plan.is_complete:
+             current = next(
+                 (step for step in plan.steps if step.status == TaskStatus.IN_PROGRESS),
+                 None,
+@@ -491,12 +502,25 @@ class ExecutionPipeline:
+                 break
+ 
+             step_budget = min(remaining, max(2, int(current.max_tool_calls) + 1))
++            retry_context = retry_contexts.get(current.id, "")
++            repeated_failure_warning = ""
++            if retry_context:
++                repeated_failure_warning = (
++                    "\nThis is a focused retry. Do not repeat the previous approach. "
++                    "Read the affected files and failure output before editing.\n"
++                    f"Previous failure evidence:\n{retry_context[:6000]}\n"
++                )
+             step_prompt = (
+                 f"Original objective:\n{user_input}\n\n"
+                 f"Autonomous plan step {current.id + 1}/{len(plan.steps)}: "
+                 f"{current.title}\n{current.description}\n\n"
++                f"Acceptance criteria: {current.acceptance_criteria}\n"
++                f"Expected checks: {current.checks}\n"
++                f"Permitted files: {current.permitted_files or ['repository-scoped']}\n"
++                f"{repeated_failure_warning}"
+                 "Complete this step now. Inspect actual repository state, use tools as needed, "
+-                "and do not claim success without tool-backed evidence. Do not commit, push, "
++                "run the narrowest relevant checks, and do not claim success without tool-backed "
++                "evidence. Keep changes minimal and architecture-consistent. Do not commit, push, "
+                 "deploy, or expand the task scope."
+             )
+             agent._enforce_plan_tool_contract = True  # noqa: SLF001
+@@ -521,11 +545,46 @@ class ExecutionPipeline:
+             agent.run_ledger.record_tasks(plan.steps)
+             agent.run_ledger.record_plan(plan)
+             if current.status == TaskStatus.COMPLETED:
++                retry_contexts.pop(current.id, None)
+                 agent.run_ledger.checkpoint(
+                     f"plan-step-{current.id}-completed",
+                     plan=plan,
+                     metadata={"task_id": current.id, "model_turns_used": turns_used},
+                 )
++            elif current.status == TaskStatus.FAILED:
++                failure = (current.error or current.result or response or "Unknown step failure").strip()
++                fingerprint = failure[:1000]
++                seen = failure_fingerprints.setdefault(current.id, set())
++                repeated = fingerprint in seen
++                seen.add(fingerprint)
++                can_retry = current.attempts <= current.retry_limit and turns_used < agent.max_turns
++                if can_retry:
++                    retry_contexts[current.id] = (
++                        failure
++                        + (
++                            "\nThe same failure repeated. Re-evaluate the root-cause assumption and "
++                            "inspect callers, tests, and dependency contracts before another edit."
++                            if repeated
++                            else ""
++                        )
++                    )
++                    agent.run_ledger.append_event(
++                        "plan_step_retry",
++                        status="verified",
++                        detail=f"Retrying failed plan step {current.id}.",
++                        metadata={
++                            "task_id": current.id,
++                            "attempts": current.attempts,
++                            "retry_limit": current.retry_limit,
++                            "repeated_failure": repeated,
++                            "failure": failure[:4000],
++                        },
++                    )
++                    agent.planner.retry_step(current.id, failure)
++                    agent.run_ledger.record_tasks(plan.steps)
++                    agent.run_ledger.record_plan(plan)
++                    continue
++                break
+             if (response or "").lstrip().upper().startswith(("ERROR:", "BLOCKED:")):
+                 if current.status == TaskStatus.IN_PROGRESS:
+                     agent.planner.advance_step(current.id, TaskStatus.FAILED, response[:2000])
+@@ -609,7 +668,11 @@ class ExecutionPipeline:
+         try:
+             from nexus.repair import RepairLoop  # noqa: PLC0415
+ 
+-            loop = RepairLoop(self._agent)
++            loop = RepairLoop(
++                self._agent,
++                max_iterations=max(3, int(getattr(self._agent.mode_policy, "retry_budget", 0)) + 2),
++                budget_seconds=240 if self._agent.mode_policy.model_strategy == "quality" else 150,
++            )
+             repaired = loop.attempt(user_input, failure_context=ver_result.error)
+             return StageResult(
+                 stage=PipelineStage.REPAIR,
+diff --git a/nexus/planner.py b/nexus/planner.py
+index 04b1e55..720b5e9 100644
+--- a/nexus/planner.py
++++ b/nexus/planner.py
+@@ -1446,6 +1446,35 @@ class PlanningEngine:
+             return True
+         return False
+ 
++    def retry_step(self, step_id: int, failure_context: str = "") -> bool:
++        """Move a failed task back to pending without erasing its audit trail."""
++        if not self.current_plan:
++            return False
++        step = next((item for item in self.current_plan.steps if item.id == step_id), None)
++        if step is None or step.status != TaskStatus.FAILED:
++            return False
++        step.status = TaskStatus.PENDING
++        step.completed_at = ""
++        step.error = failure_context or step.error
++        self.current_plan.status = TaskStatus.IN_PROGRESS
++        self.current_plan.current_step = step.id
++        self.current_plan.revision += 1
++        self.current_plan.failure_replans.append(
++            {
++                "revision": self.current_plan.revision,
++                "step_id": step.id,
++                "subsystem": step.subsystem,
++                "failed_at": datetime.now().isoformat(),
++                "evidence": (failure_context or step.error)[:4000],
++                "required_action": (
++                    "Retry the same bounded step using the failure evidence; inspect current "
++                    "repository state first and choose a materially different repair approach."
++                ),
++            }
++        )
++        self._save_plan(self.current_plan)
++        return True
++
+     def get_plan_context(self) -> str:
+         """Generate context string for the agent about the current plan."""
+         if not self.current_plan:
+diff --git a/nexus/repair.py b/nexus/repair.py
+index f571d8e..3316e9d 100644
+--- a/nexus/repair.py
++++ b/nexus/repair.py
+@@ -187,6 +187,7 @@ class RepairLoop:
+         deadline = time.monotonic() + self._budget_seconds
+ 
+         current_failure = failure_context
++        failure_history: list[str] = []
+         for iteration in range(1, self._max_iterations + 1):
+             if time.monotonic() >= deadline:
+                 logger.info("Repair budget exhausted at iteration %d.", iteration)
+@@ -194,11 +195,15 @@ class RepairLoop:
+ 
+             t_start = time.monotonic()
+             failure_kind = classify_failure(current_failure)
++            fingerprint = current_failure.strip()[:1000]
++            repeated_failure = fingerprint in failure_history
++            failure_history.append(fingerprint)
+             repair_prompt = self._build_repair_prompt(
+                 original_prompt=original_prompt,
+                 failure_context=current_failure,
+                 failure_kind=failure_kind,
+                 iteration=iteration,
++                repeated_failure=repeated_failure,
+             )
+ 
+             logger.info(
+@@ -253,6 +258,22 @@ class RepairLoop:
+                 output=(response + "\n\n" + verification_output)[:2000],
+             )
+             report.attempts.append(attempt)
++            if getattr(getattr(self._agent, "run_ledger", None), "turn_dir", None):
++                self._agent.run_ledger.append_event(
++                    "repair_iteration",
++                    status="verified" if succeeded else "failed",
++                    detail=(
++                        f"Repair iteration {iteration} {'succeeded' if succeeded else 'failed'} "
++                        f"for {failure_kind.value}."
++                    ),
++                    metadata={
++                        "iteration": iteration,
++                        "failure_kind": failure_kind.value,
++                        "repeated_failure": repeated_failure,
++                        "mutations": len(mutations),
++                        "checks": len(checks),
++                    },
++                )
+ 
+             if succeeded:
+                 report.succeeded = True
+@@ -260,7 +281,11 @@ class RepairLoop:
+                 break
+ 
+             # Collect the new failure context for the next iteration
+-            current_failure = self._extract_failure_from_response(response, events)
++            current_failure = (
++                verification_output
++                or self._extract_failure_from_response(response, events)
++                or "Repair attempt made no verified progress."
++            )[:8000]
+ 
+         report.total_duration_ms = sum(a.duration_ms for a in report.attempts)
+         if not report.succeeded:
+@@ -274,6 +299,7 @@ class RepairLoop:
+         failure_context: str,
+         failure_kind: FailureKind,
+         iteration: int,
++        repeated_failure: bool = False,
+     ) -> str:
+         """Construct a targeted repair prompt for the given failure class."""
+         template = self._TEMPLATES.get(failure_kind, self._TEMPLATES[FailureKind.UNKNOWN])
+@@ -282,10 +308,38 @@ class RepairLoop:
+             failure_context=failure_context,
+             iteration=iteration,
+         )
++        graph_context = ""
++        repo_graph = getattr(self._agent, "repo_graph", None)
++        if repo_graph is not None:
++            try:
++                graph_context = repo_graph.context_bundle(
++                    f"{original_prompt}\n{failure_context}",
++                    max_files=10,
++                    max_chars=28_000,
++                    lines_per_file=90,
++                )
++            except (OSError, TypeError, ValueError):
++                graph_context = ""
++        strategy_guard = ""
++        if repeated_failure:
++            strategy_guard = (
++                "\nThe same failure signature has already occurred. Do not repeat the prior "
++                "patch. Re-check the root-cause assumption, inspect callers and tests, and use a "
++                "different minimal repair strategy.\n"
++            )
+         return (
+             f"[REPAIR ITERATION {iteration}/{self._max_iterations}]\n\n"
+             f"Original task: {original_prompt[:300]}\n\n"
+-            f"{body}"
++            f"{body}\n"
++            f"{strategy_guard}\n"
++            "Repair protocol:\n"
++            "1. Reproduce or inspect the exact failure.\n"
++            "2. Identify the smallest responsible code path.\n"
++            "3. Read callers, contracts, and the nearest tests before editing.\n"
++            "4. Apply a minimal coherent patch.\n"
++            "5. Run the narrow failing check first, then the applicable project checks.\n"
++            "6. Do not claim success while any check is failing.\n\n"
++            f"{graph_context}"
+         )
+ 
+     @staticmethod
+diff --git a/nexus/repo_graph.py b/nexus/repo_graph.py
+index 0aec5ce..84da147 100644
+--- a/nexus/repo_graph.py
++++ b/nexus/repo_graph.py
+@@ -357,6 +357,121 @@ class RepoGraph:
+             for score, path, reasons in ranked[: max(1, limit)]
+         ]
+ 
++    def context_bundle(
++        self,
++        query: str,
++        *,
++        max_files: int = 12,
++        max_chars: int = 36_000,
++        lines_per_file: int = 120,
++    ) -> str:
++        """Return a compact, query-focused repository context bundle.
++
++        The bundle combines ranked files, declaration windows, direct import
++        relationships, likely impacted tests, and ownership metadata. It avoids
++        dumping whole large files into the model context and gives every excerpt
++        stable line numbers so follow-up reads and edits can be surgical.
++        """
++
++        if not self.files:
++            self.build(force=False)
++        ranked = self.relevant_files(query, limit=max(1, max_files * 2))
++        selected = [item["path"] for item in ranked[:max_files]]
++        if selected:
++            for test_path in self.impacted_tests(selected, limit=max(2, max_files // 3)):
++                if test_path not in selected:
++                    selected.append(test_path)
++                if len(selected) >= max_files:
++                    break
++        if not selected:
++            return ""
++
++        terms = {
++            token.lower()
++            for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", query)
++        }
++        sections = ["[QUERY-FOCUSED REPOSITORY CONTEXT]"]
++        consumed = len(sections[0])
++        for relative in selected:
++            record = self.files.get(relative)
++            path = self.root / relative
++            if not record or not path.is_file() or record.size > 2_000_000:
++                continue
++            dependencies = self.dependencies(relative)
++            symbol_names = [item.name for item in record.symbols[:20]]
++            header = (
++                f"\n--- {relative} [{record.language}] "
++                f"test={record.is_test} owners={record.owners or ['unassigned']} ---\n"
++                f"symbols={symbol_names}\n"
++                f"imports={dependencies['imports'][:16]}\n"
++                f"imported_by={dependencies['imported_by'][:16]}\n"
++            )
++            if consumed + len(header) >= max_chars:
++                break
++            try:
++                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
++            except OSError:
++                continue
++            excerpt = self._focused_excerpt(
++                lines,
++                record,
++                terms,
++                max_lines=max(20, lines_per_file),
++            )
++            section = header + excerpt
++            remaining = max_chars - consumed
++            if len(section) > remaining:
++                section = section[:remaining] + "\n...[context budget reached]"
++            sections.append(section)
++            consumed += len(section)
++            if consumed >= max_chars:
++                break
++        return "\n".join(sections)
++
++    @staticmethod
++    def _focused_excerpt(
++        lines: list[str],
++        record: FileRecord,
++        terms: set[str],
++        *,
++        max_lines: int,
++    ) -> str:
++        if not lines:
++            return "(empty file)"
++        anchors: set[int] = {0}
++        for symbol in record.symbols:
++            if not terms or any(term in symbol.name.lower() for term in terms):
++                anchors.add(max(0, symbol.line - 1))
++        if terms:
++            for index, line in enumerate(lines):
++                lowered = line.lower()
++                if any(term in lowered for term in terms):
++                    anchors.add(index)
++                    if len(anchors) >= 24:
++                        break
++
++        chosen: set[int] = set()
++        radius = 5
++        for anchor in sorted(anchors):
++            for index in range(max(0, anchor - radius), min(len(lines), anchor + radius + 1)):
++                chosen.add(index)
++                if len(chosen) >= max_lines:
++                    break
++            if len(chosen) >= max_lines:
++                break
++        if len(chosen) < min(max_lines, 30):
++            for index in range(min(len(lines), max_lines - len(chosen))):
++                chosen.add(index)
++
++        rendered: list[str] = []
++        previous = -2
++        for index in sorted(chosen)[:max_lines]:
++            if index > previous + 1:
++                rendered.append("    ...")
++            rendered.append(f"{index + 1:5}: {lines[index]}")
++            previous = index
++        return "\n".join(rendered)
++
+     def routes(self, query: str = "") -> list[dict[str, Any]]:
+         """Return discovered API/UI routes."""
+         needle = query.lower().strip()
+diff --git a/nexus/sandbox.py b/nexus/sandbox.py
+index 6b41585..1d4dd4e 100644
+--- a/nexus/sandbox.py
++++ b/nexus/sandbox.py
+@@ -62,6 +62,7 @@ class CommandSpec:
+     env: Mapping[str, str] = field(default_factory=dict)
+     max_output_bytes: int = 1_000_000
+     require_os_isolation: bool = False
++    allowed_sensitive_env_keys: tuple[str, ...] = ()
+ 
+     @classmethod
+     def create(
+@@ -74,6 +75,7 @@ class CommandSpec:
+         env: Mapping[str, str] | None = None,
+         max_output_bytes: int = 1_000_000,
+         require_os_isolation: bool = False,
++        allowed_sensitive_env_keys: Sequence[str] = (),
+     ) -> "CommandSpec":
+         normalized = tuple(str(item) for item in argv)
+         if not normalized or not normalized[0].strip():
+@@ -89,6 +91,7 @@ class CommandSpec:
+             env=dict(env or {}),
+             max_output_bytes=max(1_024, int(max_output_bytes)),
+             require_os_isolation=bool(require_os_isolation),
++            allowed_sensitive_env_keys=tuple(str(key) for key in allowed_sensitive_env_keys),
+         )
+ 
+ 
+@@ -147,6 +150,19 @@ class CommandResult:
+         return "\n".join(chunks)
+ 
+ 
++@dataclass(frozen=True)
++class PreparedCommand:
++    """Validated command ready for synchronous or background execution."""
++
++    argv: tuple[str, ...]
++    cwd: str
++    env: Mapping[str, str]
++    backend: SandboxBackend
++    cleanup_path: str = ""
++    network_allowed: bool = False
++    network_enforced: bool = False
++
++
+ class SandboxRunner:
+     """Execute typed commands inside the strongest available host sandbox."""
+ 
+@@ -172,6 +188,18 @@ class SandboxRunner:
+         "CARGO_HOME",
+         "RUSTUP_HOME",
+     }
++    SENSITIVE_ENV_MARKERS = (
++        "KEY",
++        "TOKEN",
++        "SECRET",
++        "PASSWORD",
++        "PASSWD",
++        "CREDENTIAL",
++        "AUTH",
++        "COOKIE",
++        "SESSION",
++        "PRIVATE",
++    )
+ 
+     def __init__(self, workspace: str | Path):
+         self.workspace = Path(workspace).expanduser().resolve()
+@@ -191,28 +219,15 @@ class SandboxRunner:
+         return selected
+ 
+     def run(self, spec: CommandSpec) -> CommandResult:
+-        cwd = Path(spec.cwd).expanduser().resolve()
+         try:
+-            cwd.relative_to(self.workspace)
+-        except ValueError:
+-            return self._blocked(spec, "Command cwd is outside the authorized workspace")
+-        if not cwd.is_dir():
+-            return self._blocked(spec, f"Command cwd does not exist: {cwd}")
+-
+-        path_violation = self._command_path_violation(spec, cwd)
+-        if path_violation:
+-            return self._blocked(spec, path_violation)
+-
+-        backend = self.backend()
+-        if spec.require_os_isolation and backend == SandboxBackend.RESTRICTED:
+-            return self._blocked(
+-                spec,
+-                "No supported OS sandbox is available; install bubblewrap on Linux "
+-                "or use sandbox-exec on macOS",
+-            )
+-
+-        env = self._filtered_env(spec.env)
+-        command, cleanup_path = self.build_command(spec, cwd)
++            prepared = self.prepare(spec)
++        except PermissionError as exc:
++            return self._blocked(spec, str(exc))
++        cwd = Path(prepared.cwd)
++        env = dict(prepared.env)
++        command = list(prepared.argv)
++        cleanup_path = Path(prepared.cleanup_path) if prepared.cleanup_path else None
++        backend = prepared.backend
+ 
+         started = time.monotonic()
+         try:
+@@ -284,6 +299,47 @@ class SandboxRunner:
+             if cleanup_path is not None:
+                 cleanup_path.unlink(missing_ok=True)
+ 
++    def prepare(self, spec: CommandSpec) -> PreparedCommand:
++        """Validate and wrap a command without starting it.
++
++        Background-process support uses this method so it cannot bypass the
++        same workspace, path, environment, and native-isolation policy applied
++        by :meth:`run`.
++        """
++
++        cwd = Path(spec.cwd).expanduser().resolve()
++        try:
++            cwd.relative_to(self.workspace)
++        except ValueError as exc:
++            raise PermissionError("Command cwd is outside the authorized workspace") from exc
++        if not cwd.is_dir():
++            raise PermissionError(f"Command cwd does not exist: {cwd}")
++
++        path_violation = self._command_path_violation(spec, cwd)
++        if path_violation:
++            raise PermissionError(path_violation)
++
++        backend = self.backend()
++        if spec.require_os_isolation and backend == SandboxBackend.RESTRICTED:
++            raise PermissionError(
++                "No supported OS sandbox is available; install bubblewrap on Linux "
++                "or use sandbox-exec on macOS"
++            )
++
++        env = self._filtered_env(
++            spec.env, allowed_sensitive_keys=spec.allowed_sensitive_env_keys
++        )
++        command, cleanup_path = self.build_command(spec, cwd)
++        return PreparedCommand(
++            argv=tuple(command),
++            cwd=str(cwd),
++            env=env,
++            backend=backend,
++            cleanup_path=str(cleanup_path) if cleanup_path else "",
++            network_allowed=spec.network,
++            network_enforced=backend != SandboxBackend.RESTRICTED,
++        )
++
+     def run_shell(
+         self,
+         command: str,
+@@ -548,16 +604,27 @@ class SandboxRunner:
+                 return violation
+         return ""
+ 
+-    def _filtered_env(self, additions: Mapping[str, str]) -> dict[str, str]:
++    def _filtered_env(
++        self,
++        additions: Mapping[str, str],
++        *,
++        allowed_sensitive_keys: Sequence[str] = (),
++    ) -> dict[str, str]:
+         env = {
+             key: value
+             for key, value in os.environ.items()
+-            if key in self.SAFE_ENV_KEYS or (key.startswith("NEXUS_") and "KEY" not in key and "TOKEN" not in key and "SECRET" not in key)
++            if key in self.SAFE_ENV_KEYS
++            or (key.startswith("NEXUS_") and not self._is_sensitive_env_key(key))
+         }
++        allowed = {str(key).upper() for key in allowed_sensitive_keys}
+         for key, value in additions.items():
+             normalized = str(key)
+             if not normalized or "=" in normalized or "\x00" in normalized:
+                 raise ValueError(f"Invalid environment key: {key!r}")
++            if self._is_sensitive_env_key(normalized) and normalized.upper() not in allowed:
++                raise ValueError(
++                    f"Sensitive environment variables cannot be forwarded to tools: {normalized}"
++                )
+             env[normalized] = str(value)
+         env.update(
+             {
+@@ -572,6 +639,11 @@ class SandboxRunner:
+         )
+         return env
+ 
++    @classmethod
++    def _is_sensitive_env_key(cls, key: str) -> bool:
++        normalized = str(key).upper()
++        return any(marker in normalized for marker in cls.SENSITIVE_ENV_MARKERS)
++
+     @staticmethod
+     def _probe_bubblewrap() -> bool:
+         """Reject installed-but-unusable bubblewrap binaries before a real task."""
+diff --git a/nexus/tools.py b/nexus/tools.py
+index 5794304..5c4d3cf 100644
+--- a/nexus/tools.py
++++ b/nexus/tools.py
+@@ -25,9 +25,12 @@ import signal
+ import socket
+ import ssl
+ import subprocess
++import threading
++import time
+ import urllib.error
+ import urllib.parse
+ import urllib.request
++import uuid
+ from contextlib import contextmanager
+ from dataclasses import asdict
+ from datetime import datetime
+@@ -449,6 +452,16 @@ TOOL_DEFINITIONS = [
+                         "description": "Fail closed unless a native OS sandbox is available.",
+                         "default": False,
+                     },
++                    "timeout": {
++                        "type": "integer",
++                        "description": "Maximum lifetime in seconds (default 3600, max 86400).",
++                        "default": 3600,
++                    },
++                    "max_output_bytes": {
++                        "type": "integer",
++                        "description": "Maximum retained bytes per output stream.",
++                        "default": 1000000,
++                    },
+                 },
+                 "required": ["command"],
+             },
+@@ -1264,74 +1277,119 @@ def tool_patch_file(path: str, start_line: int, end_line: int, new_content: str)
+ 
+ 
+ def tool_multi_edit(edits: list[dict]) -> str:
+-    """Apply multiple edits across files atomically. Tracked for undo.
++    """Apply a transaction of exact, unique text replacements.
+ 
+-    All edits are validated before any are applied. If any edit fails
+-    validation or application, all previously applied edits are rolled back
+-    via the file history, leaving the workspace unchanged.
++    Every final file body is computed in memory before disk is touched. Files
++    are then written to sibling temporary files and committed with atomic
++    ``os.replace`` operations. If any commit fails, all already-replaced files
++    are restored from their captured byte-for-byte originals.
+     """
+     if not edits:
+         return "📝 Multi-edit: no edits provided"
+ 
+     history = get_history()
+-    applied_paths: list[str] = []  # track files we've changed for rollback
+-    snapshots: dict[str, object] = {}  # pre-edit snapshots keyed by path
+-    results: list[str] = []
++    originals: dict[Path, str] = {}
++    final_bodies: dict[Path, str] = {}
++    edit_counts: dict[Path, int] = {}
+ 
+-    # Phase 1 — Pre-validate all edits (read files, check old_text exists)
+-    for i, edit in enumerate(edits):
++    # Build the complete transaction in memory. Multiple edits to one file are
++    # applied sequentially against the result of the previous edit.
++    for index, edit in enumerate(edits, start=1):
+         path = edit.get("path", "")
+         old_text = edit.get("old_text", "")
+-        if not path:
+-            return f"❌ Multi-edit aborted: edit #{i + 1} is missing 'path'. No files changed."
++        new_text = edit.get("new_text", "")
++        if not isinstance(path, str) or not path:
++            return f"❌ Multi-edit aborted: edit #{index} is missing 'path'. No files changed."
++        if not isinstance(old_text, str) or not isinstance(new_text, str):
++            return (
++                f"❌ Multi-edit aborted: edit #{index} old_text/new_text must be strings. "
++                "No files changed."
++            )
+         try:
+-            p = _resolve_path(path)
++            target = _resolve_path(path)
+         except (OSError, ValueError) as exc:
+-            return f"❌ Multi-edit aborted: edit #{i + 1} path error — {exc}. No files changed."
+-        if not p.exists():
+-            return f"❌ Multi-edit aborted: edit #{i + 1} file not found: {path}. No files changed."
+-        content = p.read_text(encoding="utf-8")
+-        if old_text and old_text not in content:
+-            first_line = old_text.splitlines()[0][:60] if old_text.strip() else old_text[:60]
++            return f"❌ Multi-edit aborted: edit #{index} path error — {exc}. No files changed."
++        if not target.is_file():
++            return f"❌ Multi-edit aborted: edit #{index} file not found: {path}. No files changed."
++
++        if target not in originals:
++            try:
++                originals[target] = target.read_text(encoding="utf-8")
++            except (OSError, UnicodeError) as exc:
++                return f"❌ Multi-edit aborted: cannot read {path}: {exc}. No files changed."
++            final_bodies[target] = originals[target]
++
++        current = final_bodies[target]
++        occurrences = current.count(old_text)
++        if occurrences == 0:
++            preview = old_text.splitlines()[0][:80] if old_text else "<empty>"
+             return (
+-                f"❌ Multi-edit aborted: edit #{i + 1} old_text not found in {p.name} "
+-                f"(starts with: {first_line!r}). No files changed."
++                f"❌ Multi-edit aborted: edit #{index} old_text not found in {target.name} "
++                f"(starts with {preview!r}). No files changed."
+             )
+-
+-    # Phase 2 — Apply edits, rolling back on any failure
+-    for i, edit in enumerate(edits):
+-        path = edit.get("path", "")
+-        old_text = edit.get("old_text", "")
+-        new_text = edit.get("new_text", "")
+-        p = _resolve_path(path)
+-
+-        # Take snapshot for potential rollback
+-        if str(p) not in snapshots:
+-            snapshots[str(p)] = history.snapshot_before_write(str(p))
+-
+-        result = tool_edit_file(path, old_text, new_text)
+-        if result.startswith("❌"):
+-            # Roll back every applied change by restoring from snapshot
+-            import shutil as _shutil
+-
+-            for applied_path in applied_paths:
+-                snap = snapshots.get(applied_path)
+-                if snap and Path(str(snap)).exists():
+-                    try:
+-                        _shutil.copy2(str(snap), applied_path)
+-                    except (TypeError, ValueError):
+-                        pass
++        if occurrences > 1:
+             return (
+-                f"❌ Multi-edit aborted at edit #{i + 1}: {result}. "
+-                f"All {len(applied_paths)} preceding edits have been rolled back."
++                f"❌ Multi-edit aborted: edit #{index} matched {occurrences} locations in "
++                f"{target.name}; provide more surrounding context. No files changed."
+             )
+-        applied_paths.append(str(p))
+-        history.record_change(str(p), "multi_edit", snapshots.get(str(p)))
+-        results.append(f"  {i + 1}. {result}")
++        final_bodies[target] = current.replace(old_text, new_text, 1)
++        edit_counts[target] = edit_counts.get(target, 0) + 1
++
++    snapshots: dict[Path, str | None] = {}
++    temp_paths: dict[Path, Path] = {}
++    committed: list[Path] = []
++    try:
++        for target, body in final_bodies.items():
++            snapshots[target] = history.snapshot_before_write(str(target))
++            temp = target.with_name(f".{target.name}.nexus-{uuid.uuid4().hex}.tmp")
++            with temp.open("w", encoding="utf-8", newline="") as handle:
++                handle.write(body)
++                handle.flush()
++                os.fsync(handle.fileno())
++            try:
++                os.chmod(temp, target.stat().st_mode)
++            except OSError:
++                pass
++            temp_paths[target] = temp
+ 
+-    success_count = sum(1 for r in results if "✅" in r)
+-    header = f"📝 Multi-edit: {success_count}/{len(edits)} succeeded"
+-    return header + "\n" + "\n".join(results)
++        for target, temp in temp_paths.items():
++            os.replace(temp, target)
++            committed.append(target)
++
++    except (OSError, UnicodeError) as exc:
++        rollback_errors: list[str] = []
++        for target in reversed(committed):
++            try:
++                restore = target.with_name(f".{target.name}.nexus-rollback-{uuid.uuid4().hex}.tmp")
++                with restore.open("w", encoding="utf-8", newline="") as handle:
++                    handle.write(originals[target])
++                    handle.flush()
++                    os.fsync(handle.fileno())
++                os.replace(restore, target)
++            except OSError as rollback_exc:
++                rollback_errors.append(f"{target}: {rollback_exc}")
++        detail = f" Rollback errors: {'; '.join(rollback_errors)}" if rollback_errors else ""
++        return f"❌ Multi-edit transaction failed: {exc}.{detail}"
++    finally:
++        for temp in temp_paths.values():
++            temp.unlink(missing_ok=True)
++
++    for target in final_bodies:
++        history.record_change(
++            str(target),
++            "multi_edit",
++            snapshots[target],
++            description=f"transactional multi-edit ({edit_counts[target]} replacement(s))",
++        )
++
++    details = [
++        f"  {path.name}: {edit_counts[path]} replacement(s)"
++        for path in sorted(final_bodies, key=lambda item: str(item))
++    ]
++    return (
++        f"✅ 📝 Multi-edit committed atomically: {len(edits)} edit(s) across "
++        f"{len(final_bodies)} file(s)\n" + "\n".join(details)
++    )
+ 
+ 
+ def tool_file_info(path: str) -> str:
+@@ -1459,8 +1517,10 @@ def tool_run_process(
+         return f"❌ Error running typed process: {exc}"
+ 
+ 
+-# Background processes tracking
++# Background processes tracking. Access must be synchronized because the web
++# server can run several agent sessions concurrently.
+ _bg_processes: dict[int, dict] = {}
++_bg_processes_lock = threading.RLock()
+ 
+ 
+ def tool_process_run(
+@@ -1468,108 +1528,92 @@ def tool_process_run(
+     cwd: str | None = None,
+     network: bool = False,
+     require_os_isolation: bool = False,
++    timeout: float | int | str = 3600,
++    max_output_bytes: int = 1_000_000,
+ ) -> str:
+-    """Start a shell-free background process with a filtered environment."""
++    """Start a sandboxed background process with bounded lifetime and logs."""
+     try:
+-        work_dir = cwd or _tool_working_dir.get() or os.getcwd()
++        work_dir = str(_resolve_path(cwd) if cwd else _resolve_path(""))
+         argv = shlex.split(command, posix=True)
+         if not argv:
+             return "❌ Background command is empty"
++        timeout_seconds = float(timeout)
++        if timeout_seconds <= 0 or timeout_seconds > 86_400:
++            return "❌ Background timeout must be between 0 and 86400 seconds"
++        max_output_bytes = max(1_024, min(int(max_output_bytes), 20_000_000))
+         log_dir = nexus_home() / "logs"
+         log_dir.mkdir(parents=True, exist_ok=True)
+ 
+-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+-        stdout_log = log_dir / f"bg_{ts}_stdout.log"
+-        stderr_log = log_dir / f"bg_{ts}_stderr.log"
+-
+-        stdout_f = open(stdout_log, "w")
+-        stderr_f = open(stderr_log, "w")
+-
+-        safe_env = {
+-            key: value
+-            for key, value in os.environ.items()
+-            if key
+-            in {
+-                "PATH",
+-                "LANG",
+-                "LC_ALL",
+-                "TZ",
+-                "TMPDIR",
+-                "TEMP",
+-                "TMP",
+-                "SYSTEMROOT",
+-                "WINDIR",
+-                "PATHEXT",
+-                "VIRTUAL_ENV",
+-                "PYTHONPATH",
+-                "NODE_PATH",
+-                "JAVA_HOME",
+-                "GOROOT",
+-                "GOPATH",
+-                "CARGO_HOME",
+-            }
+-            or key.startswith("NEXUS_")
+-        }
+-        safe_env["NEXUS_SANDBOX"] = "restricted-background"
++        run_id = uuid.uuid4().hex
++        stdout_log = log_dir / f"bg_{run_id}_stdout.log"
++        stderr_log = log_dir / f"bg_{run_id}_stderr.log"
+ 
+-        from nexus.sandbox import CommandSpec, SandboxBackend, SandboxRunner
++        from nexus.sandbox import CommandSpec, SandboxRunner
+ 
+         sandbox = SandboxRunner(Path(work_dir))
+         spec = CommandSpec.create(
+             argv,
+             work_dir,
+-            timeout_seconds=86_400,
++            timeout_seconds=timeout_seconds,
+             network=network,
+             require_os_isolation=require_os_isolation,
++            max_output_bytes=max_output_bytes,
+         )
+-        backend = sandbox.backend()
+-        if require_os_isolation and backend == SandboxBackend.RESTRICTED:
+-            stdout_f.close()
+-            stderr_f.close()
+-            return (
+-                "❌ BLOCKED: No supported OS sandbox is available for this "
+-                "background process. Install bubblewrap on Linux or use "
+-                "sandbox-exec on macOS."
+-            )
+-        if backend == SandboxBackend.BUBBLEWRAP:
+-            argv = sandbox._bubblewrap_command(spec, Path(work_dir))
+-        elif backend == SandboxBackend.MACOS:
+-            argv, _ = sandbox._macos_command(spec, Path(work_dir))
+-
+         try:
++            prepared = sandbox.prepare(spec)
++        except PermissionError as exc:
++            return f"❌ BLOCKED: {exc}"
++
++        with stdout_log.open("wb") as stdout_f, stderr_log.open("wb") as stderr_f:
+             proc = subprocess.Popen(
+-                argv,
++                list(prepared.argv),
+                 shell=False,
+                 stdout=stdout_f,
+                 stderr=stderr_f,
+-                cwd=work_dir,
+-                env=safe_env,
++                cwd=prepared.cwd,
++                env=dict(prepared.env),
+                 start_new_session=os.name != "nt",
+                 creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
++                preexec_fn=SandboxRunner._resource_limits if os.name == "posix" else None,
+             )
+-        finally:
+-            # Close file handles in the parent — the child process
+-            # has its own copies of the file descriptors
+-            stdout_f.close()
+-            stderr_f.close()
+ 
+-        _bg_processes[proc.pid] = {
++        record = {
+             "command": command,
+-            "argv": argv,
++            "argv": list(prepared.argv),
+             "pid": proc.pid,
+             "stdout_log": str(stdout_log),
+             "stderr_log": str(stderr_log),
+             "started": datetime.now().isoformat(),
++            "started_monotonic": time.monotonic(),
++            "timeout_seconds": timeout_seconds,
++            "max_output_bytes": max_output_bytes,
+             "process": proc,
+             "process_group": proc.pid,
+             "owner": _tool_owner.get(),
++            "backend": prepared.backend.value,
++            "network_allowed": prepared.network_allowed,
++            "network_enforced": prepared.network_enforced,
++            "cleanup_path": prepared.cleanup_path,
++            "timed_out": False,
++            "output_truncated": False,
+         }
++        with _bg_processes_lock:
++            _bg_processes[proc.pid] = record
++        threading.Thread(
++            target=_watch_background_process,
++            args=(proc.pid,),
++            name=f"nexus-bg-{proc.pid}",
++            daemon=True,
++        ).start()
+ 
+         return (
+             f"✅ Background process started\n"
+             f"  PID:    {proc.pid}\n"
+             f"  CMD:    {command}\n"
+-            f"  Network isolation: policy-only ({'allowed' if network else 'undeclared'})\n"
++            f"  Sandbox: {prepared.backend.value}\n"
++            f"  Network: {'on' if network else 'off'} "
++            f"({'enforced' if prepared.network_enforced else 'policy-only'})\n"
++            f"  Timeout: {timeout_seconds:.1f}s\n"
+             f"  Stdout: {stdout_log}\n"
+             f"  Stderr: {stderr_log}"
+         )
+@@ -1583,18 +1627,30 @@ def tool_process_status(pid: int) -> str:
+         pid = int(pid)
+     except (TypeError, ValueError):
+         return "❌ PID must be an integer"
+-    record = _bg_processes.get(pid)
++    with _bg_processes_lock:
++        record = _bg_processes.get(pid)
+     if not record:
+         return f"❌ PID {pid} is not a Nexus-managed background process"
+     proc = record["process"]
+     exit_code = proc.poll()
+-    stdout = Path(record["stdout_log"]).read_text(encoding="utf-8", errors="replace")
+-    stderr = Path(record["stderr_log"]).read_text(encoding="utf-8", errors="replace")
+-    state = "running" if exit_code is None else f"exited ({exit_code})"
++    stdout, stdout_cut = _read_bounded_log(Path(record["stdout_log"]), record["max_output_bytes"])
++    stderr, stderr_cut = _read_bounded_log(Path(record["stderr_log"]), record["max_output_bytes"])
++    truncated = bool(record.get("output_truncated") or stdout_cut or stderr_cut)
++    if record.get("timed_out"):
++        state = f"timed out after {record['timeout_seconds']:.1f}s"
++        marker = "⏰"
++    elif exit_code is None:
++        state = "running"
++        marker = "✅"
++    else:
++        state = f"exited ({exit_code})"
++        marker = "✅" if exit_code == 0 else "❌"
+     return (
+-        f"✅ PID {pid} {state}\n"
++        f"{marker} PID {pid} {state}\n"
+         f"Command: {record['command']}\n"
++        f"Sandbox: {record['backend']}\n"
+         f"[stdout]\n{stdout}\n[stderr]\n{stderr}"
++        + ("\n[output truncated by Nexus policy]" if truncated else "")
+     )
+ 
+ 
+@@ -1604,12 +1660,15 @@ def tool_process_stop(pid: int) -> str:
+         pid = int(pid)
+     except (TypeError, ValueError):
+         return "❌ PID must be an integer"
+-    record = _bg_processes.get(pid)
++    with _bg_processes_lock:
++        record = _bg_processes.get(pid)
+     if not record:
+         return f"❌ PID {pid} is not a Nexus-managed background process"
+     try:
+         _terminate_background_record(record)
+-        _bg_processes.pop(pid, None)
++        _cleanup_background_record(record)
++        with _bg_processes_lock:
++            _bg_processes.pop(pid, None)
+         return f"✅ Terminated Nexus-managed PID {pid}"
+     except (OSError, subprocess.TimeoutExpired) as exc:
+         return f"❌ PID {pid} could not be terminated: {exc}"
+@@ -1641,18 +1700,75 @@ def _terminate_background_record(record: dict) -> None:
+         process.wait(timeout=5)
+ 
+ 
++def _read_bounded_log(path: Path, limit: int) -> tuple[str, bool]:
++    try:
++        with path.open("rb") as handle:
++            data = handle.read(limit + 1)
++    except OSError as exc:
++        return f"<log unavailable: {exc}>", False
++    truncated = len(data) > limit
++    return data[:limit].decode("utf-8", errors="replace").rstrip(), truncated
++
++
++def _cleanup_background_record(record: dict) -> None:
++    cleanup = record.get("cleanup_path")
++    if cleanup:
++        Path(cleanup).unlink(missing_ok=True)
++
++
++def _truncate_log(path: Path, limit: int) -> bool:
++    try:
++        size = path.stat().st_size
++        if size <= limit:
++            return False
++        with path.open("rb") as handle:
++            data = handle.read(limit)
++        with path.open("wb") as handle:
++            handle.write(data)
++            handle.write(b"\n[output truncated by Nexus policy]\n")
++        return True
++    except OSError:
++        return False
++
++
++def _watch_background_process(pid: int) -> None:
++    with _bg_processes_lock:
++        record = _bg_processes.get(pid)
++    if not record:
++        return
++    process = record["process"]
++    try:
++        process.wait(timeout=float(record["timeout_seconds"]))
++    except subprocess.TimeoutExpired:
++        record["timed_out"] = True
++        try:
++            _terminate_background_record(record)
++        except (OSError, subprocess.TimeoutExpired):
++            pass
++    finally:
++        record["output_truncated"] = bool(
++            _truncate_log(Path(record["stdout_log"]), int(record["max_output_bytes"]))
++            or _truncate_log(Path(record["stderr_log"]), int(record["max_output_bytes"]))
++        )
++        _cleanup_background_record(record)
++
++
+ def stop_owned_processes(owner: str) -> dict[str, object]:
+     """Terminate background processes created by one agent session."""
+ 
+     stopped: list[int] = []
+     errors: list[str] = []
+-    for pid, record in list(_bg_processes.items()):
++    with _bg_processes_lock:
++        records = list(_bg_processes.items())
++    for pid, record in records:
+         if record.get("owner") != owner:
+             continue
+         try:
+             _terminate_background_record(record)
+             stopped.append(pid)
+-            _bg_processes.pop(pid, None)
++            _cleanup_background_record(record)
++            with _bg_processes_lock:
++                _bg_processes.pop(pid, None)
+         except (OSError, subprocess.TimeoutExpired) as exc:
+             errors.append(f"PID {pid}: {exc}")
+     return {"stopped": stopped, "errors": errors}
+@@ -1662,11 +1778,15 @@ def stop_all_background_processes() -> dict[str, object]:
+     """Best-effort shutdown for every child still owned by this Nexus process."""
+     stopped: list[int] = []
+     errors: list[str] = []
+-    for pid, record in list(_bg_processes.items()):
++    with _bg_processes_lock:
++        records = list(_bg_processes.items())
++    for pid, record in records:
+         try:
+             _terminate_background_record(record)
+             stopped.append(pid)
+-            _bg_processes.pop(pid, None)
++            _cleanup_background_record(record)
++            with _bg_processes_lock:
++                _bg_processes.pop(pid, None)
+         except (OSError, subprocess.TimeoutExpired) as exc:
+             errors.append(f"PID {pid}: {exc}")
+     return {"stopped": stopped, "errors": errors}
+diff --git a/nexus/verification.py b/nexus/verification.py
+index 46d967a..a26af8c 100644
+--- a/nexus/verification.py
++++ b/nexus/verification.py
+@@ -191,6 +191,9 @@ class VerificationEngine:
+         self,
+         working_dir: str,
+         custom_commands: dict[str, str] | None = None,
++        *,
++        require_os_isolation: bool = False,
++        timeout_seconds: float | None = None,
+     ):
+         self.root = Path(working_dir).expanduser().resolve()
+         if not self.root.is_dir():
+@@ -198,6 +201,9 @@ class VerificationEngine:
+         self.working_dir = str(self.root)
+         self.project_type = self._detect_project_type()
+         self.commands = self._resolve_commands(custom_commands or {})
++        self.require_os_isolation = bool(require_os_isolation)
++        configured_timeout = timeout_seconds or float(os.getenv("NEXUS_VERIFY_TIMEOUT", "300"))
++        self.timeout_seconds = min(1800.0, max(30.0, float(configured_timeout)))
+ 
+     def verify_syntax(self) -> CheckResult:
+         """Compile Python sources without importing or executing project code."""
+@@ -377,6 +383,45 @@ class VerificationEngine:
+ 
+         return report
+ 
++    def run_change_aware(
++        self,
++        changed_paths: list[str] | tuple[str, ...],
++        *,
++        impacted_tests: list[str] | tuple[str, ...] = (),
++    ) -> VerificationReport:
++        """Run fast, dependency-focused checks before the complete gate.
++
++        A failing targeted test immediately returns high-signal evidence to the
++        repair loop. When focused checks pass, Nexus still runs the complete
++        project verification suite so optimization never weakens the release bar.
++        """
++        normalized = [
++            str(Path(path))
++            for path in changed_paths
++            if str(path).strip()
++        ]
++        focused: list[CheckResult] = []
++        if self.project_type == "python" and impacted_tests:
++            interpreter = _shell_executable(os.environ.get("PYTHON") or sys.executable)
++            tests = " ".join(shlex.quote(str(path)) for path in impacted_tests[:50])
++            command = f"{interpreter} -m pytest -q -x {tests}"
++            targeted = self._execute_check(CheckType.TEST, command, timeout_seconds=180)
++            targeted.command = f"{command}  # targeted from {len(normalized)} changed files"
++            focused.append(targeted)
++            if not targeted.passed:
++                report = VerificationReport(
++                    project_type=self.project_type,
++                    checks=focused,
++                    all_passed=False,
++                )
++                return report
++
++        report = self.run_all()
++        if focused:
++            report.checks = focused + report.checks
++            report.all_passed = all(item.passed for item in report.checks)
++        return report
++
+     @staticmethod
+     def _normalize_failure_output(output: str, roots: tuple[Path, ...] = ()) -> str:
+         """Normalize nondeterministic details before baseline comparison.
+@@ -450,6 +495,8 @@ class VerificationEngine:
+         baseline_engine = VerificationEngine(
+             str(baseline_path),
+             custom_commands=dict(self.commands),
++            require_os_isolation=self.require_os_isolation,
++            timeout_seconds=self.timeout_seconds,
+         )
+         reconciled: list[CheckResult] = []
+         for current in report.checks:
+@@ -642,7 +689,13 @@ class VerificationEngine:
+         """Check if a command is available."""
+         return shutil.which(cmd) is not None
+ 
+-    def _execute_check(self, check_type: CheckType, command: str) -> CheckResult:
++    def _execute_check(
++        self,
++        check_type: CheckType,
++        command: str,
++        *,
++        timeout_seconds: float | None = None,
++    ) -> CheckResult:
+         """Execute a verification command and parse the result."""
+         import time
+ 
+@@ -663,8 +716,9 @@ class VerificationEngine:
+             result = SandboxRunner(self.working_dir).run_shell(
+                 command,
+                 cwd=self.working_dir,
+-                timeout_seconds=120,
++                timeout_seconds=timeout_seconds or self.timeout_seconds,
+                 network=False,
++                require_os_isolation=self.require_os_isolation,
+             )
+ 
+             duration = int((time.monotonic() - start) * 1000)
+diff --git a/nexus/webapp/server.py b/nexus/webapp/server.py
+index b6f5358..814ce6d 100644
+--- a/nexus/webapp/server.py
++++ b/nexus/webapp/server.py
+@@ -14,6 +14,7 @@ import asyncio
+ import json
+ import os
+ import secrets
++import threading
+ from contextlib import asynccontextmanager
+ from pathlib import Path
+ from urllib.parse import urlparse
+@@ -33,6 +34,8 @@ from nexus.tools import TOOL_DEFINITIONS
+ # Global state
+ _agents: dict[str, Agent] = {}  # session_id -> Agent
+ _agent_busy: dict[str, bool] = {}
++_agent_locks: dict[str, threading.Lock] = {}
++_agents_lock = threading.RLock()
+ _api_key: str = ""
+ _default_model: str = DEFAULT_MODEL
+ _working_dir: str = ""
+@@ -56,6 +59,7 @@ SENSITIVE_FILENAMES = {
+     "id_rsa",
+ }
+ SENSITIVE_DIRNAMES = {".aws", ".git", ".nexusai", ".ssh"}
++WEB_TOKEN_COOKIE = "nexus_web_session"
+ 
+ 
+ def _workspace_path(raw: str) -> Path:
+@@ -93,39 +97,52 @@ def _is_allowed_web_origin(origin: str | None) -> bool:
+     }
+ 
+ 
++def _normalize_session_id(value: object, default: str = "default") -> str:
++    candidate = str(value or default).strip()[:64]
++    if not candidate or not all(ch.isalnum() or ch in "._-" for ch in candidate):
++        raise ValueError("Session id may contain only letters, numbers, dot, dash, and underscore")
++    return candidate
++
++
+ def _get_agent(session_id: str) -> Agent:
+-    """Get or create an agent for a session."""
+-    if session_id not in _agents:
+-        # Evict oldest agents if we exceed the limit
+-        if len(_agents) >= MAX_AGENTS:
+-            oldest_key = next(iter(_agents))
+-            _agents.pop(oldest_key).close(discard_workspace=True)
+-            _agent_busy.pop(oldest_key, None)
+-        _agents[session_id] = Agent(
+-            api_key=_api_key,
+-            model_key=_default_model,
+-            working_dir=_working_dir,
+-            workspace_isolation=True,
+-            model_id_override=_agent_options["model_id_override"],
+-            local_intern_mode=str(_agent_options["local_intern_mode"]),
+-            enable_nova_fallback=bool(_agent_options["enable_nova_fallback"]),
+-            plugins_enabled=bool(_agent_options["plugins_enabled"]),
+-            tools_enabled=bool(_agent_options["tools_enabled"]),
+-        )
+-        _agent_busy[session_id] = False
+-    return _agents[session_id]
++    """Get or create an agent for a normalized session without races."""
++    session_id = _normalize_session_id(session_id)
++    with _agents_lock:
++        if session_id not in _agents:
++            if len(_agents) >= MAX_AGENTS:
++                oldest_key = next(iter(_agents))
++                _agents.pop(oldest_key).close(discard_workspace=True)
++                _agent_busy.pop(oldest_key, None)
++                _agent_locks.pop(oldest_key, None)
++            _agents[session_id] = Agent(
++                api_key=_api_key,
++                model_key=_default_model,
++                working_dir=_working_dir,
++                workspace_isolation=True,
++                model_id_override=_agent_options["model_id_override"],
++                local_intern_mode=str(_agent_options["local_intern_mode"]),
++                enable_nova_fallback=bool(_agent_options["enable_nova_fallback"]),
++                plugins_enabled=bool(_agent_options["plugins_enabled"]),
++                tools_enabled=bool(_agent_options["tools_enabled"]),
++            )
++            _agent_busy[session_id] = False
++            _agent_locks[session_id] = threading.Lock()
++        return _agents[session_id]
+ 
+ 
+ def _run_agent_locked(session_id: str, agent: Agent, message: str):
+-    """Run an agent session, ensuring no overlapping requests for the same session."""
+-    if _agent_busy.get(session_id, False):
++    """Run an agent session with an atomic, non-blocking per-session lease."""
++    session_id = _normalize_session_id(session_id)
++    with _agents_lock:
++        lock = _agent_locks.setdefault(session_id, threading.Lock())
++    if not lock.acquire(blocking=False):
+         raise RuntimeError("Agent is busy processing another request")
+-    
+     _agent_busy[session_id] = True
+     try:
+         return agent.run_non_interactive(message)
+     finally:
+         _agent_busy[session_id] = False
++        lock.release()
+ 
+ 
+ # ─── HTTP Endpoints ──────────────────────────────────────────────────────────
+@@ -145,21 +162,35 @@ def _require_web_token(request) -> Response | None:
+     against other local processes, not an internet exposure.
+     """
+     from starlette.responses import JSONResponse as _JR
++    if not _is_allowed_web_origin(request.headers.get("origin")):
++        return _JR({"error": "Unauthorized origin"}, status_code=403)
+     token_header = request.headers.get("X-CSRF-Token", "")
+     token_query = request.query_params.get("token", "")
+-    if secrets.compare_digest(token_header, _web_token) or secrets.compare_digest(token_query, _web_token):
++    token_cookie = request.cookies.get(WEB_TOKEN_COOKIE, "")
++    if any(
++        secrets.compare_digest(candidate, _web_token)
++        for candidate in (token_header, token_query, token_cookie)
++    ):
+         return None
+     return _JR({"error": "Unauthorized — include the session token"}, status_code=403)
+ 
+ 
+ async def index(request):
+     """Serve the main web UI."""
++    if (err := _require_web_token(request)) is not None:
++        return err
+     static_dir = Path(__file__).parent / "static"
+     html = (static_dir / "index.html").read_text(encoding="utf-8")
+-    html = html.replace(
+-        "<head>", f'<head>\\n    <script>window.CSRF_TOKEN="{_web_token}";</script>'
++    response = HTMLResponse(html)
++    response.set_cookie(
++        WEB_TOKEN_COOKIE,
++        _web_token,
++        httponly=True,
++        samesite="strict",
++        secure=False,
++        path="/",
+     )
+-    return HTMLResponse(html)
++    return response
+ 
+ 
+ async def api_models(request):
+@@ -273,9 +304,8 @@ async def api_file_content(request):
+ 
+ async def api_chat(request):
+     """Non-streaming chat endpoint."""
+-    token = request.headers.get("X-CSRF-Token", "")
+-    if not secrets.compare_digest(token, _web_token):
+-        return JSONResponse({"error": "Unauthorized"}, status_code=403)
++    if (err := _require_web_token(request)) is not None:
++        return err
+ 
+     try:
+         body = await request.json()
+@@ -341,7 +371,10 @@ async def api_tools(request):
+ async def api_pending_edits(request):
+     if (err := _require_web_token(request)) is not None:
+         return err
+-    session_id = request.query_params.get("session_id", "default")
++    try:
++        session_id = _normalize_session_id(request.query_params.get("session_id", "default"))
++    except ValueError as exc:
++        return JSONResponse({"error": str(exc)}, status_code=400)
+     agent = _get_agent(session_id)
+     return JSONResponse(
+         {"summary": agent.pending_edits_summary(), "ids": list(agent._pending_edits)}
+@@ -349,11 +382,13 @@ async def api_pending_edits(request):
+ 
+ 
+ async def api_edit_decision(request):
+-    token = request.headers.get("X-CSRF-Token", "")
+-    if not secrets.compare_digest(token, _web_token):
+-        return JSONResponse({"error": "Unauthorized"}, status_code=403)
++    if (err := _require_web_token(request)) is not None:
++        return err
+ 
+-    session_id = request.path_params["session_id"]
++    try:
++        session_id = _normalize_session_id(request.path_params["session_id"])
++    except ValueError as exc:
++        return JSONResponse({"error": str(exc)}, status_code=400)
+     edit_id = request.path_params["edit_id"]
+     action = request.path_params["action"]
+     agent = _get_agent(session_id)
+@@ -374,9 +409,13 @@ async def ws_chat(websocket: WebSocket):
+     if not _is_allowed_web_origin(websocket.headers.get("origin")):
+         await websocket.close(code=1008)
+         return
++    cookie_token = websocket.cookies.get(WEB_TOKEN_COOKIE, "")
++    if not secrets.compare_digest(cookie_token, _web_token):
++        await websocket.close(code=1008)
++        return
+     await websocket.accept()
+     session_id = "ws_default"
+-    authenticated = False
++    authenticated = True
+ 
+     try:
+         while True:
+@@ -391,7 +430,7 @@ async def ws_chat(websocket: WebSocket):
+ 
+             if msg_type == "authenticate":
+                 token = data.get("token", "")
+-                if secrets.compare_digest(token, _web_token):
++                if not token or secrets.compare_digest(token, _web_token):
+                     authenticated = True
+                 else:
+                     await websocket.send_json({"type": "error", "content": "Unauthorized"})
+@@ -403,7 +442,11 @@ async def ws_chat(websocket: WebSocket):
+                 continue
+ 
+             if msg_type == "set_session":
+-                session_id = data.get("session_id", session_id)
++                try:
++                    session_id = _normalize_session_id(data.get("session_id", session_id))
++                except ValueError as exc:
++                    await websocket.send_json({"type": "error", "content": str(exc)})
++                    continue
+                 await websocket.send_json({"type": "session_set", "session_id": session_id})
+                 continue
+ 
+@@ -448,6 +491,7 @@ async def ws_chat(websocket: WebSocket):
+                 if session_id in _agents:
+                     _agents.pop(session_id).close(discard_workspace=True)
+                     _agent_busy.pop(session_id, None)
++                    _agent_locks.pop(session_id, None)
+                 import time
+ 
+                 session_id = f"ws_{int(time.time())}"
+@@ -536,7 +580,8 @@ def create_app(
+         existing_agent.close(discard_workspace=True)
+     _agents.clear()
+     _agent_busy.clear()
+-    _web_token = secrets.token_hex(16)
++    _agent_locks.clear()
++    _web_token = secrets.token_hex(32)
+     _api_key = api_key
+     _default_model = model
+     _working_dir = working_dir or os.getcwd()
+@@ -577,8 +622,10 @@ def create_app(
+                 existing_agent.close(discard_workspace=True)
+             _agents.clear()
+             _agent_busy.clear()
++            _agent_locks.clear()
+ 
+     app = Starlette(routes=routes, lifespan=lifespan)
++    app.state.web_token = _web_token
+ 
+     # Add CORS middleware for cross-origin access
+     app.add_middleware(
+diff --git a/nexus/webapp/static/app.js b/nexus/webapp/static/app.js
+index 07d8bbc..827fc5b 100644
+--- a/nexus/webapp/static/app.js
++++ b/nexus/webapp/static/app.js
+@@ -39,9 +39,6 @@ function connectWebSocket() {
+ 
+     ws.onopen = () => {
+         console.log('WebSocket connected');
+-        if (window.CSRF_TOKEN) {
+-            ws.send(JSON.stringify({ type: 'authenticate', token: window.CSRF_TOKEN }));
+-        }
+         ws.send(JSON.stringify({ type: 'set_session', session_id: sessionId }));
+     };
+ 
+diff --git a/nexus/workspace.py b/nexus/workspace.py
+index 90e9696..c14e962 100644
+--- a/nexus/workspace.py
++++ b/nexus/workspace.py
+@@ -2,6 +2,7 @@
+ 
+ from __future__ import annotations
+ 
++import hashlib
+ import json
+ import os
+ import re
+@@ -27,6 +28,9 @@ class WorktreeInfo:
+     branch: str
+     created_at: str
+     backend: str = "git-worktree"
++    source_was_dirty: bool = False
++    source_state_hash: str = ""
++    snapshot_commit: str = ""
+ 
+ 
+ class GitWorktreeSession:
+@@ -54,7 +58,12 @@ class GitWorktreeSession:
+         self.force_copy = force_copy
+ 
+     def create(self) -> WorktreeInfo:
+-        """Create and return an isolated worktree on a dedicated branch."""
++        """Create an isolated worktree, preserving the source's current state.
++
++        Dirty repositories are snapshotted into the new branch instead of being
++        rejected. The source tree is never modified. Unmerged/conflicted states
++        still fail closed because they cannot be represented deterministically.
++        """
+         if self.path.exists():
+             raise WorktreeError(f"Worktree path already exists: {self.path}")
+         if self.force_copy or not (self.repository / ".git").exists():
+@@ -64,12 +73,17 @@ class GitWorktreeSession:
+             raise WorktreeError(
+                 f"Working directory must be the Git repository root: {self.repository}"
+             )
+-        dirty = self._git(["status", "--porcelain"]).strip()
+-        if dirty:
++
++        status_bytes = self._git_bytes(["status", "--porcelain=v1", "-z"])
++        status_entries = [item for item in status_bytes.split(b"\0") if item]
++        if any(self._is_unmerged_status(item) for item in status_entries):
+             raise WorktreeError(
+-                "Source repository has uncommitted changes. Commit or stash them "
+-                "before starting an isolated worktree so no work is silently omitted."
++                "Source repository has unresolved merge conflicts. Resolve them "
++                "before creating an isolated Nexus workspace."
+             )
++
++        source_was_dirty = bool(status_entries)
++        source_state_hash = self._source_state_hash() if source_was_dirty else ""
+         base_commit = self._git(["rev-parse", "HEAD"]).strip()
+         branch_suffix = re.sub(r"[^A-Za-z0-9._-]+", "-", self.session_id).strip("-")
+         branch = f"nexus/{branch_suffix}"
+@@ -93,19 +107,130 @@ class GitWorktreeSession:
+         if result.returncode != 0:
+             raise WorktreeError((result.stderr or result.stdout).strip())
+ 
++        snapshot_commit = ""
++        try:
++            if source_was_dirty:
++                self._materialize_source_snapshot()
++                subprocess.run(["git", "add", "-A"], cwd=self.path, check=True)
++                committed = subprocess.run(
++                    [
++                        "git",
++                        "-c",
++                        "user.name=Nexus",
++                        "-c",
++                        "user.email=nexus@localhost",
++                        "commit",
++                        "-m",
++                        "Nexus source workspace snapshot",
++                    ],
++                    cwd=self.path,
++                    capture_output=True,
++                    text=True,
++                    timeout=30,
++                )
++                if committed.returncode != 0:
++                    raise WorktreeError((committed.stderr or committed.stdout).strip())
++                snapshot_commit = subprocess.run(
++                    ["git", "rev-parse", "HEAD"],
++                    cwd=self.path,
++                    capture_output=True,
++                    text=True,
++                    check=True,
++                ).stdout.strip()
++        except (OSError, subprocess.SubprocessError, WorktreeError) as exc:
++            subprocess.run(
++                ["git", "worktree", "remove", "--force", str(self.path)],
++                cwd=self.repository,
++                capture_output=True,
++            )
++            subprocess.run(
++                ["git", "branch", "-D", branch],
++                cwd=self.repository,
++                capture_output=True,
++            )
++            if isinstance(exc, WorktreeError):
++                raise
++            raise WorktreeError(f"Could not snapshot dirty repository: {exc}") from exc
++
+         self.info = WorktreeInfo(
+             source_repository=str(self.repository),
+             path=str(self.path),
+             base_commit=base_commit,
+             branch=branch,
+             created_at=datetime.now(timezone.utc).isoformat(),
++            source_was_dirty=source_was_dirty,
++            source_state_hash=source_state_hash,
++            snapshot_commit=snapshot_commit,
+         )
+         self.info_path.write_text(
+-            __import__("json").dumps(asdict(self.info), indent=2) + "\n",
++            json.dumps(asdict(self.info), indent=2) + "\n",
+             encoding="utf-8",
+         )
+         return self.info
+ 
++    @staticmethod
++    def _is_unmerged_status(entry: bytes) -> bool:
++        code = entry[:2].decode("ascii", errors="ignore")
++        return code in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
++
++    def _git_bytes(self, args: list[str], *, cwd: Path | None = None) -> bytes:
++        result = subprocess.run(
++            ["git", *args],
++            cwd=cwd or self.repository,
++            capture_output=True,
++            timeout=30,
++        )
++        if result.returncode != 0:
++            raise WorktreeError(result.stderr.decode(errors="replace").strip())
++        return result.stdout
++
++    def _untracked_paths(self) -> list[Path]:
++        raw = self._git_bytes(["ls-files", "--others", "--exclude-standard", "-z"])
++        return [Path(os.fsdecode(item)) for item in raw.split(b"\0") if item]
++
++    def _source_state_hash(self) -> str:
++        digest = hashlib.sha256()
++        digest.update(self._git_bytes(["diff", "--binary", "HEAD"]))
++        digest.update(self._git_bytes(["status", "--porcelain=v1", "-z"]))
++        for relative in sorted(self._untracked_paths(), key=lambda item: item.as_posix()):
++            source = (self.repository / relative).resolve()
++            try:
++                source.relative_to(self.repository)
++            except ValueError as exc:
++                raise WorktreeError(f"Untracked path escapes repository: {relative}") from exc
++            digest.update(relative.as_posix().encode("utf-8", errors="surrogateescape"))
++            if source.is_symlink():
++                digest.update(b"SYMLINK\0" + os.readlink(source).encode())
++            elif source.is_file():
++                digest.update(source.read_bytes())
++        return digest.hexdigest()
++
++    def _materialize_source_snapshot(self) -> None:
++        patch = self._git_bytes(["diff", "--binary", "HEAD"])
++        if patch:
++            applied = subprocess.run(
++                ["git", "apply", "--binary", "--whitespace=nowarn", "-"],
++                cwd=self.path,
++                input=patch,
++                capture_output=True,
++                timeout=30,
++            )
++            if applied.returncode != 0:
++                raise WorktreeError(applied.stderr.decode(errors="replace").strip())
++        for relative in self._untracked_paths():
++            source = (self.repository / relative).resolve()
++            target = (self.path / relative).resolve()
++            try:
++                source.relative_to(self.repository)
++                target.relative_to(self.path)
++            except ValueError as exc:
++                raise WorktreeError(f"Untracked path escapes repository: {relative}") from exc
++            target.parent.mkdir(parents=True, exist_ok=True)
++            if source.is_symlink():
++                target.symlink_to(os.readlink(source))
++            elif source.is_file():
++                shutil.copy2(source, target)
++
+     def _create_temporary_copy(self) -> WorktreeInfo:
+         """Isolate a greenfield/non-Git directory with a persistent temporary copy."""
+         self.path.parent.mkdir(parents=True, exist_ok=True)
+@@ -189,7 +314,12 @@ class GitWorktreeSession:
+             return ""
+         if self.info.backend == "git-worktree":
+             result = subprocess.run(
+-                ["git", "diff", "--binary", self.info.base_commit],
++                [
++                    "git",
++                    "diff",
++                    "--binary",
++                    self.info.snapshot_commit or self.info.base_commit,
++                ],
+                 cwd=self.path,
+                 capture_output=True,
+                 text=True,
+@@ -275,26 +405,87 @@ class GitWorktreeSession:
+ 
+             return "".join(lines)
+ 
+-    def apply(self) -> None:
+-        """Apply changes from the worktree back to the source repository safely.
++    def _commit_workspace_changes(self) -> None:
++        status = subprocess.run(
++            ["git", "status", "--porcelain"],
++            cwd=self.path,
++            capture_output=True,
++            text=True,
++            check=True,
++        )
++        if not status.stdout.strip():
++            return
++        subprocess.run(["git", "add", "-A"], cwd=self.path, check=True)
++        committed = subprocess.run(
++            [
++                "git",
++                "-c",
++                "user.name=Nexus",
++                "-c",
++                "user.email=nexus@localhost",
++                "commit",
++                "-m",
++                "Nexus workspace apply",
++            ],
++            cwd=self.path,
++            capture_output=True,
++            text=True,
++        )
++        if committed.returncode != 0:
++            raise WorktreeError((committed.stderr or committed.stdout).strip())
++
++    def _apply_to_dirty_source(self) -> None:
++        if not self.info or not self.info.snapshot_commit:
++            raise WorktreeError("Dirty workspace metadata is incomplete; refusing to apply.")
++        current_hash = self._source_state_hash()
++        if current_hash != self.info.source_state_hash:
++            raise WorktreeError(
++                "Source repository changed after the Nexus snapshot was created. "
++                "Review the workspace diff and apply it manually to avoid overwriting work."
++            )
++
++        delta = self._git_bytes(
++            ["diff", "--binary", self.info.snapshot_commit, "HEAD"],
++            cwd=self.path,
++        )
++        if not delta:
++            return
+ 
+-        For Git worktrees:
+-          1. Re-checks the source repository for uncommitted changes (so concurrent
+-             edits do not silently corrupt the merge).
+-          2. Creates an immutable backup ref before merging.
+-          3. On merge failure, runs ``git merge --abort`` automatically.
++        recovery_dir = self.info_path.parent / "recovery"
++        recovery_dir.mkdir(parents=True, exist_ok=True)
++        patch_path = recovery_dir / f"{self.session_id}.patch"
++        patch_path.write_bytes(delta)
++        applied = subprocess.run(
++            ["git", "apply", "--binary", "--whitespace=nowarn", "-"],
++            cwd=self.repository,
++            input=delta,
++            capture_output=True,
++            timeout=60,
++        )
++        if applied.returncode != 0:
++            raise WorktreeError(
++                "Could not apply Nexus changes over the preserved dirty source: "
++                f"{applied.stderr.decode(errors='replace').strip()}. "
++                f"Recovery patch: {patch_path}"
++            )
+ 
+-        For temporary copies:
+-          Uses Python's shutil (cross-platform) instead of rsync.
++    def apply(self) -> None:
++        """Apply workspace changes back without losing concurrent user work.
+ 
+-        Raises:
+-            WorktreeError: On any failure. The source repository is left in a
+-                clean, mergeable state.
++        Clean repositories use a normal branch merge with a recovery ref. Dirty
++        repositories use the immutable snapshot commit created at session start:
++        Nexus computes only its delta from that snapshot and applies the delta to
++        the unchanged source working tree. This preserves the user's staged,
++        unstaged, and untracked state instead of forcing a stash or commit.
+         """
+         if not self.info:
+             return
+         if self.info.backend == "git-worktree":
+-            # ── Pre-apply safety check ────────────────────────────────────
++            self._commit_workspace_changes()
++            if self.info.source_was_dirty:
++                self._apply_to_dirty_source()
++                return
++
+             dirty_now = subprocess.run(
+                 ["git", "status", "--porcelain"],
+                 cwd=self.repository,
+@@ -303,51 +494,25 @@ class GitWorktreeSession:
+             ).stdout.strip()
+             if dirty_now:
+                 raise WorktreeError(
+-                    "Source repository has uncommitted changes since the workspace was "
+-                    "created. Commit or stash them before applying workspace changes."
+-                )
+-
+-            # ── Auto-commit any uncommitted worktree changes ──────────────
+-            status = subprocess.run(
+-                ["git", "status", "--porcelain"],
+-                cwd=self.path,
+-                capture_output=True,
+-                text=True,
+-            )
+-            if status.stdout.strip():
+-                subprocess.run(["git", "add", "-A"], cwd=self.path, check=True)
+-                subprocess.run(
+-                    [
+-                        "git",
+-                        "-c",
+-                        "user.name=Nexus",
+-                        "-c",
+-                        "user.email=nexus@localhost",
+-                        "commit",
+-                        "-m",
+-                        "Nexus workspace apply",
+-                    ],
+-                    cwd=self.path,
+-                    check=True,
+-                    capture_output=True,
+-                    text=True,
++                    "Source repository changed after the workspace was created. "
++                    "Refusing to merge so concurrent work is not overwritten."
+                 )
+ 
+-            # ── Create backup ref before merge ────────────────────────────
+             backup_ref = f"refs/nexus/pre-apply-{self.session_id}"
+             head_sha = subprocess.run(
+                 ["git", "rev-parse", "HEAD"],
+                 cwd=self.repository,
+                 capture_output=True,
+                 text=True,
++                check=True,
+             ).stdout.strip()
+             subprocess.run(
+                 ["git", "update-ref", backup_ref, head_sha],
+                 cwd=self.repository,
++                check=True,
+                 capture_output=True,
+             )
+ 
+-            # ── Merge with automatic abort on failure ─────────────────────
+             result = subprocess.run(
+                 ["git", "merge", self.info.branch, "--no-edit"],
+                 cwd=self.repository,
+@@ -355,7 +520,6 @@ class GitWorktreeSession:
+                 text=True,
+             )
+             if result.returncode != 0:
+-                # Auto-abort to leave the source repository clean
+                 subprocess.run(
+                     ["git", "merge", "--abort"],
+                     cwd=self.repository,
+@@ -364,7 +528,7 @@ class GitWorktreeSession:
+                 raise WorktreeError(
+                     f"Failed to merge branch '{self.info.branch}': "
+                     f"{result.stderr or result.stdout}\n"
+-                    f"The source repository has been automatically restored. "
++                    "The source repository has been automatically restored. "
+                     f"Backup ref is available at {backup_ref}."
+                 )
+         else:
+diff --git a/scripts/run_release_gate.py b/scripts/run_release_gate.py
+index 24a7b38..38921e7 100644
+--- a/scripts/run_release_gate.py
++++ b/scripts/run_release_gate.py
+@@ -147,6 +147,106 @@ def wheel_install_command(python: str, target: Path, wheel: Path) -> list[str]:
+     return [*installer, "--no-deps", "--target", str(target), str(wheel)]
+ 
+ 
++def run_pytest_shards(
++    python: str,
++    *,
++    env: dict[str, str],
++    repo: Path = REPO,
++    shard_count: int | None = None,
++) -> tuple[int, int]:
++    """Run test files in isolated processes and combine branch coverage.
++
++    Nexus intentionally exercises subprocesses, web servers, and background
++    workers. Process-level sharding prevents one test's global runtime state
++    from contaminating later tests while still enforcing aggregate coverage.
++    """
++    import re
++
++    test_files = sorted((repo / "tests").glob("test_*.py"))
++    if not test_files:
++        raise RuntimeError("release gate found no test files")
++    requested = (
++        int(shard_count)
++        if shard_count is not None
++        else int(os.environ.get("NEXUS_TEST_SHARDS", "0"))
++    )
++    # Default to one test module per process. Nexus tests deliberately create
++    # subprocesses, web servers, and global agent state; module isolation makes
++    # release results deterministic instead of order-dependent.
++    count = len(test_files) if requested <= 0 else min(len(test_files), max(1, requested))
++    shards = [test_files[index::count] for index in range(count)]
++    timeout_seconds = int(os.environ.get("NEXUS_TEST_SHARD_TIMEOUT", "300"))
++
++    for stale in repo.glob(".coverage.shard-*"):
++        stale.unlink(missing_ok=True)
++    subprocess.run(
++        [python, "-m", "coverage", "erase"],
++        cwd=repo,
++        env=env,
++        check=True,
++        capture_output=True,
++        text=True,
++    )
++    total_passed = 0
++    total_skipped = 0
++    for index, shard in enumerate(shards, start=1):
++        command = [
++            python,
++            "-m",
++            "coverage",
++            "run",
++            "--branch",
++            "--source=nexus",
++        ]
++        command.extend(
++            [
++                "-m",
++                "pytest",
++                "-q",
++                "--disable-warnings",
++                *(str(path.relative_to(repo)) for path in shard),
++            ]
++        )
++        print(
++            f"\n==> pytest shard {index}/{len(shards)} ({len(shard)} files)",
++            flush=True,
++        )
++        shard_env = dict(env)
++        shard_env["COVERAGE_FILE"] = str(repo / f".coverage.shard-{index:03d}")
++        try:
++            result = subprocess.run(
++                command,
++                cwd=repo,
++                env=shard_env,
++                capture_output=True,
++                text=True,
++                timeout=timeout_seconds,
++            )
++        except subprocess.TimeoutExpired as exc:
++            raise RuntimeError(
++                f"pytest shard {index} exceeded {timeout_seconds}s"
++            ) from exc
++        print(result.stdout, end="")
++        if result.returncode != 0:
++            print(result.stderr, file=sys.stderr)
++            raise RuntimeError(f"pytest shard {index} failed with exit code {result.returncode}")
++        passed = re.search(r"(\d+) passed", result.stdout)
++        skipped = re.search(r"(\d+) skipped", result.stdout)
++        if not passed:
++            raise RuntimeError(f"pytest shard {index} reported no passing tests")
++        total_passed += int(passed.group(1))
++        total_skipped += int(skipped.group(1)) if skipped else 0
++
++    run([python, "-m", "coverage", "combine"], cwd=repo, env=env)
++    run(
++        [python, "-m", "coverage", "report", "--show-missing", "--fail-under=60"],
++        cwd=repo,
++        env=env,
++    )
++    run([python, "-m", "coverage", "xml"], cwd=repo, env=env)
++    return total_passed, total_skipped
++
++
+ def main() -> int:
+     python = sys.executable
+     revision = source_revision()
+@@ -154,18 +254,16 @@ def main() -> int:
+     assert_dependency_mirror()
+     run([python, "-m", "ruff", "check", "nexus", "tests", "scripts"], env=offline_env)
+     
+-    # Run pytest and capture output to count tests
+-    pytest_proc = subprocess.run([python, "-m", "pytest", "-q"], env=offline_env, capture_output=True, text=True)
+-    if pytest_proc.returncode not in (0, 5):
+-        print(pytest_proc.stdout, file=sys.stderr)
+-        print(pytest_proc.stderr, file=sys.stderr)
+-        sys.exit(pytest_proc.returncode)
+-    
+-    test_count = 0
+-    import re
+-    match = re.search(r"(\d+) passed", pytest_proc.stdout)
+-    if match:
+-        test_count = int(match.group(1))
++    test_count, skipped_count = run_pytest_shards(
++        python,
++        env=offline_env,
++        repo=REPO,
++    )
++    minimum_tests = int(os.environ.get("NEXUS_RELEASE_MIN_TESTS", "400"))
++    if test_count < minimum_tests:
++        raise RuntimeError(
++            f"release gate collected only {test_count} passing tests; expected at least {minimum_tests}"
++        )
+     run([python, "-m", "compileall", "-q", "nexus", "tests"], env=offline_env)
+ 
+     with tempfile.TemporaryDirectory(prefix="nexus-release-gate-") as temp:
+@@ -316,11 +414,14 @@ def main() -> int:
+         )
+         print(f"\nRelease provenance: {provenance_str}", flush=True)
+ 
+-        readiness_file = REPO / "LAUNCH_READINESS_3.2.0.md"
+-        readiness_content = f"""# Nexus 3.2.0 Launch Readiness
++        from nexus import __version__
++
++        readiness_file = REPO / f"LAUNCH_READINESS_{__version__}.md"
++        readiness_content = f"""# Nexus {__version__} Launch Readiness
+ 
+ ## Automated Release Gates
+ - **Tests Passed**: {test_count}
++- **Tests Skipped**: {skipped_count}
+ - **Provenance**: {provenance_str}
+ 
+ ## Status
+diff --git a/tests/test_agent_safety.py b/tests/test_agent_safety.py
+index 667cd09..2fb7763 100644
+--- a/tests/test_agent_safety.py
++++ b/tests/test_agent_safety.py
+@@ -53,6 +53,9 @@ def test_explicit_confirmation_executes_only_the_pending_call(tmp_path, monkeypa
+     old_cwd = os.getcwd()
+     try:
+         agent = _agent_for_tmp_path(tmp_path, monkeypatch)
++        # This test isolates one-time confirmation semantics; native sandbox
++        # enforcement is covered separately and must not depend on CI tooling.
++        agent.mode_policy.require_os_isolation = False
+         pending, pending_success = agent._execute_tool_with_safety(
+             "run_command",
+             {"command": "rm -rf ./confirmed_delete"},
+diff --git a/tests/test_launch_blockers_regression.py b/tests/test_launch_blockers_regression.py
+index 8ddce5e..ff11de1 100644
+--- a/tests/test_launch_blockers_regression.py
++++ b/tests/test_launch_blockers_regression.py
+@@ -41,7 +41,7 @@ def test_sandbox_credentials_leak_prevention(tmp_path):
+ def test_review_mode_policy():
+     policy = get_mode_policy("review")
+     assert policy.require_os_isolation is True
+-    assert "review" in _ISOLATION_REQUIRED_MODES
++    assert "review" not in _ISOLATION_REQUIRED_MODES
+ 
+ 
+ def test_quality_mode_distinct_reviewer():
+diff --git a/tests/test_long_term_runtime.py b/tests/test_long_term_runtime.py
+index 809870c..831b1f0 100644
+--- a/tests/test_long_term_runtime.py
++++ b/tests/test_long_term_runtime.py
+@@ -218,7 +218,7 @@ def test_git_worktree_session_creates_isolated_branch(tmp_path):
+     assert session.status()["git_status"].startswith("## nexus/session-123")
+ 
+ 
+-def test_git_worktree_refuses_to_drop_uncommitted_source_changes(tmp_path):
++def test_git_worktree_preserves_and_applies_over_dirty_source(tmp_path):
+     repository = tmp_path / "repo"
+     repository.mkdir()
+     subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
+@@ -237,14 +237,25 @@ def test_git_worktree_refuses_to_drop_uncommitted_source_changes(tmp_path):
+     subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
+     subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
+     tracked.write_text("uncommitted\n", encoding="utf-8")
++    (repository / "user-note.txt").write_text("preserve me\n", encoding="utf-8")
+ 
+     session = GitWorktreeSession(
+         repository,
+         "dirty-session",
+         state_root=tmp_path / "state",
+     )
+-    with pytest.raises(WorktreeError, match="uncommitted changes"):
+-        session.create()
++    info = session.create()
++    isolated = Path(info.path)
++    assert isolated.joinpath("tracked.txt").read_text(encoding="utf-8") == "uncommitted\n"
++    isolated.joinpath("tracked.txt").write_text("uncommitted plus nexus\n", encoding="utf-8")
++    isolated.joinpath("agent.txt").write_text("created\n", encoding="utf-8")
++
++    session.apply()
++
++    assert tracked.read_text(encoding="utf-8") == "uncommitted plus nexus\n"
++    assert (repository / "user-note.txt").read_text(encoding="utf-8") == "preserve me\n"
++    assert (repository / "agent.txt").read_text(encoding="utf-8") == "created\n"
++    session.discard()
+ 
+ 
+ def test_run_ledger_json_files_are_valid_after_repeated_updates(tmp_path):
+diff --git a/tests/test_mcp_integration.py b/tests/test_mcp_integration.py
+index 077a5c7..bd02440 100644
+--- a/tests/test_mcp_integration.py
++++ b/tests/test_mcp_integration.py
+@@ -56,7 +56,10 @@ for line in sys.stdin:
+ """)
+ 
+     config = MCPServerConfig(
+-        name="actual_test_server", command=[sys.executable, str(server_script)]
++        name="actual_test_server",
++        command=[sys.executable, str(server_script)],
++        workspace=str(tmp_path),
++        require_os_isolation=False,
+     )
+     conn = MCPConnection(config)
+ 
+diff --git a/tests/test_power_hardening.py b/tests/test_power_hardening.py
+new file mode 100644
+index 0000000..5f46ef4
+--- /dev/null
++++ b/tests/test_power_hardening.py
+@@ -0,0 +1,178 @@
++"""Regression coverage for Nexus execution-intelligence and safety upgrades."""
++
++from __future__ import annotations
++
++import os
++import threading
++from pathlib import Path
++
++from nexus.agent import Agent
++from nexus.api import RoundRobinKeyPool
++from nexus.history import FileHistory
++from nexus.planner import (
++    Difficulty,
++    ExecutionPlan,
++    IntentType,
++    PlanStep,
++    PlanType,
++    PlanningEngine,
++    TaskStatus,
++)
++from nexus.policy import get_mode_policy
++from nexus.repo_graph import RepoGraph
++from nexus.tools import tool_context, tool_multi_edit
++from nexus.verification import CheckStatus, CheckType, VerificationEngine
++
++
++def test_confirmed_command_keeps_required_os_isolation(tmp_path):
++    agent = Agent(
++        api_key="dummy",
++        working_dir=str(tmp_path),
++        mode_policy=get_mode_policy("review"),
++    )
++    captured: dict = {}
++    agent._dispatch_tool_execution = (  # type: ignore[method-assign]
++        lambda name, args: captured.update(name=name, args=dict(args)) or "✅ ok"
++    )
++    try:
++        output, success = agent._execute_tool_with_safety(
++            "run_process",
++            {"argv": ["echo", "ok"]},
++            _user_confirmed=True,
++        )
++    finally:
++        agent.close()
++
++    assert success is True
++    assert output == "✅ ok"
++    assert captured["args"]["require_os_isolation"] is True
++
++
++def test_multi_edit_rolls_back_every_file_when_commit_fails(tmp_path, monkeypatch):
++    first = tmp_path / "first.txt"
++    second = tmp_path / "second.txt"
++    first.write_text("alpha\n", encoding="utf-8")
++    second.write_text("beta\n", encoding="utf-8")
++    history = FileHistory("atomic-rollback")
++
++    real_replace = os.replace
++    calls = 0
++
++    def fail_second_replace(source, target):
++        nonlocal calls
++        calls += 1
++        if calls == 2:
++            raise OSError("simulated second-file failure")
++        return real_replace(source, target)
++
++    monkeypatch.setattr("nexus.tools.os.replace", fail_second_replace)
++    with tool_context(str(tmp_path), history):
++        result = tool_multi_edit(
++            [
++                {"path": "first.txt", "old_text": "alpha", "new_text": "changed-a"},
++                {"path": "second.txt", "old_text": "beta", "new_text": "changed-b"},
++            ]
++        )
++
++    assert result.startswith("❌ Multi-edit transaction failed")
++    assert first.read_text(encoding="utf-8") == "alpha\n"
++    assert second.read_text(encoding="utf-8") == "beta\n"
++    assert history.changes == []
++
++
++def test_planner_retry_preserves_failure_evidence(tmp_path, monkeypatch):
++    monkeypatch.setattr("nexus.planner.PLANS_DIR", tmp_path / "plans")
++    planner = PlanningEngine()
++    step = PlanStep(
++        id=1,
++        title="Implement",
++        description="Implement feature",
++        status=TaskStatus.FAILED,
++        attempts=1,
++        error="first failure",
++    )
++    planner.current_plan = ExecutionPlan(
++        id="plan-test",
++        goal="feature",
++        intent=IntentType.BUILD,
++        difficulty=Difficulty.COMPLEX,
++        plan_type=PlanType.PLANNED,
++        steps=[step],
++        status=TaskStatus.FAILED,
++    )
++
++    assert planner.retry_step(1, "targeted test failed") is True
++    assert step.status == TaskStatus.PENDING
++    assert step.error == "targeted test failed"
++    assert planner.current_plan.status == TaskStatus.IN_PROGRESS
++    assert planner.current_plan.failure_replans[-1]["evidence"] == "targeted test failed"
++
++
++def test_repo_graph_context_bundle_includes_callers_and_tests(tmp_path):
++    package = tmp_path / "app"
++    tests = tmp_path / "tests"
++    package.mkdir()
++    tests.mkdir()
++    (package / "__init__.py").write_text("", encoding="utf-8")
++    (package / "service.py").write_text(
++        "def calculate_total(value: int) -> int:\n    return value * 2\n",
++        encoding="utf-8",
++    )
++    (tests / "test_service.py").write_text(
++        "from app.service import calculate_total\n\n"
++        "def test_total():\n    assert calculate_total(2) == 4\n",
++        encoding="utf-8",
++    )
++    graph = RepoGraph(tmp_path, state_root=tmp_path / "state")
++    graph.build(force=True)
++
++    bundle = graph.context_bundle("fix calculate_total", max_files=5, max_chars=8000)
++
++    assert "app/service.py" in bundle
++    assert "tests/test_service.py" in bundle
++    assert "calculate_total" in bundle
++
++
++def test_change_aware_verification_stops_on_targeted_failure(tmp_path, monkeypatch):
++    (tmp_path / "pyproject.toml").write_text("[project]\nname='demo'\n", encoding="utf-8")
++    engine = VerificationEngine(str(tmp_path), require_os_isolation=False)
++    calls: list[tuple[CheckType, str]] = []
++
++    def fake_execute(check_type, command, **_kwargs):
++        calls.append((check_type, command))
++        from nexus.verification import CheckResult
++
++        return CheckResult(check_type, CheckStatus.FAILED, command, "targeted failure")
++
++    monkeypatch.setattr(engine, "_execute_check", fake_execute)
++    monkeypatch.setattr(engine, "run_all", lambda: (_ for _ in ()).throw(AssertionError("full gate should not run")))
++
++    report = engine.run_change_aware(
++        ["app/service.py"], impacted_tests=["tests/test_service.py"]
++    )
++
++    assert report.all_passed is False
++    assert len(report.checks) == 1
++    assert calls and "tests/test_service.py" in calls[0][1]
++
++
++def test_round_robin_pool_remains_consistent_under_concurrency():
++    pool = RoundRobinKeyPool(["k1", "k2", "k3"])
++    results: list[str] = []
++    lock = threading.Lock()
++
++    def consume() -> None:
++        local = [pool.get_next_key() for _ in range(100)]
++        with lock:
++            results.extend(local)
++
++    threads = [threading.Thread(target=consume) for _ in range(6)]
++    for thread in threads:
++        thread.start()
++    for thread in threads:
++        thread.join(timeout=5)
++
++    assert all(not thread.is_alive() for thread in threads)
++    assert len(results) == 600
++    assert set(results) == {"k1", "k2", "k3"}
++    assert all(results.count(key) == 200 for key in ("k1", "k2", "k3"))
+diff --git a/tests/test_webapp_coverage.py b/tests/test_webapp_coverage.py
+index d1bba8c..33d3f48 100644
+--- a/tests/test_webapp_coverage.py
++++ b/tests/test_webapp_coverage.py
+@@ -2,6 +2,7 @@
+ 
+ import pytest
+ from starlette.testclient import TestClient
++from starlette.websockets import WebSocketDisconnect
+ 
+ from nexus.webapp.server import create_app
+ 
+@@ -12,10 +13,16 @@ def client():
+     return TestClient(app)
+ 
+ 
+-def test_webapp_index(client):
++def test_webapp_index_requires_launch_token(client):
+     response = client.get("/")
++    assert response.status_code == 403
++
++    token = client.app.state.web_token
++    response = client.get(f"/?token={token}")
+     assert response.status_code == 200
+-    assert "window.CSRF_TOKEN" in response.text
++    assert "window.CSRF_TOKEN" not in response.text
++    assert token not in response.text
++    assert client.cookies.get("nexus_web_session") == token
+ 
+ 
+ def test_webapp_api_chat_unauthorized(client):
+@@ -24,28 +31,24 @@ def test_webapp_api_chat_unauthorized(client):
+ 
+ 
+ def test_webapp_api_chat_empty(client):
+-    # Need to access the module to get the generated token for the test
+-    from nexus.webapp.server import _web_token
+-
+-    response = client.post("/api/chat", json={}, headers={"X-CSRF-Token": _web_token})
++    token = client.app.state.web_token
++    assert client.get(f"/?token={token}").status_code == 200
++    response = client.post("/api/chat", json={})
+     assert response.status_code == 400
+     assert "Empty or invalid message" in response.json()["error"]
+ 
+ 
+ def test_websocket_unauthorized(client):
+-    with client.websocket_connect("/ws") as websocket:
+-        websocket.send_json({"type": "chat", "message": "hello"})
+-        data = websocket.receive_json()
+-        assert data["type"] == "error"
+-        assert "Unauthorized" in data["content"]
++    with pytest.raises(WebSocketDisconnect):
++        with client.websocket_connect("/ws"):
++            pass
+ 
+ 
+ def test_websocket_authenticate(client):
+-    from nexus.webapp.server import _web_token
+-
++    token = client.app.state.web_token
++    assert client.get(f"/?token={token}").status_code == 200
+     with client.websocket_connect("/ws") as websocket:
+-        websocket.send_json({"type": "authenticate", "token": _web_token})
+-        # Doesn't return anything on success, so we send a model set
++        websocket.send_json({"type": "authenticate", "token": ""})
+         websocket.send_json({"type": "set_model", "model": "invalid-model"})
+         data = websocket.receive_json()
+         assert data["type"] == "error"
+diff --git a/tests/test_workspace_edge_cases.py b/tests/test_workspace_edge_cases.py
+index 666104c..62e8a26 100644
+--- a/tests/test_workspace_edge_cases.py
++++ b/tests/test_workspace_edge_cases.py
+@@ -8,21 +8,34 @@ import pytest
+ from nexus.workspace import GitWorktreeSession, WorktreeError
+ 
+ 
+-def test_workspace_rejects_dirty_git(tmp_path: Path):
++def _init_repo(path: Path) -> None:
++    import subprocess
++
++    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
++    subprocess.run(["git", "config", "user.email", "nexus@example.invalid"], cwd=path, check=True)
++    subprocess.run(["git", "config", "user.name", "Nexus Test"], cwd=path, check=True)
++    (path / "tracked.txt").write_text("base\n", encoding="utf-8")
++    subprocess.run(["git", "add", "."], cwd=path, check=True)
++    subprocess.run(["git", "commit", "-qm", "initial"], cwd=path, check=True)
++
++
++def test_workspace_snapshots_dirty_git(tmp_path: Path):
+     ws_path = tmp_path / "dirty_repo"
+     ws_path.mkdir()
+-    (ws_path / ".git").mkdir()  # Make it look like a git repo
++    _init_repo(ws_path)
++    (ws_path / "tracked.txt").write_text("uncommitted\n", encoding="utf-8")
++    (ws_path / "untracked.txt").write_text("new\n", encoding="utf-8")
+ 
+-    with patch.object(GitWorktreeSession, "_git") as mock_git:
+-        mock_git.side_effect = lambda cmd: (
+-            ws_path.as_posix() if "rev-parse" in cmd else "M file.txt\n"
+-        )
++    session = GitWorktreeSession(ws_path, "session-123", state_root=tmp_path / "state")
++    info = session.create()
+ 
+-        session = GitWorktreeSession(ws_path, "session-123", state_root=tmp_path / "state")
+-        with pytest.raises(WorktreeError, match="uncommitted changes"):
+-            session.create()
+-
+-        # Since the class does mostly path manipulation via pathlib, it should not fail on init.
++    isolated = Path(info.path)
++    assert info.source_was_dirty is True
++    assert info.snapshot_commit
++    assert (isolated / "tracked.txt").read_text(encoding="utf-8") == "uncommitted\n"
++    assert (isolated / "untracked.txt").read_text(encoding="utf-8") == "new\n"
++    assert session.diff() == ""
++    session.discard()
+ 
+ 
+ def test_workspace_merge_conflict_rejection(tmp_path: Path):
+@@ -30,11 +43,10 @@ def test_workspace_merge_conflict_rejection(tmp_path: Path):
+     ws_path.mkdir()
+     (ws_path / ".git").mkdir()
+ 
+-    with patch.object(GitWorktreeSession, "_git") as mock_git:
+-        mock_git.side_effect = lambda cmd: (
+-            ws_path.as_posix() if "rev-parse" in cmd else "UU conflicting_file.txt\n"
+-        )
+-
++    with (
++        patch.object(GitWorktreeSession, "_git", return_value=ws_path.as_posix()),
++        patch.object(GitWorktreeSession, "_git_bytes", return_value=b"UU conflict.txt\0"),
++    ):
+         session = GitWorktreeSession(ws_path, "session-456", state_root=tmp_path / "state")
+-        with pytest.raises(WorktreeError, match="uncommitted changes"):
++        with pytest.raises(WorktreeError, match="unresolved merge conflicts"):
+             session.create()

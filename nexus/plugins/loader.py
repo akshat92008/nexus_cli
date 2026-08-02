@@ -138,7 +138,7 @@ class PluginLoader:
 
             # Check content-addressed trust
             content_hash = compute_plugin_hash(item, manifest)
-            if self._trust_checker and self._trust_checker(manifest_file):
+            if self._trust_checker and self._trust_checker(manifest_file, expected_digest=content_hash):
                 # Check if the content hash matches what was approved
                 diag = PluginDiagnostic(
                     plugin_dir=str(item),
@@ -207,7 +207,7 @@ class PluginLoader:
 
         # ── Content-addressed trust check ────────────────────────────────
         content_hash = compute_plugin_hash(plugin_dir, manifest)
-        if self._trust_checker and not self._trust_checker(manifest_file):
+        if self._trust_checker and not self._trust_checker(manifest_file, expected_digest=content_hash):
             diag = PluginDiagnostic(
                 plugin_dir=str(plugin_dir),
                 status="trust_required",

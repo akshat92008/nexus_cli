@@ -69,9 +69,15 @@ class LSPClient:
     def start(self) -> None:
         if self.process and self.process.poll() is None:
             return
-        self.process = subprocess.Popen(
-            list(self.command),
-            cwd=self.root,
+        from nexus.process_gateway import ProcessExecutionGateway, ProcessRequest
+        request = ProcessRequest.create(
+            purpose="language_server",
+            command=list(self.command),
+            workspace=self.root,
+            network_policy="allow", # LSPs sometimes need network
+        )
+        self.process = ProcessExecutionGateway.popen(
+            request,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -334,24 +340,34 @@ def type_check(path: str = ".") -> str:
     """
     Run static type checking using pyright (or mypy as fallback) on the given path.
     """
-    import subprocess
+    from nexus.process_gateway import ProcessExecutionGateway, ProcessRequest
 
     try:
-        result = subprocess.run(["pyright", path], capture_output=True, text=True, timeout=30)
-        return (
-            result.stdout
-            if result.stdout
-            else (result.stderr or "✅ No type errors found (pyright).")
+        request = ProcessRequest.create(
+            purpose="type_check",
+            command=["pyright", path],
+            workspace=Path(path).expanduser().resolve() if Path(path).is_dir() else Path(path).parent.resolve(),
+            timeout_seconds=30
         )
+        result = ProcessExecutionGateway.run(request)
+        if result.timed_out:
+            return "❌ Type check timed out after 30 seconds."
+        if result.success or (result.exit_code is not None):
+            return result.stdout if result.stdout else (result.stderr or "✅ No type errors found (pyright).")
+        raise FileNotFoundError()
     except FileNotFoundError:
         try:
-            result = subprocess.run(["mypy", path], capture_output=True, text=True, timeout=30)
-            return (
-                result.stdout
-                if result.stdout
-                else (result.stderr or "✅ No type errors found (mypy).")
+            req2 = ProcessRequest.create(
+                purpose="type_check",
+                command=["mypy", path],
+                workspace=Path(path).expanduser().resolve() if Path(path).is_dir() else Path(path).parent.resolve(),
+                timeout_seconds=30
             )
+            result = ProcessExecutionGateway.run(req2)
+            if result.timed_out:
+                return "❌ Type check timed out after 30 seconds."
+            if result.success or (result.exit_code is not None):
+                return result.stdout if result.stdout else (result.stderr or "✅ No type errors found (mypy).")
+            raise FileNotFoundError()
         except FileNotFoundError:
             return "❌ No type checker found (pyright or mypy not installed)."
-    except subprocess.TimeoutExpired:
-        return "❌ Type check timed out after 30 seconds."

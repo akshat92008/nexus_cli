@@ -1,0 +1,2423 @@
+--- nexus/repair.py:221 ---
+            try:
+                response, events = self._agent._run_hosted_turn(  # noqa: SLF001
+                    repair_prompt,
+                    analysis={"intent": "fix", "plan_type": "direct"},
+                    plan=None,
+                    interactive=False,
+                    emit_ui=False,
+                )
+            except Exception as exc:
+                logger.warning("Repair iteration %d raised exception: %s", iteration, exc)
+                response = str(exc)
+
+--- nexus/verification.py:232 ---
+        try:
+            import sys
+            result = subprocess.run(
+                [os.environ.get("PYTHON", sys.executable), "-m", "compileall", "-q", "-f", "."],
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            passed = result.returncode == 0
+            return CheckResult(
+                check_type=CheckType.SYNTAX,
+                status=CheckStatus.PASSED if passed else CheckStatus.FAILED,
+                command="python -m compileall -q -f .",
+                output=result.stderr or result.stdout,
+                duration_ms=int((time.time() - start) * 1000),
+            )
+        except Exception as e:
+            return CheckResult(CheckType.SYNTAX, CheckStatus.ERROR, "", str(e))
+
+
+--- nexus/verification.py:691 ---
+        try:
+            safety = SafetyLayer().check_command(command)
+            if safety.level in {SafetyLevel.BLOCKED, SafetyLevel.DANGEROUS}:
+                return CheckResult(
+                    check_type=check_type,
+                    status=CheckStatus.ERROR,
+                    command=command,
+                    output=f"Verification command rejected: {safety.reason}",
+                )
+            result = SandboxRunner(self.working_dir).run_shell(
+                command,
+                cwd=self.working_dir,
+                timeout_seconds=120,
+                network=False,
+            )
+
+            duration = int((time.monotonic() - start) * 1000)
+            output = result.stdout
+            if result.stderr:
+                output += "\n" + result.stderr
+
+            status = CheckStatus.PASSED if result.success else CheckStatus.FAILED
+
+            # Count errors and warnings from output
+            error_count = output.lower().count("error")
+            warning_count = output.lower().count("warning")
+
+            return CheckResult(
+                check_type=check_type,
+                status=status,
+                command=command,
+                output=output.strip(),
+                error_count=error_count,
+                warning_count=warning_count,
+                duration_ms=duration,
+            )
+
+        except Exception as e:
+            return CheckResult(
+                check_type=check_type,
+
+--- nexus/recovery.py:24 ---
+        try:
+            turn_dir = catalog.resolve(run_id)
+        except Exception as e:
+            return False, f"Could not resolve run '{run_id}': {e}"
+
+
+--- nexus/test_prompt.py:25 ---
+try:
+    print("Type something and press Enter:")
+    result = session.prompt(HTML("<ansicyan> ❯ </ansicyan>"), key_bindings=kb)
+    print("Result:", repr(result))
+except Exception as e:
+    print("Error:", e)
+
+--- nexus/ui.py:354 ---
+            try:
+                self._status = self.console.status(f"[{DIM}]{message}[/]", spinner="bouncingBar")
+                self._status.start()
+                self._is_active = True
+            except Exception:
+                pass
+
+
+--- nexus/ui.py:361 ---
+            try:
+                self._status.update(f"[{DIM}]{message}[/]")
+            except Exception:
+                pass
+        else:
+
+--- nexus/ui.py:370 ---
+            try:
+                self._status.stop()
+            except Exception:
+                pass
+            self._status = None
+
+--- nexus/tools.py:1038 ---
+    try:
+        result = subprocess.run(
+            ["git"] + args,
+            capture_output=True,
+            text=True,
+            cwd=cwd or _tool_working_dir.get() or os.getcwd(),
+            timeout=30,
+        )
+        output = result.stdout
+        if result.stderr:
+            output += ("\n" if output else "") + result.stderr
+        return result.returncode == 0, output.strip()
+    except FileNotFoundError:
+        return False, "❌ git is not installed or not in PATH"
+    except subprocess.TimeoutExpired:
+        return False, "⏰ Git command timed out"
+    except Exception as e:
+        return False, f"❌ Git error: {e}"
+
+
+--- nexus/tools.py:1128 ---
+    try:
+        p = _resolve_path(path)
+        if not p.exists():
+            return f"❌ File not found: {path}"
+        if not p.is_file():
+            return f"❌ Not a file: {path}"
+        if p.stat().st_size > 2 * 1024 * 1024:
+            return f"❌ File too large ({_format_size(p.stat().st_size)}). Use search_code instead."
+
+        with open(p, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+
+        if start_line is not None:
+            try:
+                start_line = int(start_line)
+            except (ValueError, TypeError):
+                start_line = None
+        if end_line is not None:
+            try:
+                end_line = int(end_line)
+            except (ValueError, TypeError):
+                end_line = None
+
+        start = max(1, start_line or 1)
+        end = min(len(lines), end_line or len(lines))
+
+        numbered = []
+        for i in range(start - 1, end):
+            numbered.append(f"{i + 1:>5} │ {lines[i].rstrip()}")
+
+        header = f"📄 {p.name}  ({len(lines)} lines, {_format_size(p.stat().st_size)})"
+        if start_line or end_line:
+            header += f"  [showing lines {start}-{end}]"
+
+        return header + "\n" + "\n".join(numbered)
+    except Exception as e:
+        return f"❌ Error reading file: {e}"
+
+
+--- nexus/tools.py:1150 ---
+    try:
+        p = _resolve_path(path)
+
+        # Snapshot before writing
+        history = get_history()
+        snapshot = history.snapshot_before_write(str(p))
+
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        # Record the change
+        history.record_change(str(p), "write_file", snapshot)
+
+        line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
+        return f"✅ Wrote {line_count} lines to {p}"
+    except Exception as e:
+        return f"❌ Error writing file: {e}"
+
+
+--- nexus/tools.py:1214 ---
+    try:
+        p = _resolve_path(path)
+        if not p.exists():
+            return f"❌ File not found: {path}"
+
+        with open(p, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        # 1. Exact match
+        count = content.count(old_text)
+        target_old = old_text
+
+        # 2. Whitespace-insensitive fallback match if exact fails
+        if count == 0:
+            content_lines = content.splitlines(keepends=True)
+            old_lines = old_text.splitlines()
+
+            if old_lines:
+                clean_old = [line.strip() for line in old_lines if line.strip()]
+                matches = []
+                for i in range(len(content_lines) - len(old_lines) + 1):
+                    chunk = content_lines[i : i + len(old_lines)]
+                    clean_chunk = [line.strip() for line in chunk if line.strip()]
+                    if clean_chunk == clean_old:
+                        matches.append((i, "".join(chunk)))
+
+                if len(matches) == 1:
+                    target_old = matches[0][1]
+                    count = 1
+
+        if count == 0:
+            # Diagnostic feedback for LLM — fail clearly, never silently replace the whole file
+            first_line = old_text.splitlines()[0] if old_text.strip() else old_text
+            content_lines = content.splitlines()
+            similar = [
+                f"L{index + 1}: {line.strip()[:80]}"
+                for index, line in enumerate(content_lines)
+                if first_line.strip() in line.strip() or line.strip() in first_line.strip()
+            ]
+            hint = f"\nSimilar lines in {p.name}:\n" + "\n".join(similar[:5]) if similar else ""
+            return f"❌ Text not found in {p.name}. Make sure old_text matches exactly.{hint}"
+
+        if count > 1:
+            return f"⚠️ Found {count} occurrences of old_text in {p.name}. Provide more surrounding lines to make old_text unique."
+
+        # Snapshot before editing
+        history = get_history()
+        snapshot = history.snapshot_before_write(str(p))
+
+        new_content = content.replace(target_old, new_text, 1)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(new_content)
+
+        history.record_change(str(p), "edit_file", snapshot)
+
+        old_lc = old_text.count("\n") + 1
+        new_lc = new_text.count("\n") + 1
+        return f"✅ Edited {p.name}: replaced {old_lc} lines → {new_lc} lines"
+    except Exception as e:
+        return f"❌ Error editing file: {e}"
+
+
+--- nexus/tools.py:1262 ---
+    try:
+        p = _resolve_path(path)
+        if not p.exists():
+            return f"❌ File not found: {path}"
+
+        with open(p, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        try:
+            start_line = int(start_line)
+            end_line = int(end_line)
+        except (ValueError, TypeError):
+            return "❌ start_line and end_line must be integers"
+
+        if start_line < 1 or start_line > len(lines) + 1:
+            return f"❌ start_line {start_line} out of range (file has {len(lines)} lines)"
+
+        if end_line != 0 and end_line < start_line:
+            return f"❌ end_line ({end_line}) must be >= start_line ({start_line}) or 0 for insert mode"
+
+        # Snapshot
+        history = get_history()
+        snapshot = history.snapshot_before_write(str(p))
+
+        new_lines = new_content.split("\n") if new_content else []
+        # Ensure each new line ends with \n except possibly the last
+        new_lines = [line + "\n" for line in new_lines]
+
+        if end_line == 0:
+            # Insert before start_line
+            for i, line in enumerate(new_lines):
+                lines.insert(start_line - 1 + i, line)
+        else:
+            # Replace lines[start_line-1 : end_line] with new_lines
+            end_line = min(end_line, len(lines))
+            lines[start_line - 1 : end_line] = new_lines
+
+        with open(p, "w", encoding="utf-8") as f:
+            f.writelines(lines)
+
+        history.record_change(str(p), "patch_file", snapshot)
+        return f"✅ Patched {p.name}: lines {start_line}-{end_line} → {len(new_lines)} new lines"
+    except Exception as e:
+        return f"❌ Error patching file: {e}"
+
+
+--- nexus/tools.py:1371 ---
+    try:
+        p = _resolve_path(path)
+        if not p.exists():
+            return f"❌ Path not found: {path}"
+
+        stat = p.stat()
+        info = [f"📋 {p.name}"]
+        info.append(f"  Type:      {'directory' if p.is_dir() else 'file'}")
+        info.append(f"  Path:      {p}")
+        info.append(f"  Size:      {_format_size(stat.st_size)}")
+        info.append(
+            f"  Modified:  {datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        info.append(f"  Perms:     {oct(stat.st_mode)[-3:]}")
+
+        if p.is_file():
+            mime = mimetypes.guess_type(str(p))[0] or "unknown"
+            info.append(f"  MIME:      {mime}")
+            # Count lines for text files
+            if stat.st_size < 5 * 1024 * 1024:
+                try:
+                    with open(p, "r", encoding="utf-8") as f:
+                        line_count = sum(1 for _ in f)
+                    info.append(f"  Lines:     {line_count}")
+                except (UnicodeDecodeError, OSError):
+                    info.append("  Lines:     (binary file)")
+            # MD5 for small files
+            if stat.st_size < 1024 * 1024:
+                h = hashlib.md5(p.read_bytes()).hexdigest()
+                info.append(f"  MD5:       {h}")
+
+        return "\n".join(info)
+    except Exception as e:
+        return f"❌ Error getting file info: {e}"
+
+
+--- nexus/tools.py:1403 ---
+    try:
+        import difflib
+
+        pa = _resolve_path(file_a)
+        pb = _resolve_path(file_b)
+
+        if not pa.exists():
+            return f"❌ File not found: {file_a}"
+        if not pb.exists():
+            return f"❌ File not found: {file_b}"
+
+        with open(pa, "r", encoding="utf-8", errors="replace") as f:
+            lines_a = f.readlines()
+        with open(pb, "r", encoding="utf-8", errors="replace") as f:
+            lines_b = f.readlines()
+
+        diff = difflib.unified_diff(
+            lines_a,
+            lines_b,
+            fromfile=str(pa.name),
+            tofile=str(pb.name),
+        )
+        result = "".join(diff)
+        if not result:
+            return f"✅ Files are identical: {pa.name} == {pb.name}"
+        return f"📝 Diff: {pa.name} vs {pb.name}\n{result}"
+    except Exception as e:
+        return f"❌ Error diffing files: {e}"
+
+
+--- nexus/tools.py:1433 ---
+    try:
+        from nexus.sandbox import SandboxRunner
+
+        cwd_path = _resolve_path(cwd) if cwd else _resolve_path("")
+        work_dir = str(cwd_path)
+        if timeout is not None:
+            try:
+                timeout = float(timeout)
+            except (ValueError, TypeError):
+                timeout = 120.0
+        result = SandboxRunner(work_dir).run_shell(
+            command,
+            cwd=work_dir,
+            timeout_seconds=timeout,
+            network=network,
+            require_os_isolation=require_os_isolation,
+        )
+        return result.format_tool_output()
+    except Exception as e:
+        return f"❌ Error running command: {e}"
+
+
+--- nexus/tools.py:1458 ---
+    try:
+        from nexus.sandbox import CommandSpec, SandboxRunner
+
+        cwd_path = _resolve_path(cwd) if cwd else _resolve_path("")
+        work_dir = str(cwd_path)
+        spec = CommandSpec.create(
+            argv,
+            work_dir,
+            timeout_seconds=float(timeout),
+            network=network,
+            require_os_isolation=require_os_isolation,
+        )
+        return SandboxRunner(work_dir).run(spec).format_tool_output()
+    except Exception as exc:
+        return f"❌ Error running typed process: {exc}"
+
+
+--- nexus/tools.py:1581 ---
+    try:
+        work_dir = cwd or _tool_working_dir.get() or os.getcwd()
+        argv = shlex.split(command, posix=True)
+        if not argv:
+            return "❌ Background command is empty"
+        log_dir = nexus_home() / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stdout_log = log_dir / f"bg_{ts}_stdout.log"
+        stderr_log = log_dir / f"bg_{ts}_stderr.log"
+
+        stdout_f = open(stdout_log, "w")
+        stderr_f = open(stderr_log, "w")
+
+        safe_env = {}
+        for key, value in os.environ.items():
+            if key in {
+                "PATH",
+                "LANG",
+                "LC_ALL",
+                "TZ",
+                "TMPDIR",
+                "TEMP",
+                "TMP",
+                "SYSTEMROOT",
+                "WINDIR",
+                "PATHEXT",
+                "VIRTUAL_ENV",
+                "PYTHONPATH",
+                "NODE_PATH",
+                "JAVA_HOME",
+                "GOROOT",
+                "GOPATH",
+                "CARGO_HOME",
+            }:
+                safe_env[key] = value
+            elif key.startswith("NEXUS_"):
+                # Reject credentials leaking into sandboxed commands
+                key_upper = key.upper()
+                if not any(
+                    term in key_upper
+                    for term in ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH")
+                ):
+                    safe_env[key] = value
+        safe_env["NEXUS_SANDBOX"] = "restricted-background"
+
+        from nexus.sandbox import CommandSpec, SandboxBackend, SandboxRunner
+
+        sandbox = SandboxRunner(Path(work_dir))
+        spec = CommandSpec.create(
+            argv,
+            work_dir,
+            timeout_seconds=86_400,
+            network=network,
+            require_os_isolation=require_os_isolation,
+        )
+        backend = sandbox.backend()
+        if require_os_isolation and backend == SandboxBackend.RESTRICTED:
+            stdout_f.close()
+            stderr_f.close()
+            return (
+                "❌ BLOCKED: No supported OS sandbox is available for this "
+                "background process. Install bubblewrap on Linux or use "
+                "sandbox-exec on macOS."
+            )
+        if backend == SandboxBackend.BUBBLEWRAP:
+            argv = sandbox._bubblewrap_command(spec, Path(work_dir))
+        elif backend == SandboxBackend.MACOS:
+            argv, _ = sandbox._macos_command(spec, Path(work_dir))
+
+        try:
+            proc = subprocess.Popen(
+                argv,
+                shell=False,
+                stdout=stdout_f,
+                stderr=stderr_f,
+                cwd=work_dir,
+                env=safe_env,
+                start_new_session=os.name != "nt",
+                creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
+            )
+        finally:
+            # Close file handles in the parent — the child process
+            # has its own copies of the file descriptors
+            stdout_f.close()
+            stderr_f.close()
+
+        _bg_processes[proc.pid] = {
+            "command": command,
+            "argv": argv,
+            "pid": proc.pid,
+            "stdout_log": str(stdout_log),
+            "stderr_log": str(stderr_log),
+            "started": datetime.now().isoformat(),
+            "process": proc,
+            "process_group": proc.pid,
+            "owner": _tool_owner.get(),
+        }
+
+        return (
+            f"✅ Background process started\n"
+            f"  PID:    {proc.pid}\n"
+            f"  CMD:    {command}\n"
+            f"  Network isolation: policy-only ({'allowed' if network else 'undeclared'})\n"
+            f"  Stdout: {stdout_log}\n"
+            f"  Stderr: {stderr_log}"
+        )
+    except Exception as e:
+        return f"❌ Error starting background process: {e}"
+
+
+--- nexus/tools.py:1730 ---
+    try:
+        search_dir = _resolve_path(directory or _tool_working_dir.get() or os.getcwd())
+        if not search_dir.is_dir():
+            return f"❌ Not a directory: {search_dir}"
+
+        matches = []
+        max_matches = 50
+        regex = re.compile(pattern, re.IGNORECASE)
+
+        for root, dirs, files in os.walk(search_dir):
+            # Filter ignored dirs
+            dirs[:] = [d for d in dirs if d not in IGNORE_DIRS and not d.startswith(".")]
+
+            for fname in files:
+                if file_pattern and not fnmatch.fnmatch(fname, file_pattern):
+                    continue
+                fpath = Path(root) / fname
+                if _should_ignore(fpath):
+                    continue
+
+                try:
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                        for i, line in enumerate(f, 1):
+                            if regex.search(line):
+                                rel = fpath.relative_to(search_dir)
+                                matches.append(f"  {rel}:{i}  │ {line.rstrip()}")
+                                if len(matches) >= max_matches:
+                                    break
+                except (OSError, UnicodeDecodeError):
+                    continue
+
+                if len(matches) >= max_matches:
+                    break
+            if len(matches) >= max_matches:
+                break
+
+        if not matches:
+            return f"🔍 No matches for /{pattern}/ in {search_dir}"
+
+        header = f"🔍 Found {len(matches)} matches for /{pattern}/:"
+        if len(matches) == max_matches:
+            header += f" (capped at {max_matches})"
+        return header + "\n" + "\n".join(matches)
+    except Exception as e:
+        return f"❌ Error searching: {e}"
+
+
+--- nexus/tools.py:1769 ---
+    try:
+        dir_path = _resolve_path(path or _tool_working_dir.get() or os.getcwd())
+        if not dir_path.is_dir():
+            return f"❌ Not a directory: {dir_path}"
+
+        items = []
+
+        def _list(p: Path, depth: int, prefix: str = ""):
+            if depth > max_depth:
+                return
+            try:
+                entries = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+            except PermissionError:
+                return
+
+            for entry in entries:
+                if _should_ignore(entry):
+                    continue
+                if entry.is_dir():
+                    items.append(f"{prefix}📁 {entry.name}/")
+                    if recursive:
+                        _list(entry, depth + 1, prefix + "   ")
+                else:
+                    size = _format_size(entry.stat().st_size)
+                    items.append(f"{prefix}📄 {entry.name}  ({size})")
+
+        _list(dir_path, 0)
+
+        if not items:
+            return f"📁 {dir_path} (empty)"
+        return f"📁 {dir_path}\n" + "\n".join(items)
+    except Exception as e:
+        return f"❌ Error listing directory: {e}"
+
+
+--- nexus/tools.py:1794 ---
+    try:
+        search_dir = _resolve_path(directory or _tool_working_dir.get() or os.getcwd())
+        matches = []
+        for p in search_dir.rglob(pattern):
+            if any(part in IGNORE_DIRS for part in p.parts):
+                continue
+            if _should_ignore(p):
+                continue
+            rel = p.relative_to(search_dir)
+            if p.is_file():
+                matches.append(f"  📄 {rel}  ({_format_size(p.stat().st_size)})")
+            else:
+                matches.append(f"  📁 {rel}/")
+            if len(matches) >= 100:
+                break
+
+        if not matches:
+            return f"🔍 No files matching '{pattern}' in {search_dir}"
+        return f"🔍 Found {len(matches)} matches for '{pattern}':\n" + "\n".join(matches)
+    except Exception as e:
+        return f"❌ Error finding files: {e}"
+
+
+--- nexus/tools.py:1826 ---
+    try:
+        root = _resolve_path(path or _tool_working_dir.get() or os.getcwd())
+        lines = [f"🌳 {root.name}/"]
+
+        def _tree(p: Path, prefix: str, depth: int):
+            if depth >= max_depth:
+                return
+            try:
+                entries = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+            except PermissionError:
+                return
+
+            # Filter
+            entries = [e for e in entries if not _should_ignore(e)]
+            for i, entry in enumerate(entries):
+                is_last = i == len(entries) - 1
+                connector = "└── " if is_last else "├── "
+                if entry.is_dir():
+                    lines.append(f"{prefix}{connector}{entry.name}/")
+                    ext = "    " if is_last else "│   "
+                    _tree(entry, prefix + ext, depth + 1)
+                else:
+                    lines.append(f"{prefix}{connector}{entry.name}")
+
+        _tree(root, "", 0)
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ Error getting structure: {e}"
+
+
+--- nexus/tools.py:1850 ---
+    try:
+        from nexus.repo_graph import RepoGraph
+
+        graph = RepoGraph(_tool_working_dir.get() or os.getcwd())
+        stats = graph.build(force=bool(force))
+        return "🧭 Repository graph refreshed\n" + json.dumps(
+            {
+                "stats": {
+                    "scanned": stats.scanned,
+                    "indexed": stats.indexed,
+                    "reused": stats.reused,
+                    "removed": stats.removed,
+                    "parse_errors": stats.parse_errors,
+                },
+                "graph": graph.summary(),
+            },
+            indent=2,
+        )
+    except Exception as exc:
+        return f"❌ Repository graph indexing failed: {exc}"
+
+
+--- nexus/tools.py:1875 ---
+    try:
+        from nexus.repo_graph import RepoGraph
+
+        graph = RepoGraph(_tool_working_dir.get() or os.getcwd())
+        graph.build()
+        declarations = [asdict(item) for item in graph.find_symbols(query, limit=limit)]
+        callers = graph.find_callers(query, limit=limit) if include_callers else []
+        return "🧭 Repository symbol lookup\n" + json.dumps(
+            {
+                "query": query,
+                "declarations": declarations,
+                "callers": callers,
+            },
+            indent=2,
+        )
+    except Exception as exc:
+        return f"❌ Repository symbol lookup failed: {exc}"
+
+
+--- nexus/tools.py:1895 ---
+    try:
+        from nexus.repo_graph import RepoGraph
+
+        graph = RepoGraph(_tool_working_dir.get() or os.getcwd())
+        graph.build()
+        dependencies = {str(path): graph.dependencies(path) for path in paths}
+        return "🧭 Repository impact analysis\n" + json.dumps(
+            {
+                "paths": paths,
+                "dependencies": dependencies,
+                "impacted_tests": graph.impacted_tests(paths),
+            },
+            indent=2,
+        )
+    except Exception as exc:
+        return f"❌ Repository impact analysis failed: {exc}"
+
+
+--- nexus/tools.py:1920 ---
+    try:
+        graph = _built_graph()
+        return json.dumps(
+            {
+                "query": query,
+                "results": graph.relevant_files(query, limit=max(1, int(limit))),
+                "frameworks": graph.frameworks(),
+                "summary": graph.summary(),
+            },
+            indent=2,
+        )
+    except Exception as exc:
+        return f"❌ Repository context selection failed: {exc}"
+
+
+--- nexus/tools.py:1928 ---
+    try:
+        return json.dumps(_built_graph().routes(query), indent=2)
+    except Exception as exc:
+        return f"❌ Repository route discovery failed: {exc}"
+
+
+--- nexus/tools.py:1936 ---
+    try:
+        return json.dumps(_built_graph().models(query), indent=2)
+    except Exception as exc:
+        return f"❌ Repository model discovery failed: {exc}"
+
+
+--- nexus/tools.py:2570 ---
+    try:
+        # Use DuckDuckGo HTML search
+        encoded_query = urllib.parse.quote_plus(query)
+        url = f"https://html.duckduckgo.com/html/?q={encoded_query}"
+        policy = NetworkPolicy(
+            allowed_hosts=frozenset({"html.duckduckgo.com"}),
+            max_response_bytes=200_000,
+        )
+        req = urllib.request.Request(
+            url,
+            headers={"User-Agent": "NexusAI/1.0"},
+        )
+        with _safe_urlopen(req, timeout=10, policy=policy) as resp:
+            html_text = resp.read(policy.max_response_bytes).decode("utf-8", errors="replace")
+
+        # Parse results (simple regex extraction)
+        results = []
+        # DuckDuckGo HTML has results in <a class="result__a"> tags
+        result_pattern = re.compile(
+            r'<a[^>]*class="result__a"[^>]*href="([^"]*)"[^>]*>(.*?)</a>.*?'
+            r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
+            re.DOTALL,
+        )
+
+        for match in result_pattern.finditer(html_text):
+            if len(results) >= max_results:
+                break
+            link = match.group(1)
+            title = _strip_html(match.group(2)).strip()
+            snippet = _strip_html(match.group(3)).strip()
+
+            # DuckDuckGo wraps links in a redirect, extract the actual URL
+            if "uddg=" in link:
+                actual_url = urllib.parse.unquote(link.split("uddg=")[-1].split("&")[0])
+            else:
+                actual_url = link
+
+            if title and actual_url:
+                results.append(
+                    f"  {len(results) + 1}. {title}\n     {actual_url}\n     {snippet}\n"
+                )
+
+        if not results:
+            return f"🔍 No results found for: {query}"
+
+        return f"🔍 Search results for '{query}':\n\n" + "\n".join(results)
+    except Exception as e:
+        return f"❌ Search error: {e}"
+
+
+--- nexus/tools.py:2590 ---
+    try:
+        from nexus.github import GitHubIntegration
+
+        issues = GitHubIntegration.list_issues(limit=limit)
+        if not issues:
+            return "No open issues found."
+        lines = []
+        for i in issues:
+            lines.append(f"#{i.get('number')} [{i.get('state')}] {i.get('title')}")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"❌ GitHub Error: {e}"
+
+
+--- nexus/tools.py:2612 ---
+    try:
+        from nexus.github import GitHubIntegration
+
+        issue = GitHubIntegration.view_issue(number)
+        if not issue:
+            return f"❌ Issue #{number} not found."
+        comments = "\n".join(
+            f"- {item.get('author', {}).get('login', 'unknown')}: {item.get('body', '')}"
+            for item in issue.get("comments", [])
+        )
+        return (
+            f"Issue #{issue.get('number')}: {issue.get('title')}\n"
+            f"State: {issue.get('state')}\n"
+            f"URL: {issue.get('url')}\n\n"
+            f"{issue.get('body', '(no body)')}\n\n"
+            f"Comments:\n{comments or '(none)'}"
+        )
+    except Exception as e:
+        return f"❌ GitHub Error: {e}"
+
+
+--- nexus/tools.py:2622 ---
+    try:
+        from nexus.dashboard import RegressionDashboard
+
+        RegressionDashboard.generate(input_path, output_path)
+        return f"✅ Dashboard successfully generated at {output_path}"
+    except Exception as e:
+        return f"❌ Failed to generate dashboard: {e}"
+
+
+--- nexus/tools.py:2632 ---
+    try:
+        from nexus.github import GitHubIntegration
+
+        url = GitHubIntegration.create_pull_request(title, body, base)
+        return f"✅ Pull request created successfully: {url}"
+    except Exception as e:
+        return f"❌ GitHub Error: {e}"
+
+
+--- nexus/tools.py:1289 ---
+        try:
+            p = _resolve_path(path)
+        except Exception as exc:
+            return f"❌ Multi-edit aborted: edit #{i + 1} path error — {exc}. No files changed."
+        if not p.exists():
+
+--- nexus/tools.py:1322 ---
+                    try:
+                        _shutil.copy2(str(snap), applied_path)
+                    except Exception:
+                        pass
+            return (
+
+--- nexus/api.py:291 ---
+        try:
+            response = request()
+        except Exception as exc:
+            finish("failed", {"error": str(exc)})
+            raise
+
+--- nexus/api.py:110 ---
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            k, v = k.strip(), v.strip().strip("'\"")
+                            # Explicit process environment wins over repository .env.
+                            # This is required for CLI flags, CI, and isolated tests.
+                            os.environ.setdefault(k, v)
+            except Exception:
+                pass
+
+
+--- nexus/api.py:422 ---
+            try:
+                custom_client = OpenAI(
+                    base_url=self.custom_base_url,
+                    api_key=self.custom_api_key,
+                    timeout=self.timeout,
+                    max_retries=0,
+                )
+                effective_model = self.custom_model or model_id
+                return self._provider_request(
+                    provider="custom",
+                    model=effective_model,
+                    streaming=stream,
+                    attempt_number=len(errors) + 1,
+                    request=lambda: custom_client.chat.completions.create(
+                        model=effective_model,
+                        **kwargs,
+                    ),
+                )
+            except Exception as exc:
+                errors.append(f"Custom OpenAI-compatible endpoint: {exc}")
+
+
+--- nexus/api.py:587 ---
+            try:
+                or_client = OpenAI(
+                    base_url=OPENROUTER_BASE_URL,
+                    api_key=openrouter_key,
+                    timeout=DEFAULT_GROQ_TIMEOUT,
+                    max_retries=0,
+                )
+                or_kwargs = dict(kwargs)
+                if or_kwargs.get("max_tokens", 16384) > 8192:
+                    or_kwargs["max_tokens"] = 8192
+                openrouter_model = (
+                    os.environ.get("NEXUS_OPENROUTER_MODEL", "").strip()
+                    or self.custom_model
+                    or model_id
+                )
+                return self._provider_request(
+                    provider="openrouter",
+                    model=openrouter_model,
+                    streaming=stream,
+                    fallback_from=model_id,
+                    attempt_number=len(errors) + 1,
+                    request=lambda: or_client.chat.completions.create(
+                        model=openrouter_model, **or_kwargs
+                    ),
+                )
+            except Exception as e:
+                errors.append(f"OpenRouter Fallback: {e}")
+
+
+--- nexus/api.py:454 ---
+                try:
+                    client = self._get_nvidia_client(key)
+                    resp = self._provider_request(
+                        provider="nvidia",
+                        model=model_id,
+                        streaming=stream,
+                        attempt_number=len(errors) + 1,
+                        request=lambda client=client, model_id=model_id: (
+                            client.chat.completions.create(model=model_id, **kwargs)
+                        ),
+                    )
+                    self.current_key_idx = (idx + 1) % len(self.nvidia_keys)
+                    self.api_key = key
+                    self.client = client
+                    return resp
+                except Exception as e:
+                    err_str = str(e)
+                    errors.append(f"NVIDIA Key {idx + 1} ({model_id}): {err_str}")
+
+--- nexus/api.py:498 ---
+                    try:
+                        client = self._get_nvidia_client(key)
+                        resp = self._provider_request(
+                            provider="nvidia",
+                            model=fb_model,
+                            streaming=stream,
+                            fallback_from=model_id,
+                            attempt_number=len(errors) + 1,
+                            request=lambda client=client, fb_model=fb_model: (
+                                client.chat.completions.create(model=fb_model, **kwargs)
+                            ),
+                        )
+                        self.current_key_idx = (idx + 1) % len(self.nvidia_keys)
+                        self.api_key = key
+                        self.client = client
+                        return resp
+                    except Exception as e:
+                        err_str = str(e)
+                        errors.append(f"NVIDIA Fallback Model {fb_model} Key {idx + 1}: {err_str}")
+
+--- nexus/api.py:548 ---
+                    try:
+                        groq_client = self._get_groq_client(g_key)
+                        return self._provider_request(
+                            provider="groq",
+                            model=g_model,
+                            streaming=stream,
+                            fallback_from=model_id,
+                            attempt_number=len(errors) + 1,
+                            request=lambda groq_client=groq_client, g_model=g_model: (
+                                groq_client.chat.completions.create(model=g_model, **groq_kwargs)
+                            ),
+                        )
+                    except Exception as e:
+                        err_str = str(e)
+                        errors.append(f"Groq API Fallback ({g_model}): {err_str}")
+
+--- nexus/extensions.py:103 ---
+                try:
+                    instance = item.load()
+                    if isinstance(instance, type):
+                        instance = instance()
+                    self._validate(label, instance)
+                except Exception as exc:
+                    self.records.append(
+                        ExtensionRecord(item.name, group, item.value, False, str(exc))
+
+--- nexus/cli.py:461 ---
+    try:
+        RegressionDashboard.generate(args.input, args.output)
+        from nexus.ui import print_success
+
+        print_success(f"Dashboard generated successfully at {args.output}")
+    except Exception as e:
+        from nexus.ui import print_error
+
+
+--- nexus/cli.py:539 ---
+    try:
+        from nexus.github import GitHubIntegration
+
+        issue = GitHubIntegration.view_issue(issue_number)
+    except Exception as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+--- nexus/cli.py:973 ---
+        try:
+            app = create_app(api_key=api_key, model=model, working_dir=working_dir)
+            # Run uvicorn quietly (log_level="error") to avoid cluttered CLI printouts
+            uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
+        except Exception:
+            pass  # Fail silently if port is already bound by another instance
+
+
+--- nexus/cli.py:984 ---
+        try:
+            webbrowser.open(f"http://localhost:{port}")
+        except Exception:
+            pass
+
+
+--- nexus/cli.py:1151 ---
+        try:
+            command = args.prompt.lstrip()[1:].strip()
+            argv = shlex.split(command, posix=True)
+            # Override: use plan-mode policy (no require_os_isolation) so that
+            # a simple `!echo hello` works without a native sandbox binary.
+            # The effective mode from the user's --mode flag is preserved in
+            # the output metadata so callers can inspect it.
+            _mode_policy = get_mode_policy("plan")
+            agent = Agent(
+                api_key="offline-direct-command",
+                model_key="custom",
+                model_id_override="offline/direct",
+                working_dir=args.working_dir,
+                mode_policy=_mode_policy,
+                permission_mode=args.permission_mode,
+                workspace_isolation=False,
+                tools_enabled=False,
+                plugins_enabled=False,
+            )
+            result, success = agent._tool_controller.execute(
+                "run_process", {"argv": argv, "cwd": agent.working_dir},
+                _user_initiated=True,
+                _user_confirmed=args.confirm_danger
+            )
+            if not args.confirm_danger and "⏸️ PENDING_CONFIRMATION" in result:
+                result = (
+                    f"⏸️ PENDING_CONFIRMATION: Dangerous command detected.\n"
+                    f"Run with --confirm-danger to execute this exact command: {args.prompt}"
+                )
+            if args.output_format in ("json", "jsonl", "stream-json"):
+                print(
+                    json.dumps(
+                        {
+                            "type": "tool_call",
+                            "name": "run_process",
+                            "result": result,
+                            "success": success,
+                        }
+                    )
+                )
+            else:
+                print(result)
+            _close_and_exit(agent, 0 if success else 2)
+        except Exception as exc:
+            ui.print_error(str(exc))
+            sys.exit(2)
+
+--- nexus/cli.py:1388 ---
+            try:
+                from nexus.report import FinalReportGenerator
+
+                final_report_path = agent.run_ledger._require_turn() / "final_report.json"
+                print("\\n")
+                print(FinalReportGenerator.generate(final_report_path))
+            except Exception:
+                pass
+            _close_and_exit(agent, exit_code)
+
+--- nexus/cli.py:387 ---
+        try:
+            session.apply()
+            from nexus.ui import print_success
+
+            print_success("Workspace changes applied successfully.")
+        except Exception as e:
+            from nexus.ui import print_error
+
+
+--- nexus/cli.py:1364 ---
+                try:
+                    from nexus.report import FinalReportGenerator
+
+                    final_report_path = agent.run_ledger._require_turn() / "final_report.json"
+                    print(FinalReportGenerator.generate(final_report_path))
+                except Exception:
+                    pass
+            _close_and_exit(agent, exit_code)
+
+--- nexus/pipeline.py:407 ---
+        try:
+            if routing_mode == "nova":
+                response, events = agent._run_nova_turn(user_input, emit_ui=emit_ui)  # noqa: SLF001
+            elif routing_mode == "two_node":
+                response, events = agent._run_two_node_turn(user_input, analysis, emit_ui=emit_ui)  # noqa: SLF001
+            else:
+                response, events = self._run_hosted_execution(  # noqa: SLF001
+                    user_input,
+                    analysis,
+                    plan,
+                    interactive=interactive,
+                    emit_ui=emit_ui,
+                )
+            execution_failed = bool(
+                (response or "").lstrip().upper().startswith(("ERROR:", "BLOCKED:"))
+                or (plan is not None and plan.has_failures)
+            )
+            return {
+                "stage_result": StageResult(
+                    stage=PipelineStage.EXECUTION,
+                    success=not execution_failed,
+                    duration_ms=int((time.monotonic() - t) * 1000),
+                    error="Execution stopped before the requested work was complete."
+                    if execution_failed
+                    else "",
+                ),
+                "response": response,
+                "events": events,
+                "model_turns": len(
+                    [e for e in events if isinstance(e, dict) and e.get("type") == "model_turn"]
+                ),
+            }
+        except Exception as exc:
+            self._logger.error("Execution stage failed: %s", exc)
+            return {
+
+--- nexus/pipeline.py:568 ---
+        try:
+            evidence = self._agent.evidence.records()[
+                getattr(self._agent, "_turn_evidence_start", 0) :
+            ]
+            mutations = self._agent._effective_evidence(evidence, "file_mutation")  # noqa: SLF001
+            checks = self._agent._effective_evidence(  # noqa: SLF001
+                evidence, "verification_check"
+            )
+            engine_checks = [item for item in checks if item.get("tool") == "verification_engine"]
+            if mutations and not engine_checks:
+                self._agent._record_verification_report(  # noqa: SLF001
+                    self._agent._run_verification_suite()
+                )
+                evidence = self._agent.evidence.records()[
+                    getattr(self._agent, "_turn_evidence_start", 0) :
+                ]
+                checks = self._agent._effective_evidence(  # noqa: SLF001
+                    evidence, "verification_check"
+                )
+            verified_mutations = all(item.get("status") == "verified" for item in mutations)
+            verified_checks = bool(checks) and all(
+                item.get("status") == "verified" for item in checks
+            )
+            if not mutations:
+                return StageResult(
+                    stage=PipelineStage.VERIFICATION,
+                    success=True,
+                    applicable=False,
+                    duration_ms=int((time.monotonic() - t) * 1000),
+                    metadata={
+                        "status": "not_applicable",
+                        "mutations": 0,
+                        "verified": 0,
+                        "checks": len(checks),
+                        "checks_passed": sum(
+                            1 for item in checks if item.get("status") == "verified"
+                        ),
+                    },
+                )
+            verified = verified_mutations and verified_checks
+            return StageResult(
+                stage=PipelineStage.VERIFICATION,
+                success=verified,
+                duration_ms=int((time.monotonic() - t) * 1000),
+                metadata={
+                    "mutations": len(mutations),
+                    "verified": sum(1 for e in mutations if e.get("status") == "verified"),
+                    "checks": len(checks),
+                    "checks_passed": sum(1 for e in checks if e.get("status") == "verified"),
+                },
+                error=""
+                if verified
+                else (
+                    f"{sum(1 for e in mutations if e.get('status') != 'verified')} "
+                    "mutations unverified; "
+                    f"{sum(1 for e in checks if e.get('status') != 'verified')} checks failed"
+                ),
+            )
+        except Exception as exc:
+            self._logger.debug("Verification stage error: %s", exc)
+            return StageResult(
+
+--- nexus/pipeline.py:600 ---
+        try:
+            from nexus.repair import RepairLoop  # noqa: PLC0415
+
+            loop = RepairLoop(self._agent)
+            repaired = loop.attempt(user_input, failure_context=ver_result.error)
+            return StageResult(
+                stage=PipelineStage.REPAIR,
+                success=repaired,
+                duration_ms=int((time.monotonic() - t) * 1000),
+                metadata={"attempted": True},
+                error="" if repaired else "Repair budget exhausted without success",
+            )
+        except ImportError:
+            # repair module not yet available — skip silently
+            return StageResult(
+                stage=PipelineStage.REPAIR,
+                success=False,
+                duration_ms=int((time.monotonic() - t) * 1000),
+                metadata={"skipped": True},
+            )
+        except Exception as exc:
+            self._logger.warning("Repair stage error: %s", exc)
+            return StageResult(
+
+--- nexus/pipeline.py:681 ---
+        try:
+            approved, summary = self._agent._run_independent_review()  # noqa: SLF001
+            return StageResult(
+                stage=PipelineStage.REVIEW,
+                success=approved,
+                duration_ms=int((time.monotonic() - t) * 1000),
+                metadata={"summary": summary[:1000]},
+                error="" if approved else summary[:2000],
+            )
+        except Exception as exc:
+            return StageResult(
+                stage=PipelineStage.REVIEW,
+
+--- nexus/pipeline.py:700 ---
+        try:
+            count = len(self._agent.evidence.records())
+            return StageResult(
+                stage=PipelineStage.EVIDENCE,
+                success=True,
+                duration_ms=int((time.monotonic() - t) * 1000),
+                metadata={"evidence_records": count},
+            )
+        except Exception as exc:
+            return StageResult(
+                stage=PipelineStage.EVIDENCE,
+
+--- nexus/behavioral.py:224 ---
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright.chromium.launch(headless=True)
+                page = browser.new_page()
+                page.set_default_timeout(spec.timeout_seconds * 1000)
+                page.on(
+                    "console",
+                    lambda message: (
+                        console_errors.append(message.text) if message.type == "error" else None
+                    ),
+                )
+                page.on(
+                    "requestfailed",
+                    lambda request: failed_requests.append(
+                        f"{request.method} {request.url}: {request.failure}"
+                    ),
+                )
+                page.goto(spec.url, wait_until="networkidle")
+                for step in spec.steps:
+                    action = step.action.lower()
+                    if action == "click":
+                        page.locator(step.selector).click()
+                    elif action == "fill":
+                        page.locator(step.selector).fill(step.value)
+                    elif action == "expect_text":
+                        if step.value not in page.locator(step.selector or "body").inner_text():
+                            raise AssertionError(
+                                f"{step.selector or 'body'} did not contain {step.value!r}"
+                            )
+                    elif action == "wait":
+                        page.wait_for_timeout(float(step.value) * 1000)
+                    else:
+                        raise ValueError(f"Unsupported browser action: {step.action}")
+                if spec.screenshot_path:
+                    target = Path(spec.screenshot_path).expanduser().resolve()
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    page.screenshot(path=str(target), full_page=True)
+                final_url = page.url
+                title = page.title()
+                browser.close()
+        except Exception as exc:
+            return ProbeResult(
+                "browser",
+
+--- nexus/two_node_backend.py:334 ---
+        try:
+            response = _run_ceiling_call(
+                lambda: self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": (
+                                CEILING_SYSTEM_PROMPT
+                                + "\n\nFor every non-vague task, make the description include: "
+                                "target file/path, action CREATE or MODIFY, exact expected file count, "
+                                "and any literal constraints such as status codes or required strings. "
+                                "Always ensure single-file tasks include a valid executable main entrypoint "
+                                "(e.g., func main() in Go, int main() in C++) and deadlock-free concurrency."
+                            ),
+                        },
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.2,
+                    max_tokens=2048,
+                ),
+                timeout,
+            )
+            text = response.choices[0].message.content or ""
+            self.tokens_used += getattr(response.usage, "total_tokens", 0)
+            tasks = self._parser_node._parse_tasks(text)
+            if tasks:
+                return tasks, text
+        except Exception as exc:
+            decomposition_error = str(exc)
+        else:
+
+--- nexus/two_node_backend.py:371 ---
+        try:
+            response = _run_ceiling_call(
+                lambda: self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": CEILING_DIRECT_SYSTEM},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=0.2,
+                    max_tokens=4096,
+                ),
+                timeout,
+            )
+            self.tokens_used += getattr(response.usage, "total_tokens", 0)
+            return response.choices[0].message.content or ""
+        except Exception as e:
+            return f"<<THINKING>>\nCeiling remote call failed ({e}). Proceeding with local resolution.\n\n<<FILES>>\n"
+
+
+--- nexus/two_node_backend.py:409 ---
+        try:
+            response = _run_ceiling_call(
+                lambda: self.client.chat.completions.create(
+                    model=self.model_name,
+                    messages=[
+                        {"role": "system", "content": system},
+                        {
+                            "role": "user",
+                            "content": f"Request:\n{request}\n\nCandidate:\n{context[:30000]}",
+                        },
+                    ],
+                    temperature=0.0,
+                    max_tokens=1600,
+                ),
+                timeout,
+            )
+            raw = response.choices[0].message.content or ""
+            self.tokens_used += getattr(response.usage, "total_tokens", 0)
+            if "```" in raw:
+                raw = raw.split("```", 1)[1].split("```", 1)[0]
+                raw = raw.removeprefix("json").strip()
+            value = json.loads(raw)
+            approved = value.get("approved") is True
+            findings = [str(item)[:1000] for item in value.get("findings", []) if str(item).strip()]
+            return approved, str(value.get("summary", ""))[:2000], findings[:20]
+        except Exception as exc:
+            return False, f"Independent reviewer unavailable: {exc}", []
+
+
+--- nexus/two_node_backend.py:1080 ---
+        try:
+            self.escalation_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self.escalation_log_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
+
+--- nexus/two_node_backend.py:457 ---
+            try:
+                tasks, raw_decomposition = self.ceiling.decompose(
+                    request,
+                    planner_context=planner_context,
+                )
+            except Exception as err:
+                tasks = [AtomicTask(id=1, description=request)]
+                raw_decomposition = f"Single-task fallback due to decomposition error: {err}"
+
+--- nexus/two_node_backend.py:869 ---
+            try:
+                raw = self.ceiling.execute_direct(task, context=context, failure_reason=error)
+            except Exception as exc:
+                error = f"Ceiling execution error: {exc}"
+                logs.append(f"ESCALATION attempt={ceiling_attempt}: {error}")
+
+--- nexus/two_node_backend.py:1016 ---
+            try:
+                target = verification_dir / clean_name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+            except Exception:
+                pass
+
+
+--- nexus/agent.py:471 ---
+        try:
+            # SECURITY FIX: Eliminate all([]) bypass.
+            # An empty generator `all(x for x in [])` returns True,
+            # which would treat zero manifests as "all trusted".
+            # We now require plugins_enabled=True AND explicit trust.
+            for plugin in self.plugin_loader.discover_and_load():
+                for skill in plugin.get_skills():
+                    self.skills.register(skill)
+                for hook in plugin.get_hooks():
+                    self.hooks.register(hook)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "Plugin loading failed: %s. Diagnostics: %s",
+
+--- nexus/agent.py:529 ---
+        try:
+            mcp_config = nexus_home() / "mcp_servers.json"
+            if mcp_config.exists() and not self.trust.is_approved(mcp_config):
+                self.mcp.disconnect_all()
+            rules_paths = self.project_mem.get_rules_paths()
+            if any(not self.trust.is_approved(path) for path in rules_paths):
+                self.project_mem._rules = None
+                self.safety.configure_from_rules({})
+                return
+            self.project_mem.reload()
+            rules = self.project_mem.load_rules()
+            self.safety.configure_from_rules(self.project_mem.get_safety_config())
+
+            # Sync verifier with project-specific commands
+            custom_cmds = {}
+            if rules.test_command:
+                custom_cmds["test_command"] = rules.test_command
+            if rules.lint_command:
+                custom_cmds["lint_command"] = rules.lint_command
+            if rules.build_command:
+                custom_cmds["build_command"] = rules.build_command
+            if rules.format_command:
+                custom_cmds["format_command"] = rules.format_command
+            if custom_cmds:
+                self.verifier = VerificationEngine(self.working_dir, custom_cmds)
+        except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
+            logging.getLogger(__name__).debug("Failed to load project rules: %s", exc)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Unexpected error loading project rules: %s", exc)
+
+
+--- nexus/agent.py:546 ---
+        try:
+            rules_paths = self.project_mem.get_rules_paths()
+            addon = (
+                self.project_mem.get_prompt_addon()
+                if not rules_paths or all(self.trust.is_approved(path) for path in rules_paths)
+                else ""
+            )
+            if addon:
+                prompt += "\n" + addon
+        except Exception as exc:
+            logger.debug("Project-memory prompt context unavailable: %s", exc)
+
+
+--- nexus/agent.py:554 ---
+        try:
+            addon = self.user_mem.get_prompt_addon()
+            if addon:
+                prompt += "\n" + addon
+        except Exception as exc:
+            logger.debug("User-memory prompt context unavailable: %s", exc)
+
+
+--- nexus/agent.py:562 ---
+        try:
+            addon = self.skills.get_combined_prompt()
+            if addon:
+                prompt += "\n" + addon
+        except Exception as exc:
+            logger.debug("Skill prompt context unavailable: %s", exc)
+
+
+--- nexus/agent.py:573 ---
+        try:
+            mcp_tools = self.mcp.get_all_tools()
+            if mcp_tools:
+                prompt += "\n\n[MCP CONNECTED TOOLS]\n"
+                for t in mcp_tools:
+                    prompt += f"  • {t.server_name}/{t.name} — {t.description}\n"
+                prompt += "[END MCP TOOLS]"
+        except Exception as exc:
+            logger.debug("MCP prompt context unavailable: %s", exc)
+
+
+--- nexus/agent.py:585 ---
+        try:
+            if hasattr(self, "repo_graph") and self.repo_graph:
+                import json
+
+                summary = self.repo_graph.summary()
+                prompt += "\n\n[REPOSITORY CONTEXT]\n"
+                prompt += json.dumps(summary, indent=2)
+                prompt += "\n[END REPOSITORY CONTEXT]"
+        except Exception as exc:
+            logger.debug("Repository prompt context unavailable: %s", exc)
+
+
+--- nexus/agent.py:632 ---
+        try:
+            turn_dir = self.run_ledger._require_turn()
+        except Exception as exc:
+            logger.debug("No active run turn while loading final report: %s", exc)
+
+
+--- nexus/agent.py:663 ---
+        try:
+            return json.loads(report_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            return {
+                "status": "UNVERIFIED",
+
+--- nexus/agent.py:1020 ---
+        try:
+            context = self.context_mgr.initialize()
+            stats = self.repo_graph.build()
+            graph = self.repo_graph.summary()
+            graph_context = (
+                "[REPOSITORY GRAPH]\n"
+                f"files={graph['files']} symbols={graph['symbols']} "
+                f"imports={graph['imports']} tests={graph['tests']} "
+                f"parse_errors={graph['parse_errors']} "
+                f"incremental_reused={stats.reused}"
+            )
+            return context + graph_context + "\n\n---\n\n"
+        except Exception as exc:
+            logger.debug("Primary repository context initialization failed: %s", exc)
+
+
+--- nexus/agent.py:1029 ---
+        try:
+            tree = tool_get_project_structure(self.working_dir, max_depth=3)
+            if tree and len(tree) > 50:
+                parts.append(f"[AUTO-CONTEXT: Project Structure]\n{tree}")
+        except Exception as exc:
+            logger.debug("Project tree fallback context unavailable: %s", exc)
+
+
+--- nexus/agent.py:1036 ---
+        try:
+            git_info = tool_git_status(self.working_dir)
+            if git_info and "Not a git" not in git_info:
+                parts.append(f"[AUTO-CONTEXT: Git Status]\n{git_info}")
+        except Exception as exc:
+            logger.debug("Git fallback context unavailable: %s", exc)
+
+
+--- nexus/agent.py:1122 ---
+        try:
+            self.mcp.disconnect_all()
+            report["mcp_disconnected"] = True
+        except Exception as exc:
+            report["errors"].append(f"MCP cleanup failed: {exc}")
+        try:
+
+--- nexus/agent.py:1130 ---
+        try:
+            from nexus.tools import stop_owned_processes
+
+            process_cleanup = stop_owned_processes(self.conversation_id)
+            report["background_processes_stopped"] = process_cleanup["stopped"]
+            report["errors"].extend(process_cleanup["errors"])
+        except Exception as exc:
+            report["errors"].append(f"Background process cleanup failed: {exc}")
+        if discard_workspace and self.worktree is not None and self.worktree.info is not None:
+
+--- nexus/agent.py:345 ---
+            try:
+                self.client = NovaProvider(
+                    model_name=self.model_cfg.get("ollama_model", "nova_codex"),
+                    working_dir=self.working_dir,
+                )
+            except Exception:
+                if self.worktree is not None:
+                    self.worktree.discard()
+
+--- nexus/agent.py:646 ---
+            try:
+                session_dir = self.run_ledger.session_dir
+                turn_dirs = sorted(
+                    [d for d in session_dir.iterdir() if d.is_dir() and d.name.startswith("turn-")],
+                    key=lambda d: d.name,
+                    reverse=True,
+                )
+                if turn_dirs:
+                    turn_dir = turn_dirs[0]
+            except Exception as exc:
+                logger.debug("Historical run discovery failed: %s", exc)
+
+
+--- nexus/agent.py:923 ---
+            try:
+                response = self.client.chat_sync(
+                    model_id=reviewer_model,
+                    messages=messages,
+                    tools=None,
+                    max_tokens=2000,
+                    temperature=0.0,
+                )
+                raw = str(response.choices[0].message.content or "")
+                parsed = self._parse_review_payload(raw)
+                all_approved = all_approved and parsed["approved"]
+                summaries.append(f"Chunk {index}: {parsed['summary']}")
+                all_findings.extend(parsed["findings"])
+                completed = datetime.now(timezone.utc)
+                self.run_ledger.append_model_call(
+                    role="independent_reviewer",
+                    model=reviewer_model,
+                    provider=str(getattr(self.client, "id", "")),
+                    status="verified",
+                    started_at=started.isoformat(),
+                    completed_at=completed.isoformat(),
+                    duration_ms=int((completed - started).total_seconds() * 1000),
+                    detail=parsed["summary"][:1000],
+                )
+            except Exception as exc:
+                all_approved = False
+                failure = f"Review chunk {index} failed closed: {exc}"
+
+--- nexus/agent.py:1149 ---
+            try:
+                diff = "" if self._workspace_applied else self.worktree.diff()
+                if diff:
+                    if self.run_ledger.turn_dir:
+                        patch = self.run_ledger.store_artifact(
+                            "patches", "workspace-close-recovery.diff", diff
+                        )
+                    else:
+                        recovery_dir = nexus_home() / "recovery"
+                        recovery_dir.mkdir(parents=True, exist_ok=True)
+                        patch = recovery_dir / f"{self.conversation_id}-workspace.diff"
+                        patch.write_text(diff, encoding="utf-8")
+                    report["recovery_patch"] = str(patch)
+                cleanup = self.worktree.discard()
+                report["workspace_discarded"] = not cleanup["errors"]
+                report["errors"].extend(cleanup["errors"])
+            except Exception as exc:
+                report["errors"].append(f"Workspace cleanup failed: {exc}")
+        return report
+
+--- nexus/agent.py:1661 ---
+            try:
+                self.memory.auto_save(
+                    self.messages,
+                    self.model_cfg["name"],
+                    self.model_cfg["id"],
+                    self.working_dir,
+                    self.conversation_id,
+                )
+            except Exception as exc:
+                logger.debug("Conversation autosave failed: %s", exc)
+
+
+--- nexus/workspace.py:556 ---
+        try:
+            data = json.loads(info_path.read_text(encoding="utf-8"))
+            info = WorktreeInfo(**data)
+            session = GitWorktreeSession(
+                info.source_repository,
+                session_id,
+                state_root=self.state_root,
+                force_copy=info.backend == "temporary-copy",
+            )
+            session.info = info
+            session.path = Path(info.path)
+            return session
+        except Exception:
+            return None
+
+--- nexus/workspace.py:531 ---
+            try:
+                data = json.loads(p.read_text(encoding="utf-8"))
+                results.append(WorktreeInfo(**data))
+            except Exception:
+                pass
+
+
+--- nexus/turn_coordinator.py:127 ---
+        try:
+            # The agent's inner turn runner returns (content, events).
+            content, events = self._agent._run_single_turn(
+                request.messages,
+                emit_ui=request.emit_ui,
+            )
+            duration_ms = int((time.monotonic() - start) * 1000)
+            tool_calls = [e for e in events if e.get("type") == "tool_call"]
+            return TurnResult(
+                content=content,
+                tool_calls=tool_calls,
+                tool_results=[e for e in events if e.get("type") == "tool_result"],
+                events=events,
+                duration_ms=duration_ms,
+                success=True,
+            )
+        except Exception as exc:  # pragma: no cover
+            duration_ms = int((time.monotonic() - start) * 1000)
+            logger.exception("TurnCoordinator.run_turn failed: %s", exc)
+
+--- nexus/tool_executor.py:594 ---
+            try:
+                extension_result = extension_tool.invoke(
+                    args,
+                    ToolContext(
+                        working_dir=self._agent.working_dir,
+                        session_id=self._agent.conversation_id,
+                        task_id=(
+                            str(self._agent._active_plan.current_step)
+                            if self._agent._active_plan is not None
+                            else ""
+                        ),
+                        permission_mode=self._agent.permission_mode,
+                    ),
+                )
+                return (
+                    extension_result
+                    if isinstance(extension_result, str)
+                    else json.dumps(extension_result, ensure_ascii=False)
+                )
+            except Exception as exc:
+                return f"❌ Extension tool error: {exc}"
+
+
+--- nexus/tool_executor.py:214 ---
+                try:
+                    self._agent.repo_graph.update_paths(path for path in raw_paths if path)
+                except Exception as exc:
+                    logger.debug("Repository graph incremental refresh failed: %s", exc)
+                self._agent.run_ledger.checkpoint(
+
+--- nexus/tool_executor.py:569 ---
+                try:
+                    return dispatch[name](**args)
+                except Exception as e:
+                    return f"❌ Plugin tool error: {e}"
+
+
+--- nexus/history.py:27 ---
+        try:
+            self.session_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        self.changes: list[dict] = []
+
+--- nexus/subagents/orchestrator.py:338 ---
+        try:
+            # Import here to avoid circular imports
+            from nexus.agent import Agent
+            from nexus.run_state import RunStatus
+            from nexus.workspace import GitWorktreeSession
+
+            working_dir = subagent.working_dir or self.working_dir
+            mutating = self._requires_isolation(subagent)
+            if mutating:
+                isolated_state = Path(tempfile.mkdtemp(prefix="nexus-subagent-"))
+                isolated_workspace = GitWorktreeSession(
+                    working_dir,
+                    f"{subagent.name}-{time.time_ns()}",
+                    state_root=isolated_state,
+                    force_copy=True,
+                )
+                working_dir = isolated_workspace.create().path
+
+            # Create a fresh, isolated agent for this subagent
+            agent = Agent(
+                api_key=self.api_key,
+                model_key=self.model_id,
+                working_dir=working_dir,
+                permission_mode="acceptEdits" if mutating else "plan",
+                allowed_tools=list(subagent.allowed_tools),
+                max_turns=subagent.max_iterations,
+                workspace_isolation=False,
+            )
+
+            # Override system prompt with subagent's prompt
+            agent.set_system_prompt(subagent.get_system_prompt_full())
+
+            # Disable auto-save for subagents (we don't want to pollute history)
+            agent._auto_save_enabled = False
+
+            # Run the subagent's task
+            content, events = agent.run_non_interactive(subagent.get_initial_prompt())
+
+            duration = int((time.monotonic() - start_time) * 1000)
+
+            # Process the result
+            result = subagent.process_result(content, events)
+            result.duration_ms = duration
+            result.started_at = started_at
+            result.completed_at = datetime.now().isoformat()
+
+            if duration > self.timeout * 1000:
+                raise TimeoutError(f"Subagent exceeded its {self.timeout}s timeout.")
+            if mutating:
+                if not result.succeeded:
+                    raise RuntimeError("Isolated subagent reported one or more failed tool calls.")
+                report = agent.run_ledger.resume_summary().get("final_report", {})
+                if report.get("status") != RunStatus.VERIFIED.value:
+                    raise RuntimeError(
+                        "Isolated subagent changes were not merged because the run was not VERIFIED."
+                    )
+                apply_started = True
+                isolated_workspace.apply()
+                apply_succeeded = True
+
+            subagent.status = result.status
+            return result
+
+        except Exception as e:
+            duration = int((time.monotonic() - start_time) * 1000)
+            subagent.status = SubagentStatus.FAILED
+
+--- nexus/subagents/orchestrator.py:184 ---
+            try:
+                result = self._execute_subagent(subagent)
+                results.append(result)
+            except Exception as e:
+                results.append(
+                    SubagentResult(
+
+--- nexus/subagents/orchestrator.py:214 ---
+                    try:
+                        by_agent[id(subagent)] = future.result()
+                    except Exception as exc:
+                        by_agent[id(subagent)] = self._failed_result(subagent, exc)
+            except FuturesTimeoutError:
+
+--- nexus/plugins/worker.py:383 ---
+            try:
+                self._sandbox_cleanup_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            self._sandbox_cleanup_path = None
+
+--- nexus/providers/router.py:162 ---
+            try:
+                response = provider.chat(
+                    effective_model,
+                    messages,
+                    tools,
+                    stream=True,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    **kwargs,
+                )
+                for chunk in response:
+                    emitted = True
+                    yield chunk
+                return
+            except Exception as exc:
+                logger.warning("Provider %s stream failed: %s", provider.name, exc)
+                if emitted or not self.switch_to_fallback():
+
+--- nexus/providers/router.py:188 ---
+            try:
+                return provider.chat_sync(
+                    effective_model,
+                    messages,
+                    tools,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    **kwargs,
+                )
+            except Exception as exc:
+                logger.warning("Provider %s failed in chat_sync: %s", provider.name, exc)
+                if not self.switch_to_fallback():
+
+--- nexus/webapp/server.py:241 ---
+    try:
+        p = _workspace_path(path)
+        if not p.is_dir():
+            return JSONResponse({"error": "Not a directory"}, status_code=400)
+
+        items = []
+        ignore_dirs = {
+            ".git",
+            "__pycache__",
+            "node_modules",
+            ".venv",
+            "venv",
+            ".next",
+            "dist",
+            "build",
+            ".nexusai",
+        }
+
+        for entry in sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+            if entry.name.startswith(".") and entry.name != ".gitignore":
+                continue
+            if _is_sensitive_path(entry):
+                continue
+            if entry.is_dir() and entry.name in ignore_dirs:
+                continue
+
+            item = {
+                "name": entry.name,
+                "path": str(entry),
+                "is_dir": entry.is_dir(),
+            }
+            if entry.is_file():
+                item["size"] = entry.stat().st_size
+            items.append(item)
+
+        return JSONResponse(
+            {
+                "path": str(p),
+                "parent": str(p.parent) if str(p) != str(p.parent) else None,
+                "items": items,
+            }
+        )
+    except PermissionError as e:
+        return JSONResponse({"error": str(e)}, status_code=403)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+--- nexus/webapp/server.py:274 ---
+    try:
+        p = _workspace_path(path)
+        if _is_sensitive_path(p):
+            return JSONResponse({"error": "Sensitive files are not exposed"}, status_code=403)
+        if not p.is_file():
+            return JSONResponse({"error": "Not a file"}, status_code=400)
+        if p.stat().st_size > 2 * 1024 * 1024:
+            return JSONResponse({"error": "File too large"}, status_code=400)
+
+        content = p.read_text(encoding="utf-8", errors="replace")
+        return JSONResponse(
+            {
+                "path": str(p),
+                "name": p.name,
+                "content": content,
+                "size": p.stat().st_size,
+                "lines": content.count("\n") + 1,
+            }
+        )
+    except PermissionError as e:
+        return JSONResponse({"error": str(e)}, status_code=403)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+--- nexus/webapp/server.py:285 ---
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+
+--- nexus/webapp/server.py:491 ---
+    try:
+        if not authenticated:
+            await websocket.send_json({"type": "error", "content": "Unauthorized"})
+            await websocket.close(code=1008)
+            return
+
+        while True:
+            raw = await websocket.receive_text()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                await websocket.send_json({"type": "error", "content": "Invalid JSON"})
+                continue
+
+            msg_type = data.get("type", "chat")
+
+            if msg_type == "set_session":
+                session_id = data.get("session_id", session_id)
+                await websocket.send_json({"type": "session_set", "session_id": session_id})
+                continue
+
+            if msg_type == "set_model":
+                model = data.get("model", "")
+                agent = _get_agent(session_id)
+                with _agent_locks.setdefault(session_id, threading.RLock()):
+                    if agent.set_model(model):
+                        await websocket.send_json(
+                            {
+                                "type": "model_set",
+                                "model": agent.model_cfg["name"],
+                                "model_id": agent.model_cfg["id"],
+                            }
+                        )
+                    else:
+                        await websocket.send_json(
+                            {"type": "error", "content": f"Unknown model: {model}"}
+                        )
+                continue
+
+            if msg_type == "clear":
+                agent = _get_agent(session_id)
+                with _agent_locks.setdefault(session_id, threading.RLock()):
+                    agent.clear_history()
+                await websocket.send_json({"type": "cleared"})
+                continue
+
+            if msg_type in ("apply_edit", "reject_edit", "pending_edits"):
+                agent = _get_agent(session_id)
+                with _agent_locks.setdefault(session_id, threading.RLock()):
+                    if msg_type == "apply_edit":
+                        result, success = agent.apply_pending_edit(data.get("edit_id", ""))
+                    elif msg_type == "reject_edit":
+                        result, success = agent.reject_pending_edit(data.get("edit_id", ""))
+                    else:
+                        result, success = agent.pending_edits_summary(), True
+                await websocket.send_json(
+                    {"type": "edit_decision", "content": result, "success": success}
+                )
+                continue
+
+            if msg_type == "new_chat":
+                # Create a fresh session
+                if session_id in _agents:
+                    _agents.pop(session_id).close(discard_workspace=True)
+                    _agent_locks.pop(session_id, None)
+                import time
+
+                session_id = f"ws_{int(time.time())}"
+                await websocket.send_json({"type": "new_session", "session_id": session_id})
+                continue
+
+            if msg_type == "chat":
+                message = data.get("message", "").strip()
+                if not message:
+                    continue
+
+                agent = _get_agent(session_id)
+
+                # Send "thinking" indicator
+                await websocket.send_json({"type": "thinking"})
+
+                # Run in executor (blocking agent loop)
+                loop = asyncio.get_event_loop()
+                content, events = await loop.run_in_executor(
+                    None, _run_agent_locked, session_id, agent, message
+                )
+
+                # Send tool events
+                for event in events:
+                    if event.get("type") == "model_trace":
+                        await websocket.send_json(event)
+                    else:
+                        await websocket.send_json(
+                            {
+                                "type": "tool_call",
+                                "name": event.get("name", "unknown"),
+                                "args": event.get("args", {}),
+                                "result": event.get("result", ""),
+                                "success": event.get("success", False),
+                            }
+                        )
+
+                # Send final response
+                await websocket.send_json(
+                    {
+                        "type": "response",
+                        "content": content,
+                        "model": agent.model_cfg["name"],
+                    }
+                )
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as e:
+        try:
+            await websocket.send_json({"type": "error", "content": str(e)})
+
+--- nexus/webapp/server.py:494 ---
+        try:
+            await websocket.send_json({"type": "error", "content": str(e)})
+        except Exception:
+            pass
+
+
+--- nexus/runtime/provider_manager.py:193 ---
+        try:
+            self.skills.auto_activate(
+                user_input,
+                intent=analysis["intent"].value
+                if hasattr(analysis["intent"], "value")
+                else str(analysis.get("intent", "unknown")),
+            )
+            self._update_system_prompt()
+        except Exception as exc:
+            logger.debug("Automatic skill activation failed: %s", exc)
+
+
+--- nexus/runtime/provider_manager.py:242 ---
+        try:
+            for event in events:
+                if event.type == EventType.MODEL_REQUEST_STARTED:
+                    if live:
+                        live.start(f"Connecting to {self.model_cfg['name']}...")
+                elif event.type == EventType.MODEL_REQUEST_COMPLETED:
+                    if live:
+                        live.stop()
+                    accumulated_events.append(
+                        {
+                            "type": "model_turn",
+                            "model": event.model,
+                            "usage": event.usage,
+                            "node": "hosted",
+                        }
+                    )
+                elif event.type == EventType.MODEL_STREAM_CHUNK:
+                    if live and live._is_active:
+                        live.stop()
+                    if emit_ui:
+                        ui.console.print(event.text, end="", style=ui.WHITE, highlight=False)
+                elif event.type == EventType.TOOL_CALL_STARTED:
+                    if live:
+                        live.update(f"Running tool {event.tool_name}...")
+                elif event.type == EventType.TOOL_CALL_COMPLETED:
+                    accumulated_events.append(
+                        {
+                            "type": "tool_call",
+                            "name": event.tool_name,
+                            "args": event.arguments,
+                            "result": event.result,
+                            "success": event.success,
+                            "node": "interactive",
+                        }
+                    )
+                elif event.type == EventType.RUN_FAILED:
+                    raise RuntimeError(event.error)
+                elif event.type == EventType.RUN_COMPLETED:
+                    content = event.content
+        except Exception as e:
+            if live:
+                live.stop()
+
+--- nexus/runtime/provider_manager.py:403 ---
+        try:
+            if emit_ui:
+                live = ui.LiveStatus()
+                live.start("Preparing task graph...")
+                try:
+                    result = backend.run(user_input, planner_analysis=analysis)
+                finally:
+                    live.stop()
+            else:
+                result = backend.run(user_input, planner_analysis=analysis)
+        except Exception as e:
+            if emit_ui:
+                ui.print_warning(f"Two-node backend error: {e}")
+
+--- nexus/runtime/provider_manager.py:595 ---
+        try:
+            if emit_ui:
+                live = ui.LiveStatus()
+                live.start("Running local worker...")
+                try:
+                    nova_result = backend.run(user_input)
+                finally:
+                    live.stop()
+            else:
+                nova_result = backend.run(user_input)
+        except NovaBackendError as e:
+            content = f"Nova guardrails blocked the output: {e}"
+            if emit_ui:
+                ui.print_error(content)
+            if self.messages and self.messages[-1].get("role") == "user":
+                self.messages.pop()
+            raise RuntimeError(content) from e
+        except Exception as e:
+            content = f"Nova backend error: {e}"
+            if emit_ui:
+
+--- nexus/runtime/provider_manager.py:370 ---
+            try:
+                report = self._record_verification_report(self._run_verification_suite())
+                if emit_ui:
+                    ui.console.print(report.format_report())
+                if report.all_passed:
+                    self.hooks.fire(
+                        HookEvent.ON_PLAN_COMPLETE, HookContext(event=HookEvent.ON_PLAN_COMPLETE)
+                    )
+                else:
+                    self.hooks.fire(
+                        HookEvent.ON_TEST_FAIL, HookContext(event=HookEvent.ON_TEST_FAIL)
+                    )
+            except Exception as exc:
+                logger.warning("Plan-completion verification failed: %s", exc)
+
+
+--- nexus/runtime/tool_manager.py:180 ---
+        try:
+            for definition in self.mcp.get_all_tool_definitions():
+                function = definition.get("function", {})
+                name = str(function.get("name", ""))
+                if name:
+                    self._register_tool_capability(
+                        name,
+                        frozenset(
+                            {
+                                ToolCapability.NETWORK,
+                                ToolCapability.EXTERNAL_EFFECTS,
+                                ToolCapability.CONFIRMATION_REQUIRED,
+                            }
+                        ),
+                        str(function.get("description", "")),
+                    )
+        except Exception as exc:
+            logger.debug("MCP capability registration unavailable: %s", exc)
+
+
+--- nexus/runtime/tool_manager.py:209 ---
+        try:
+            tools.extend(self.mcp.get_all_tool_definitions())
+        except Exception as exc:
+            logger.debug("MCP tool definitions unavailable: %s", exc)
+
+
+--- nexus/runtime/kernel.py:176 ---
+            try:
+                handler(event)
+            except Exception as exc:  # pragma: no cover
+                logger.warning("Event handler raised: %s", exc)
+
+
+--- nexus/runtime/kernel.py:242 ---
+            try:
+                stream = self.provider.chat(
+                    model_id=self.model_id,
+                    messages=current_messages,
+                    tools=tools,
+                    stream=True,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                )
+            except Exception as e:
+                if self.ledger and self.ledger.turn_dir:
+                    completed = datetime.now(timezone.utc)
+
+--- nexus/runtime/kernel.py:266 ---
+            try:
+                full_content, tool_calls, usage, request_id = yield from self._process_stream(
+                    stream
+                )
+            except Exception as exc:
+                if self.ledger and self.ledger.turn_dir:
+                    completed = datetime.now(timezone.utc)
+
+--- nexus/runtime/kernel.py:355 ---
+                    try:
+                        self.before_tool_hook(tool_name, safe_args)
+                    except Exception as hook_exc:
+                        logger.warning("before_tool_hook raised: %s", hook_exc)
+
+
+--- nexus/runtime/kernel.py:361 ---
+                    try:
+                        success, result_text = self.tool_executor(tool_name, safe_args)
+                    except Exception as e:
+                        success, result_text = False, f"Tool executor error: {e}"
+                else:
+
+--- nexus/runtime/kernel.py:369 ---
+                    try:
+                        self.after_tool_hook(tool_name, safe_args, success, result_text)
+                    except Exception as hook_exc:
+                        logger.warning("after_tool_hook raised: %s", hook_exc)
+
+
+--- nexus/runtime/workspace_manager.py:213 ---
+        try:
+            pending_diff = self.worktree.diff()
+            if not pending_diff.strip():
+                self._workspace_applied = True
+                self._workspace_apply_detail = "Verified run produced no workspace diff."
+                return True, self._workspace_apply_detail
+            self.worktree.apply()
+        except Exception as exc:
+            detail = f"Verified workspace could not be applied safely: {exc}"
+            self._workspace_apply_detail = detail
+
+--- nexus/runtime/workspace_manager.py:256 ---
+            try:
+                self.repo_graph.build()
+            except Exception as exc:
+                logger.debug("Repository graph refresh after rollback failed: %s", exc)
+        return success, detail
+
+--- nexus/mcp/client.py:197 ---
+            try:
+                if os.name == "posix":
+                    import signal
+                    os.killpg(os.getpgid(self._process.pid), signal.SIGKILL)
+                else:
+                    self._process.kill()
+                self._process.wait(timeout=5)
+            except Exception:
+                pass
+            self._process = None
+
+--- nexus/sdk/tools.py:143 ---
+        try:
+            result = tool.execute(**args_dict)
+            rendered = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
+            return True, rendered
+        except Exception as exc:  # extension boundary must return a diagnostic
+            return False, f"❌ Tool '{name}' failed: {exc}"
+
+--- nexus/hooks/runner.py:128 ---
+            try:
+                if hook.hook_type == HookType.SHELL:
+                    result = self._execute_shell_hook(hook, context)
+                elif hook.hook_type == HookType.BLOCK:
+                    result = HookResult(
+                        hook_name=hook.name,
+                        event=event,
+                        success=True,
+                        blocked=True,
+                        output=f"Operation blocked by hook: {hook.name}",
+                        failure_policy=hook.failure_policy,
+                    )
+                elif hook.hook_type == HookType.NOTIFY:
+                    result = hook.execute(context)
+                else:
+                    result = hook.execute(context)
+
+                results.append(result)
+
+                # If any hook blocks, stop processing
+                if result.blocked:
+                    break
+
+            except Exception as e:
+                logger.warning(
+                    "Hook %s failed with error: %s (event=%s)",
+
+--- nexus/skills/loader.py:218 ---
+            try:
+                skill = skill_class()
+                self.registry.register(skill)
+            except Exception:
+                pass  # Don't let a bad skill break everything
+
+
+--- nexus/skills/loader.py:251 ---
+            try:
+                import importlib.util
+
+                spec = importlib.util.spec_from_file_location(
+                    f"custom_skill_{filepath.stem}", str(filepath)
+                )
+                if spec and spec.loader:
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+
+                    # Find BaseSkill subclasses in the module
+                    for attr_name in dir(module):
+                        attr = getattr(module, attr_name)
+                        if (
+                            isinstance(attr, type)
+                            and issubclass(attr, BaseSkill)
+                            and attr is not BaseSkill
+                        ):
+                            skill = attr()
+                            self.registry.register(skill)
+            except Exception:
+                pass  # Don't let bad custom skills break anything
+
+

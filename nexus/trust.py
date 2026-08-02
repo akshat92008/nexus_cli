@@ -44,16 +44,23 @@ class TrustStore:
         self.path = self.state_dir / "trusted-config.json"
         self.state = self._load()
 
-    def inspect(self, path: str | Path) -> TrustDecision:
+    def inspect(
+        self, path: str | Path, expected_digest: str | None = None, expected_content: str | None = None
+    ) -> TrustDecision:
         p = Path(path).expanduser().resolve()
-        if not p.is_file():
+        if not p.is_file() and expected_digest is None:
             return TrustDecision(str(p), "", False, False, "file does not exist")
-        content = p.read_bytes()
-        digest = hashlib.sha256(content).hexdigest()
+        if expected_digest is not None:
+            digest = expected_digest
+            new_text = expected_content or ""
+        else:
+            content = p.read_bytes()
+            digest = hashlib.sha256(content).hexdigest()
+            new_text = content.decode("utf-8", errors="replace")
+
         previous = self.state.get(str(p), {})
         approved = previous.get("digest") == digest and bool(previous.get("approved"))
         old_text = previous.get("content", "")
-        new_text = content.decode("utf-8", errors="replace")
         changed = bool(previous) and previous.get("digest") != digest
         diff = "".join(
             difflib.unified_diff(
@@ -65,28 +72,35 @@ class TrustStore:
         )
         return TrustDecision(str(p), digest, approved, changed, diff)
 
-    def approve(self, path: str | Path) -> TrustDecision:
-        decision = self.inspect(path)
+    def approve(
+        self, path: str | Path, expected_digest: str | None = None, expected_content: str | None = None
+    ) -> TrustDecision:
+        decision = self.inspect(path, expected_digest, expected_content)
         if not decision.digest:
             return decision
         p = Path(decision.path)
         self.state[decision.path] = {
             "digest": decision.digest,
             "approved": True,
-            "content": p.read_text(encoding="utf-8", errors="replace"),
+            "content": expected_content if expected_content is not None else (
+                p.read_text(encoding="utf-8", errors="replace") if p.is_file() else ""
+            ),
         }
         self._save()
         decision.approved = True
         return decision
 
-    def reject(self, path: str | Path) -> TrustDecision:
-        decision = self.inspect(path)
+    def reject(
+        self, path: str | Path, expected_digest: str | None = None, expected_content: str | None = None
+    ) -> TrustDecision:
+        decision = self.inspect(path, expected_digest, expected_content)
+        p = Path(decision.path)
         self.state[decision.path] = {
             "digest": decision.digest,
             "approved": False,
-            "content": Path(decision.path).read_text(encoding="utf-8", errors="replace")
-            if Path(decision.path).is_file()
-            else "",
+            "content": expected_content if expected_content is not None else (
+                p.read_text(encoding="utf-8", errors="replace") if p.is_file() else ""
+            ),
         }
         self._save()
         return decision
@@ -111,8 +125,10 @@ class TrustStore:
         }
         return [self.inspect(p) for p in sorted(candidates) if not ignored.intersection(p.parts)]
 
-    def is_approved(self, path: str | Path) -> bool:
-        return self.inspect(path).approved
+    def is_approved(
+        self, path: str | Path, expected_digest: str | None = None, expected_content: str | None = None
+    ) -> bool:
+        return self.inspect(path, expected_digest, expected_content).approved
 
     def _load(self) -> dict:
         try:
