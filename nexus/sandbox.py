@@ -235,7 +235,7 @@ class SandboxRunner:
             kwargs = {}
             if os.name == "posix":
                 kwargs["start_new_session"] = True
-                kwargs["preexec_fn"] = self._resource_limits
+                kwargs["preexec_fn"] = self._resource_limits_factory(spec)
             elif os.name == "nt":
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 512)
             
@@ -751,13 +751,27 @@ class SandboxRunner:
         return result.returncode == 0
 
     @staticmethod
-    def _resource_limits() -> None:
-        """Apply conservative limits before ``exec`` on POSIX."""
-        if resource is None:
-            return
-        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-        resource.setrlimit(resource.RLIMIT_NOFILE, (512, 512))
-        resource.setrlimit(resource.RLIMIT_FSIZE, (512 * 1024 * 1024, 512 * 1024 * 1024))
+    def _resource_limits_factory(spec: CommandSpec):
+        def _apply_limits() -> None:
+            if resource is None:
+                return
+            try:
+                resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+                resource.setrlimit(resource.RLIMIT_NOFILE, (1024, 1024))
+                resource.setrlimit(resource.RLIMIT_FSIZE, (512 * 1024 * 1024, 512 * 1024 * 1024))
+                
+                # CPU time limit (add 5s buffer over wall-clock)
+                cpu_limit = int(spec.timeout_seconds) + 5
+                resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
+                
+                # 4GB memory limit
+                resource.setrlimit(resource.RLIMIT_AS, (4 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024))
+                
+                # Process count limit
+                resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
+            except (ValueError, OSError):
+                pass
+        return _apply_limits
 
     @staticmethod
     def _decode_bounded(value: bytes, limit: int) -> tuple[str, bool]:
