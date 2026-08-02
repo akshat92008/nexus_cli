@@ -29,6 +29,7 @@ jobs:
 
       - name: Install and verify kernel sandbox
         run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           sudo apt-get update
           sudo apt-get install -y bubblewrap
           uv run python - <<'PY'

@@ -50,6 +50,7 @@ jobs:
       - name: Install and probe kernel sandbox (Linux)
         if: runner.os == 'Linux'
         run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
           sudo apt-get update && sudo apt-get install -y bubblewrap
           uv run python - <<'PY'
           from pathlib import Path
