@@ -1660,7 +1660,7 @@ def tool_process_run(
                 env=dict(prepared.env),
                 start_new_session=os.name != "nt",
                 creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
-                preexec_fn=SandboxRunner._resource_limits if os.name == "posix" else None,
+                preexec_fn=SandboxRunner._resource_limits_factory(spec) if os.name == "posix" else None,
             )
 
         record = {
