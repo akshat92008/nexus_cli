@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 
 from nexus.code_validation import GeneratedCodeValidator
-from nexus.nova_runtime import AtomicTask
-from nexus.two_node_backend import TwoNodeBackend
 
 
 @dataclass
@@ -136,13 +134,3 @@ def test_cpp_exact_output_rejects_trailing_separator(tmp_path):
     assert "trailing space" in checks[0].output
 
 
-def test_routing_sends_known_nova_weak_spots_to_ceiling():
-    task = AtomicTask(
-        id=1,
-        description="Modify package.json and config.json for an async broadcast server",
-        expected_files=2,
-        scope_level="multi_file",
-    )
-    route, reason = TwoNodeBackend._route_task(task)
-    assert route == "ceiling"
-    assert reason

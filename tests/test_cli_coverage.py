@@ -12,7 +12,7 @@ from nexus.cli import main
 def test_cli_no_args(capsys):
     with patch.dict(os.environ, {"NVIDIA_API_KEY": "test"}):
         with patch("nexus.cli.run_interactive") as mock_run_interactive:
-            with patch("nexus.cli.Agent"):
+            with patch("nexus.cli.NexusRuntime"):
                 with patch.object(sys, "argv", ["nexus"]):
                     try:
                         main()
@@ -86,9 +86,9 @@ def test_generate_dashboard_accepts_shipped_manifest_schema(tmp_path):
 
 def test_cli_direct_command():
     with patch.dict(os.environ, {"NVIDIA_API_KEY": "test"}):
-        with patch("nexus.cli.Agent") as MockAgent:
+        with patch("nexus.cli.NexusRuntime") as MockNexusRuntime:
             with patch.object(sys, "argv", ["nexus", "!echo hello"]):
-                mock_agent = MockAgent.return_value
+                mock_agent = MockNexusRuntime.return_value
                 mock_agent._execute_tool_with_safety.return_value = ("hello\n", True)
                 try:
                     main()
@@ -100,9 +100,9 @@ def test_cli_direct_command():
 
 def test_cli_direct_command_confirm_danger():
     with patch.dict(os.environ, {"NVIDIA_API_KEY": "test"}):
-        with patch("nexus.cli.Agent") as MockAgent:
+        with patch("nexus.cli.NexusRuntime") as MockNexusRuntime:
             with patch.object(sys, "argv", ["nexus", "--confirm-danger", "!rm -rf ./sentinel"]):
-                mock_agent = MockAgent.return_value
+                mock_agent = MockNexusRuntime.return_value
                 mock_agent._execute_tool_with_safety.return_value = ("success\n", True)
                 try:
                     main()
@@ -114,9 +114,9 @@ def test_cli_direct_command_confirm_danger():
 
 def test_cli_direct_command_pending_rewrite(capsys):
     with patch.dict(os.environ, {"NVIDIA_API_KEY": "test"}):
-        with patch("nexus.cli.Agent") as MockAgent:
+        with patch("nexus.cli.NexusRuntime") as MockNexusRuntime:
             with patch.object(sys, "argv", ["nexus", "!rm -rf /"]):
-                mock_agent = MockAgent.return_value
+                mock_agent = MockNexusRuntime.return_value
                 mock_agent._execute_tool_with_safety.return_value = ("⏸️ PENDING_CONFIRMATION [danger-0001]: ...", False)
                 try:
                     main()
@@ -166,9 +166,9 @@ def test_cli_direct_command_real_execution(tmp_path):
 
 def test_cli_single_prompt():
     with patch.dict(os.environ, {"NVIDIA_API_KEY": "test"}):
-        with patch("nexus.cli.Agent") as MockAgent:
+        with patch("nexus.cli.NexusRuntime") as MockNexusRuntime:
             with patch.object(sys, "argv", ["nexus", "write a python script"]):
-                mock_agent = MockAgent.return_value
+                mock_agent = MockNexusRuntime.return_value
                 mock_agent.export_final_report.return_value = {"status": "VERIFIED"}
                 try:
                     main()
@@ -300,8 +300,8 @@ def test_main_cli_doctor():
 
 def test_run_interactive_loop():
     from nexus.cli import run_interactive
-    with patch("nexus.cli.Agent") as MockAgent:
-        agent = MockAgent.return_value
+    with patch("nexus.cli.NexusRuntime") as MockNexusRuntime:
+        agent = MockNexusRuntime.return_value
         agent.model_key = "test"
         agent.model_cfg = {"name": "Test", "id": "test", "description": "desc", "context": 10000, "supports_tools": True}
         agent.working_dir = "/tmp"
@@ -314,9 +314,9 @@ def test_run_interactive_loop():
 
 def test_handle_slash_commands_all():
     from nexus.cli import handle_slash_command
-    with patch("nexus.cli.Agent") as MockAgent,          patch("nexus.cli.get_history") as mock_get_history,          patch("nexus.cli.ConversationMemory") as mock_mem,          patch("nexus.cli.start_background_web_server"):
+    with patch("nexus.cli.NexusRuntime") as MockNexusRuntime,          patch("nexus.cli.get_history") as mock_get_history,          patch("nexus.cli.ConversationMemory") as mock_mem,          patch("nexus.cli.start_background_web_server"):
         
-        agent = MockAgent.return_value
+        agent = MockNexusRuntime.return_value
         agent.model_key = "test"
         agent.model_cfg = {"name": "Test", "id": "test", "description": "desc", "context": 10000, "supports_tools": True}
         agent.total_prompt_tokens = 100

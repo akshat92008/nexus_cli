@@ -10,11 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.budget import BudgetController, BudgetedClient, BudgetExceeded, BudgetLimits
 from nexus.planner import Difficulty, IntentType, PlanningEngine, PlanType, TaskStatus
 from nexus.policy import get_mode_policy
-from nexus.repo_graph import RepoGraph
+from nexus.context_engine import ContextEngine
 from nexus.run_state import CriterionResult, CriterionStatus, RunLedger, RunStatus
 from nexus.workspace import GitWorktreeSession
 
@@ -167,7 +167,7 @@ def test_repo_graph_indexes_symbols_callers_and_impacted_tests(tmp_path):
         "from app import calculate\n\ndef test_calculate():\n    assert calculate(1) == 2\n",
         encoding="utf-8",
     )
-    graph = RepoGraph(tmp_path, state_root=tmp_path / "state")
+    graph = ContextEngine(tmp_path, state_root=tmp_path / "state")
 
     first = graph.build()
     assert first.indexed == 2
@@ -279,7 +279,7 @@ def test_agent_run_ledger_tracks_verified_tools_and_complete_rollback(
     monkeypatch.chdir(tmp_path)
     test_policy = get_mode_policy("autonomous")
     test_policy.require_os_isolation = False
-    agent = Agent(
+    agent = NexusRuntime(
         api_key="nvapi-test",
         model_key="glm-5.2",
         working_dir=str(tmp_path),

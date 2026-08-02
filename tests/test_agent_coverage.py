@@ -6,12 +6,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.run_state import RunLedger
 
 
 def test_export_final_report_success(tmp_path: Path):
-    agent = Agent(api_key="test", working_dir=str(tmp_path))
+    agent = NexusRuntime(api_key="test", working_dir=str(tmp_path))
     agent.run_ledger = RunLedger("test-session-1", working_dir=str(tmp_path))
     # create dummy turn
     turn_dir = agent.run_ledger.session_dir / "turn-0001"
@@ -25,7 +25,7 @@ def test_export_final_report_success(tmp_path: Path):
 
 
 def test_export_final_report_no_turn(tmp_path: Path):
-    agent = Agent(api_key="test", working_dir=str(tmp_path))
+    agent = NexusRuntime(api_key="test", working_dir=str(tmp_path))
     agent.run_ledger = RunLedger("test-session-2", working_dir=str(tmp_path))
 
     report = agent.export_final_report()
@@ -34,7 +34,7 @@ def test_export_final_report_no_turn(tmp_path: Path):
 
 
 def test_export_final_report_missing_file(tmp_path: Path):
-    agent = Agent(api_key="test", working_dir=str(tmp_path))
+    agent = NexusRuntime(api_key="test", working_dir=str(tmp_path))
     agent.run_ledger = RunLedger("test-session-3", working_dir=str(tmp_path))
     turn_dir = agent.run_ledger.session_dir / "turn-0001"
     turn_dir.mkdir(parents=True, exist_ok=True)
@@ -45,7 +45,7 @@ def test_export_final_report_missing_file(tmp_path: Path):
 
 
 def test_run_interactive_interrupt(tmp_path: Path):
-    agent = Agent(api_key="test", working_dir=str(tmp_path))
+    agent = NexusRuntime(api_key="test", working_dir=str(tmp_path))
     agent.run_ledger = RunLedger("test-session-4", working_dir=str(tmp_path))
 
     # Mock planner to raise KeyboardInterrupt

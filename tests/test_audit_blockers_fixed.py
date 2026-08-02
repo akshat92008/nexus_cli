@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from nexus.agent import Agent
-from nexus.pipeline import ExecutionPipeline
+from nexus.nexus_runtime import NexusRuntime
+from nexus.execution_engine import ExecutionEngine
 from nexus.planner import Difficulty, IntentType, PlanningEngine
 from nexus.preflight import probe_hosted
 from nexus.run_state import RunStatus
@@ -12,7 +12,7 @@ from nexus.run_state import RunStatus
 def test_repo_summary_aliases_activate_large_repo_planning(tmp_path):
     for index in range(12):
         (tmp_path / f"m{index}.py").write_text(f"def f{index}():\n    return {index}\n")
-    agent = Agent(api_key="dummy", working_dir=str(tmp_path), workspace_isolation=False)
+    agent = NexusRuntime(api_key="dummy", working_dir=str(tmp_path), workspace_isolation=False)
     agent.repo_graph.build(force=True)
     summary = agent.repo_graph.summary()
     assert summary["files"] == summary["total_files"]
@@ -28,24 +28,24 @@ def test_repo_summary_aliases_activate_large_repo_planning(tmp_path):
 
 def test_non_git_workspace_is_indexed(tmp_path):
     (tmp_path / "app.py").write_text("VALUE = 1\n")
-    agent = Agent(api_key="dummy", working_dir=str(tmp_path), workspace_isolation=False)
-    result = ExecutionPipeline(agent)._stage_repo_understanding()
+    agent = NexusRuntime(api_key="dummy", working_dir=str(tmp_path), workspace_isolation=False)
+    result = ExecutionEngine(agent)._stage_repo_understanding()
     assert result.success is True
     assert agent.repo_graph.summary()["files"] >= 1
 
 
 def test_planning_failure_fails_closed(tmp_path, monkeypatch):
-    agent = Agent(api_key="dummy", working_dir=str(tmp_path), workspace_isolation=False)
+    agent = NexusRuntime(api_key="dummy", working_dir=str(tmp_path), workspace_isolation=False)
     def fail(_prompt):
         raise RuntimeError("boom")
     monkeypatch.setattr(agent.planner, "analyze", fail)
-    result = ExecutionPipeline(agent).run("Refactor authentication across the repository")
+    result = ExecutionEngine(agent).run("Refactor authentication across the repository")
     assert result.status == RunStatus.BLOCKED.value
     assert result.response.startswith("BLOCKED: Planning failed safely")
 
 
 def test_finalizer_uses_agent_turn_evidence_marker(tmp_path):
-    agent = Agent(api_key="dummy", working_dir=str(tmp_path), workspace_isolation=False)
+    agent = NexusRuntime(api_key="dummy", working_dir=str(tmp_path), workspace_isolation=False)
     agent.evidence.append(
         kind="verification_check",
         claim="old pass",

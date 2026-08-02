@@ -1,13 +1,13 @@
 import os
 
 os.environ["NVIDIA_API_KEY"] = "test"
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.repair import RepairLoop
 from nexus.runtime.kernel import FailureKind
 
 
 def test_repair_loop_triggers_limit_and_isolates_error(monkeypatch):
-    agent = Agent(working_dir=".", workspace_isolation=False)
+    agent = NexusRuntime(working_dir=".", workspace_isolation=False)
     repair = RepairLoop(agent)
 
     attempts = [0]

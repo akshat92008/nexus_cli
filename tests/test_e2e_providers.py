@@ -1,3 +1,4 @@
+from nexus.execution_engine import ExecutionEngine
 """Tests for End-to-End Provider behaviors."""
 
 from nexus.providers.base import Provider

@@ -1,3 +1,4 @@
+from nexus.execution_engine import ExecutionEngine
 """Compatibility shim: ``nexus.execution`` public surface.
 
 The DAG-oriented execution engine and its supporting types live in
@@ -10,7 +11,7 @@ Usage::
     from nexus.execution import ExecutionEngine, TaskOutcome, ReviewOutcome, classify_failure
 """
 
-from nexus.runtime.kernel import (  # noqa: F401
+from nexus.runtime.kernel import (
     ExecutionResult,
     FailureKind,
     PlanReviewer,
@@ -20,9 +21,6 @@ from nexus.runtime.kernel import (  # noqa: F401
     StepVerifier,
     TaskOutcome,
     classify_failure,
-)
-from nexus.runtime.kernel import (
-    TaskDagKernel as ExecutionEngine,
 )
 
 __all__ = [

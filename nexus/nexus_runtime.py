@@ -27,7 +27,6 @@ from nexus.capabilities import (
     ToolCapabilityDeclaration,
 )
 from nexus.code_validation import GeneratedCodeValidator
-from nexus.context_manager import ContextManager
 from nexus.evidence import EvidenceTrail, command_exit_code, verify_mutation
 from nexus.extensions import ExtensionRegistry, ToolContext
 from nexus.history import FileHistory
@@ -48,11 +47,10 @@ from nexus.plugins.loader import PluginLoader
 from nexus.policy import ModePolicy, PermissionDecision, PolicyLoader, get_mode_policy
 from nexus.project_memory import ProjectMemory
 from nexus.providers.hosted import HostedProvider
-from nexus.providers.nova import NovaProvider
 from nexus.reflection import ReflectionEngine, ReflectionVerdict
-from nexus.repo_graph import RepoGraph
+from nexus.context_engine import ContextEngine
 from nexus.run_catalog import RunCatalog
-from nexus.run_finalizer import RunFinalizer
+from nexus.report_builder import ReportBuilder
 from nexus.run_state import RunLedger, RunStatus
 from nexus.runtime.events import EventType
 from nexus.runtime.session import ExecutionSession
@@ -231,7 +229,7 @@ When in doubt, ask the user. But when the task is clear, EXECUTE WITHOUT HESITAT
 # ── Agent Class ──────────────────────────────────────────────────────────────
 
 
-class Agent:
+class NexusRuntime:
     """
     The core Agent Operating System — manages conversation, tool calls,
     streaming, planning, reflection, context, safety, skills, subagents,
@@ -311,17 +309,15 @@ class Agent:
                 output_price_per_million=output_price_per_million,
             )
         )
-        hosted_client = None
-        if not self._is_nova_model():
-            primary = HostedProvider(
-                api_key=api_key,
-                attempt_controller=self.budget,
-                attempt_observer=self._record_provider_attempt,
-            )
-            from nexus.budget import BudgetedClient
+        primary = HostedProvider(
+            api_key=api_key,
+            attempt_controller=self.budget,
+            attempt_observer=self._record_provider_attempt,
+        )
+        from nexus.budget import BudgetedClient
 
-            # BudgetedClient duck-types the provider to add budget enforcement
-            hosted_client = BudgetedClient(primary, self.budget)
+        # BudgetedClient duck-types the provider to add budget enforcement
+        hosted_client = BudgetedClient(primary, self.budget)
 
         # Validate provider configuration and budgets before allocating a
         # persistent worktree so constructor failures cannot leak workspaces.
@@ -335,18 +331,8 @@ class Agent:
                 self.working_dir = worktree_info.path
             except WorktreeError as exc:
                 raise ValueError(f"Could not create isolated Git worktree: {exc}") from exc
-        if self._is_nova_model():
-            try:
-                self.client = NovaProvider(
-                    model_name=self.model_cfg.get("ollama_model", "nova_codex"),
-                    working_dir=self.working_dir,
-                )
-            except (LookupError, OSError, RuntimeError):
-                if self.worktree is not None:
-                    self.worktree.discard()
-                raise
-        else:
-            self.client = hosted_client
+        
+        self.client = hosted_client
 
         # State
         self.messages: list[dict] = []
@@ -419,8 +405,7 @@ class Agent:
         # ── Phase 1: Core Engines ────────────────────────────────────────
         self.planner = PlanningEngine()
         self.reflector = ReflectionEngine()
-        self.context_mgr = ContextManager(self.working_dir)
-        self.repo_graph = RepoGraph(self.working_dir)
+        self.repo_graph = ContextEngine(self.working_dir)
         self.safety = SafetyLayer()
         self.project_mem = ProjectMemory(self.working_dir)
         self.user_mem = UserMemory()
@@ -494,7 +479,7 @@ class Agent:
 
         # Fire session start hook
         self.hooks.fire(HookEvent.ON_SESSION_START, HookContext(event=HookEvent.ON_SESSION_START))
-        self._run_finalizer = RunFinalizer(self)
+        self._run_finalizer = ReportBuilder(self)
 
     # ── Configuration ────────────────────────────────────────────────────
 
@@ -712,20 +697,15 @@ class Agent:
         if not resolved_key:
             return False
         cfg = resolve_model(resolved_key) or dict(MODELS[resolved_key])
-        if cfg.get("backend") == "nova":
-            self.client = NovaProvider(
-                model_name=cfg.get("ollama_model", "nova_codex"), working_dir=self.working_dir
+        try:
+            primary = HostedProvider(
+                api_key=self._api_key,
+                attempt_controller=self.budget,
+                attempt_observer=self._record_provider_attempt,
             )
-        else:
-            try:
-                primary = HostedProvider(
-                    api_key=self._api_key,
-                    attempt_controller=self.budget,
-                    attempt_observer=self._record_provider_attempt,
-                )
-                self.client = BudgetedClient(primary, self.budget)
-            except ValueError:
-                return False
+            self.client = BudgetedClient(primary, self.budget)
+        except ValueError:
+            return False
         self.model_key = resolved_key
         self.model_cfg = cfg
         self.hooks.fire(
@@ -737,20 +717,7 @@ class Agent:
         )
         return True
 
-    def _is_nova_model(self) -> bool:
-        """Return True when the active model uses the local Nova backend."""
-        return self.model_cfg.get("backend") == "nova"
 
-    def _should_use_two_node(self, analysis: dict) -> bool:
-        """Use Ceiling+Intern for coding/workspace tasks handled by hosted models."""
-        if (
-            self._is_nova_model()
-            or not self.model_cfg.get("supports_tools")
-            or not self.local_intern_enabled
-        ):
-            return False
-        intent = analysis.get("intent")
-        return intent not in (IntentType.CHAT, IntentType.EXPLAIN, IntentType.SEARCH)
 
     def set_system_prompt(self, prompt: str):
         """Set a custom base system prompt."""
@@ -1209,9 +1176,9 @@ class Agent:
             return ""
         self._context_gathered = True
 
-        # Use the new ContextManager for initialization
+        # Use the new ContextEngine for initialization
         try:
-            context = self.context_mgr.initialize()
+            context = self.repo_graph.summary().get("summary", "")
             stats = self.repo_graph.build()
             graph = self.repo_graph.summary()
             graph_context = (
@@ -1284,17 +1251,7 @@ class Agent:
         # Reflection context injection
         reflection_context = self.reflector.get_reflection_context()
 
-        # Active file context
-        active_context = self.context_mgr.get_relevant_context(
-            " ".join(
-                item
-                for item in (
-                    self._active_objective,
-                    getattr(getattr(self._active_plan, "next_step", None), "description", ""),
-                )
-                if item
-            )
-        )
+        # Active file context (removed; using graph_context below instead)
         graph_query = " ".join(
             item
             for item in (
@@ -1324,7 +1281,6 @@ class Agent:
                 + os_info
                 + plan_context
                 + reflection_context
-                + ("\n" + active_context if active_context else "")
                 + ("\n\n" + graph_context if graph_context else "")
             ),
         }
@@ -2067,12 +2023,7 @@ class Agent:
         if name in mutation_tools:
             if nova_guardrail is not None and not nova_guardrail.get("passed"):
                 return "❌ BLOCKED: Nova guardrail metadata was present but did not pass.", False
-            if self._is_nova_model() and (not nova_guardrail or not nova_guardrail.get("passed")):
-                return (
-                    "❌ BLOCKED: Nova file edit reached Nexus without a passing Nova "
-                    "guardrail verdict (path validation, constraint verification, and disk gate).",
-                    False,
-                )
+
             early_edits = args.get("edits", []) if name == "multi_edit" else [args]
             for early_edit in early_edits:
                 early_path = early_edit.get("path", "")
@@ -2341,14 +2292,6 @@ class Agent:
                 raw_output=result,
                 metadata={"arguments": args},
             )
-
-        # ── 6. Track file access in context manager
-        if file_path:
-            was_edited = name in ("write_file", "edit_file", "patch_file", "multi_edit")
-            self.context_mgr.track_file_access(file_path, was_edited=was_edited)
-            if success and name == "read_file" and result:
-                self.context_mgr.track_file_imports(file_path, result)
-                self.context_mgr.summarize_file(file_path, result)
 
         # ── 7. Fire AFTER hooks
         if event_after:
@@ -2737,9 +2680,9 @@ class Agent:
         self._load_rules_and_preferences()
         self._update_system_prompt()
 
-        from nexus.pipeline import ExecutionPipeline
+        from nexus.execution_engine import ExecutionEngine
 
-        pipeline = ExecutionPipeline(self)
+        pipeline = ExecutionEngine(self)
         result = pipeline.run(user_input, interactive=True, emit_ui=True)
         return result.response
 
@@ -2754,9 +2697,9 @@ class Agent:
         self._load_rules_and_preferences()
         self._update_system_prompt()
 
-        from nexus.pipeline import ExecutionPipeline
+        from nexus.execution_engine import ExecutionEngine
 
-        pipeline = ExecutionPipeline(self)
+        pipeline = ExecutionEngine(self)
         result = pipeline.run(user_input, interactive=False, emit_ui=False)
         return result.response, result.events
 
@@ -3062,337 +3005,7 @@ class Agent:
         }
         return self.run_non_interactive(resume_prompt)
 
-    def _run_two_node_turn(
-        self, user_input: str, analysis: dict, emit_ui: bool = True
-    ) -> tuple[str, list[dict]]:
-        """Run a hosted-model turn through Ceiling planning and Nova Intern execution."""
-        from nexus.two_node_backend import TwoNodeBackend
 
-        events: list[dict] = []
-        self.messages.append({"role": "user", "content": user_input})
-
-        backend = TwoNodeBackend(
-            client=self.client,
-            ceiling_model_id=self.model_cfg["id"],
-            ceiling_model_name=self.model_cfg["name"],
-            working_dir=self.working_dir,
-            intern_model=self.model_cfg.get("intern_model", "nova_codex"),
-            run_ledger=self.run_ledger,
-        )
-
-        try:
-            if emit_ui:
-                live = ui.LiveStatus()
-                live.start("Preparing task graph...")
-                try:
-                    result = backend.run(user_input, planner_analysis=analysis)
-                finally:
-                    live.stop()
-            else:
-                result = backend.run(user_input, planner_analysis=analysis)
-        except (OSError, RuntimeError) as e:
-            if emit_ui:
-                ui.print_warning(f"Two-node backend error: {e}")
-            if self.messages and self.messages[-1]["role"] == "user":
-                self.messages.pop()
-            raise RuntimeError(f"Two-node backend failed: {e}") from e
-
-        def record_result(candidate, phase: str) -> None:
-            if candidate.execution_plan is not None:
-                self._active_plan = candidate.execution_plan
-                self.planner.current_plan = candidate.execution_plan
-            self.run_ledger.append_model_call(
-                role=f"ceiling_{phase}",
-                model=self.model_cfg["id"],
-                status=("verified" if candidate.review_approved else "failed"),
-                usage=self.budget.snapshot().get("usage", {}),
-                detail=candidate.review_summary,
-            )
-            self.evidence.append(
-                kind="planning_review",
-                claim=f"independent reviewer evaluated {phase} candidate",
-                status="verified" if candidate.review_approved else "failed",
-                raw_output=candidate.review_summary,
-                metadata={"findings": candidate.review_findings},
-            )
-            for execution in candidate.executions:
-                if execution.node.startswith("Nova") and not execution.escalated:
-                    self.routing_stats["nova_tasks"] += 1
-                else:
-                    self.routing_stats["ceiling_tasks"] += 1
-                self.routing_stats["nova_retries"] += max(0, execution.attempts - 1)
-                if execution.escalated:
-                    self.routing_stats["escalations"] += 1
-                self.evidence.append(
-                    kind="routing",
-                    claim=f"subtask {execution.task.id} routed to {execution.node}",
-                    status="verified" if execution.proposals else "failed",
-                    raw_output=(
-                        execution.guardrail_log + "\n\n[RAW MODEL OUTPUT]\n" + execution.raw_output
-                    ).strip(),
-                    metadata={
-                        "reason": execution.route_reason,
-                        "attempts": execution.attempts,
-                        "verdict": execution.verdict,
-                        "escalated": execution.escalated,
-                        "failure_kind": execution.failure_kind,
-                    },
-                )
-
-        def apply_result(candidate, phase: str) -> list[str]:
-            changed: list[str] = []
-            for proposal in candidate.proposals:
-                args = dict(proposal.args)
-                display_args = {
-                    key: value for key, value in args.items() if key != "_nova_guardrail"
-                }
-                if emit_ui:
-                    ui.print_tool_call(proposal.name, display_args)
-                tool_result, success = self._execute_tool_with_safety(proposal.name, args)
-                if emit_ui:
-                    ui.print_tool_result(tool_result, success)
-                events.append(
-                    {
-                        "type": "tool_call",
-                        "name": proposal.name,
-                        "args": display_args,
-                        "result": tool_result,
-                        "success": success,
-                        "node": phase,
-                        "guardrail": proposal.guardrail_summary,
-                    }
-                )
-                if success:
-                    path = str(display_args.get("path", ""))
-                    if path:
-                        changed.append(path)
-            return changed
-
-        breakdowns = [result.format_breakdown()]
-        record_result(result, "initial")
-
-        if not result.review_approved and result.review_findings:
-            repair_analysis = {
-                key: value for key, value in analysis.items() if key != "resume_plan"
-            }
-            focused_request = (
-                f"{user_input}\n\nIndependent review rejected the candidate. "
-                "Produce the smallest complete repair addressing only these findings:\n"
-                + "\n".join(f"- {item}" for item in result.review_findings)
-            )
-            repair_result = backend.run(
-                focused_request,
-                planner_analysis=repair_analysis,
-            )
-            record_result(repair_result, "review_repair")
-            breakdowns.append(repair_result.format_breakdown())
-            result = repair_result
-
-        changed_paths = apply_result(result, "two-node")
-        applied = bool(changed_paths) and all(
-            event.get("success", False) for event in events if event.get("type") == "tool_call"
-        )
-        recovered_without_edits = bool(
-            result.review_approved
-            and not result.proposals
-            and result.execution_plan is not None
-            and result.execution_plan.steps
-            and all(step.status == TaskStatus.COMPLETED for step in result.execution_plan.steps)
-            and any(
-                execution.route_reason == "recovered verified checkpoint"
-                for execution in result.executions
-            )
-        )
-        if applied:
-            security_result, security_ok = self._execute_tool_with_safety(
-                "security_scan",
-                {"paths": changed_paths},
-            )
-            events.append(
-                {
-                    "type": "tool_call",
-                    "name": "security_scan",
-                    "args": {"paths": changed_paths},
-                    "result": security_result,
-                    "success": security_ok,
-                    "node": "nexus-verifier",
-                }
-            )
-        if applied or recovered_without_edits:
-            verification_report = self._record_verification_report(self._run_verification_suite())
-            if emit_ui:
-                ui.console.print(verification_report.format_report())
-            if not verification_report.all_passed:
-                repair_analysis = {
-                    key: value for key, value in analysis.items() if key != "resume_plan"
-                }
-                focused_request = (
-                    f"{user_input}\n\nThe candidate was applied in an isolated workspace, "
-                    "but deterministic verification failed. Repair only the failing checks "
-                    "and preserve already passing behavior.\n\n"
-                    f"{verification_report.format_report()}"
-                )
-                repair_result = backend.run(
-                    focused_request,
-                    planner_analysis=repair_analysis,
-                )
-                record_result(repair_result, "verification_repair")
-                breakdowns.append(repair_result.format_breakdown())
-                if repair_result.review_approved:
-                    apply_result(repair_result, "two-node-repair")
-                    rerun = self._record_verification_report(self._run_verification_suite())
-                    if emit_ui:
-                        ui.console.print(rerun.format_report())
-
-        breakdown = "\n\n".join(breakdowns)
-        if emit_ui:
-            ui.console.print(breakdown)
-        breakdown = self._guard_completion_claims(breakdown)
-        self.messages.append({"role": "assistant", "content": breakdown})
-        self._auto_save()
-        return breakdown, events
-
-    def _run_nova_turn(self, user_input: str, emit_ui: bool = True) -> tuple[str, list[dict]]:
-        """Run one turn through the local Nova pipeline backend."""
-        from nexus.nova_backend import NovaBackendError, NovaPipelineBackend
-
-        events: list[dict] = []
-        self._load_rules_and_preferences()
-        self.messages.append({"role": "user", "content": user_input})
-
-        backend = NovaPipelineBackend(
-            model=self.model_cfg.get("ollama_model", "nova_codex"),
-            working_dir=self.working_dir,
-        )
-
-        try:
-            if emit_ui:
-                live = ui.LiveStatus()
-                live.start("Running local worker...")
-                try:
-                    nova_result = backend.run(user_input)
-                finally:
-                    live.stop()
-            else:
-                nova_result = backend.run(user_input)
-        except NovaBackendError as e:
-            content = f"Nova guardrails blocked the output: {e}"
-            if emit_ui:
-                ui.print_error(content)
-            if self.messages and self.messages[-1].get("role") == "user":
-                self.messages.pop()
-            raise RuntimeError(content) from e
-        except (LookupError, OSError, RuntimeError) as e:
-            content = f"Nova backend error: {e}"
-            if emit_ui:
-                ui.print_error(content)
-            if self.messages and self.messages[-1].get("role") == "user":
-                self.messages.pop()
-            raise RuntimeError(content) from e
-
-        self.routing_stats["nova_tasks"] += 1
-        self.run_ledger.append_model_call(
-            role="intern",
-            model=self.model_cfg.get("ollama_model", "nova_codex"),
-            status="completed" if nova_result.raw_output else "failed",
-            detail=(
-                f"guarded proposals={len(nova_result.proposals)}; "
-                f"declared_test={bool(nova_result.test_command)}"
-            ),
-        )
-
-        if emit_ui and nova_result.raw_output:
-            ui.console.print(nova_result.raw_output)
-        if emit_ui and nova_result.guardrail_output:
-            ui.print_info("Nova guardrail verdicts:")
-            ui.console.print(nova_result.guardrail_output)
-
-        # Structured/headless callers receive the same complete model and
-        # guardrail transcript that interactive users see.  This is evidence,
-        # not a shortened summary, so rejected generations remain auditable.
-        events.append(
-            {
-                "type": "model_trace",
-                "node": "nova",
-                "raw_output": nova_result.raw_output,
-                "guardrail_output": nova_result.guardrail_output,
-            }
-        )
-        events.append(
-            {
-                "type": "model_turn",
-                "node": "nova",
-                "proposals": len(nova_result.proposals),
-                "declared_test": bool(nova_result.test_command),
-            }
-        )
-
-        mutated = False
-        proposal_failed = False
-        for proposal in nova_result.proposals:
-            args = dict(proposal.args)
-            display_args = {k: v for k, v in args.items() if k != "_nova_guardrail"}
-            if emit_ui:
-                ui.print_tool_call(proposal.name, display_args)
-            result, success = self._execute_tool_with_safety(proposal.name, args)
-            if emit_ui:
-                ui.print_tool_result(result, success)
-            events.append(
-                {
-                    "type": "tool_call",
-                    "name": proposal.name,
-                    "args": display_args,
-                    "result": result,
-                    "success": success,
-                    "nova_guardrail": proposal.guardrail_summary,
-                }
-            )
-            if success and proposal.name in {
-                "write_file",
-                "edit_file",
-                "patch_file",
-                "multi_edit",
-                "replace_file_content",
-                "multi_replace_file_content",
-                "write_to_file",
-            }:
-                mutated = True
-            if not success:
-                proposal_failed = True
-
-        test_failed = False
-        if mutated and not proposal_failed and nova_result.test_command:
-            test_result, test_success, evidence_id = self._run_declared_test_command(
-                nova_result.test_command,
-                source="nova",
-                emit_ui=emit_ui,
-            )
-            test_failed = not test_success
-            events.append(
-                {
-                    "type": "tool_call",
-                    "name": "run_command",
-                    "args": {"command": nova_result.test_command},
-                    "result": test_result,
-                    "success": test_success,
-                    "node": "nova-declared-test",
-                    "evidence_id": evidence_id,
-                }
-            )
-
-        final_text = nova_result.assistant_text
-        if proposal_failed:
-            final_text += (
-                "\n\nOne or more guarded file operations failed; completion is unverified."
-            )
-        if test_failed:
-            final_text += "\n\nThe model-declared acceptance test failed; completion is unverified."
-        final_content = self._guard_completion_claims(final_text)
-        if emit_ui:
-            ui.print_response_complete()
-        self.messages.append({"role": "assistant", "content": final_content})
-        self._auto_save()
-        return final_content, events
 
     # ── Subagent Integration ─────────────────────────────────────────────
 

@@ -39,7 +39,7 @@ def _is_relative_to(path: Path, root: Path) -> bool:
 
 
 if TYPE_CHECKING:
-    from nexus.agent import Agent
+    from nexus.nexus_runtime import NexusRuntime
     from nexus.run_state import RunStatus
 
 logger = logging.getLogger(__name__)
@@ -81,7 +81,7 @@ class EvidenceSummary:
         return bool(self.failed_evidence)
 
 
-class RunFinalizer:
+class ReportBuilder:
     """
     Service that evaluates evidence and produces the final run report.
 
@@ -174,9 +174,7 @@ class RunFinalizer:
                 passing_checks or passing_behavioral or successful_command_text
             )
         else:
-            review_satisfied = bool(approved_reviews) or (
-                self._agent._is_nova_model() and not self._agent.mode_policy.require_review
-            )
+            review_satisfied = bool(approved_reviews) or not self._agent.mode_policy.require_review
             objective_satisfied = (
                 bool(verified_mutations)
                 and bool(passing_checks or passing_behavioral)
@@ -191,7 +189,7 @@ class RunFinalizer:
                 (
                     "Verified mutations and deterministic checks support the objective; "
                     "this local-only run has no independent semantic reviewer."
-                    if self._agent._is_nova_model() and not approved_reviews
+                    if not approved_reviews
                     else "Verified mutations, deterministic checks, and independent review "
                     "support the requested objective."
                 )
@@ -294,7 +292,7 @@ class RunFinalizer:
         *,
         status_override: RunStatus | None = None,
     ) -> dict[str, Any]:
-        from nexus.agent import _redact_runtime_text
+        from nexus.nexus_runtime import _redact_runtime_text
 
         
         """Evaluate evidence and write a machine-readable final report."""
@@ -791,7 +789,7 @@ class RunFinalizer:
                 "review_assurance": (
                     "independent_semantic"
                     if approved_reviews
-                    else ("deterministic_only" if self._agent._is_nova_model() else "none")
+                    else "none"
                 ),
             },
         )
@@ -974,8 +972,8 @@ class RunFinalizer:
 # ─── Convenience factory ─────────────────────────────────────────────────────
 
 
-def make_finalizer(agent: "Agent") -> RunFinalizer:
+def make_finalizer(agent: "Agent") -> ReportBuilder:
     """Create and attach a ``RunFinalizer`` to *agent*."""
-    finalizer = RunFinalizer(agent)
+    finalizer = ReportBuilder(agent)
     agent._run_finalizer = finalizer  # type: ignore[attr-defined]
     return finalizer

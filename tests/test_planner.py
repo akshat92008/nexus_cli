@@ -3,7 +3,7 @@ import os
 import pytest
 
 os.environ["NVIDIA_API_KEY"] = "test"
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.planner import (
     Difficulty,
     ExecutionPlan,
@@ -41,7 +41,7 @@ def test_advance_step_dependency_enforcement():
         ],
     )
 
-    agent = Agent(working_dir=".", workspace_isolation=False)
+    agent = NexusRuntime(working_dir=".", workspace_isolation=False)
     planner = agent.planner
     planner.current_plan = plan
 
@@ -58,7 +58,7 @@ def test_save_and_load_plan(tmp_path, monkeypatch):
 
     monkeypatch.setattr(planner_module, "PLANS_DIR", tmp_path)
 
-    agent = Agent(working_dir=".", workspace_isolation=False)
+    agent = NexusRuntime(working_dir=".", workspace_isolation=False)
     planner = agent.planner
 
     plan = ExecutionPlan(

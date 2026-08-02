@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import threading
 
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.api import RoundRobinKeyPool
 from nexus.history import FileHistory
 from nexus.planner import (
@@ -18,13 +18,13 @@ from nexus.planner import (
     TaskStatus,
 )
 from nexus.policy import get_mode_policy
-from nexus.repo_graph import RepoGraph
+from nexus.context_engine import ContextEngine
 from nexus.tools import tool_context, tool_multi_edit
 from nexus.verification import CheckStatus, CheckType, VerificationEngine
 
 
 def test_confirmed_command_keeps_required_os_isolation(tmp_path):
-    agent = Agent(
+    agent = NexusRuntime(
         api_key="dummy",
         working_dir=str(tmp_path),
         mode_policy=get_mode_policy("review"),
@@ -122,7 +122,7 @@ def test_repo_graph_context_bundle_includes_callers_and_tests(tmp_path):
         "def test_total():\n    assert calculate_total(2) == 4\n",
         encoding="utf-8",
     )
-    graph = RepoGraph(tmp_path, state_root=tmp_path / "state")
+    graph = ContextEngine(tmp_path, state_root=tmp_path / "state")
     graph.build(force=True)
 
     bundle = graph.context_bundle("fix calculate_total", max_files=5, max_chars=8000)

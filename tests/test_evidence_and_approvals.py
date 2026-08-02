@@ -1,6 +1,6 @@
 import os
 
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.evidence import EvidenceTrail, verify_mutation
 from nexus.package_guard import PackageCheck, PackageGuard
 from nexus.trust import TrustStore
@@ -10,7 +10,7 @@ def test_file_mutation_requires_preview_then_records_evidence(tmp_path, monkeypa
     monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
     old_cwd = os.getcwd()
     try:
-        agent = Agent(model_key="nova3b", working_dir=str(tmp_path), permission_mode="default")
+        agent = NexusRuntime(model_key="nova3b", working_dir=str(tmp_path), permission_mode="default")
         args = {
             "path": "hello.py",
             "content": "print('hello')\n",

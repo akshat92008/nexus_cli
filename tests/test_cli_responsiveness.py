@@ -6,7 +6,7 @@ import json
 import os
 from unittest.mock import patch
 
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.tools import execute_tool
 from nexus.ui import LiveStatus, print_tool_call
 
@@ -45,8 +45,8 @@ def test_non_interactive_command_env():
 
 
 def test_agent_handle_stream_tool_drafting():
-    """Verify Agent._handle_stream updates LiveStatus as tool call deltas arrive."""
-    agent = Agent(api_key="nvapi-mock-key")
+    """Verify NexusRuntime._handle_stream updates LiveStatus as tool call deltas arrive."""
+    agent = NexusRuntime(api_key="nvapi-mock-key")
 
     class MockDeltaFunction:
         def __init__(self, name=None, arguments=None):

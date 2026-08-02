@@ -4,7 +4,7 @@ import json
 import subprocess
 import sys
 
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.policy import get_mode_policy
 from nexus.providers.base import Provider
 
@@ -237,7 +237,7 @@ def test_full_autonomous_agent_workflow(tmp_path, monkeypatch):
     test_policy = get_mode_policy("autonomous")
     test_policy.require_os_isolation = False
     test_policy.allow_shell_command = False
-    agent = Agent(
+    agent = NexusRuntime(
         working_dir=str(repo_dir),
         permission_mode="acceptEdits",
         mode_policy=test_policy,

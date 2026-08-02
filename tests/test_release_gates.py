@@ -10,7 +10,7 @@ import pytest
 
 from nexus.benchmark import BenchmarkRunner, BenchmarkSuite
 from nexus.cli import _handle_benchmark
-from nexus.pipeline import PipelineStage, StageResult
+from nexus.execution_engine import PipelineStage, StageResult
 
 
 def test_root_benchmark_manifest_references_a_real_fixture():

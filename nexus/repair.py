@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any
 from nexus.runtime.kernel import FailureKind, classify_failure
 
 if TYPE_CHECKING:
-    from nexus.agent import Agent
+    from nexus.nexus_runtime import NexusRuntime
 
 logger = logging.getLogger(__name__)
 

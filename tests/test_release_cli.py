@@ -12,7 +12,6 @@ import pytest
 
 from nexus.cli import _configure_output_streams, non_interactive_exit_code
 from nexus.doctor import run_doctor
-from nexus.nova_runtime import OllamaClient
 from nexus.webapp.server import _is_allowed_web_origin, _is_sensitive_path
 from scripts import run_release_gate
 
@@ -68,10 +67,6 @@ def test_module_entrypoint_exposes_version():
     assert result.stdout.strip() == "NexusAI 3.2.1"
 
 
-def test_ollama_host_without_scheme_is_normalized(monkeypatch):
-    monkeypatch.setenv("OLLAMA_HOST", "127.0.0.1:11434/")
-    client = OllamaClient()
-    assert client.base_url == "http://127.0.0.1:11434"
 
 
 def test_web_file_api_classifies_secret_paths(tmp_path):

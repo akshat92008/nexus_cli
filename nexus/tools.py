@@ -2031,9 +2031,9 @@ def tool_get_project_structure(path: str | None = None, max_depth: int = 4) -> s
 def tool_repo_index(force: bool = False) -> str:
     """Build the persistent repository graph for the active working directory."""
     try:
-        from nexus.repo_graph import RepoGraph
+        from nexus.context_engine import ContextEngine
 
-        graph = RepoGraph(_tool_working_dir.get() or os.getcwd())
+        graph = ContextEngine(_tool_working_dir.get() or os.getcwd())
         stats = graph.build(force=bool(force))
         return "🧭 Repository graph refreshed\n" + json.dumps(
             {
@@ -2059,9 +2059,9 @@ def tool_repo_symbols(
 ) -> str:
     """Find declarations and callers in the active repository graph."""
     try:
-        from nexus.repo_graph import RepoGraph
+        from nexus.context_engine import ContextEngine
 
-        graph = RepoGraph(_tool_working_dir.get() or os.getcwd())
+        graph = ContextEngine(_tool_working_dir.get() or os.getcwd())
         graph.build()
         declarations = [asdict(item) for item in graph.find_symbols(query, limit=limit)]
         callers = graph.find_callers(query, limit=limit) if include_callers else []
@@ -2080,9 +2080,9 @@ def tool_repo_symbols(
 def tool_repo_impact(paths: list[str]) -> str:
     """Find imports, reverse importers, and tests affected by changed files."""
     try:
-        from nexus.repo_graph import RepoGraph
+        from nexus.context_engine import ContextEngine
 
-        graph = RepoGraph(_tool_working_dir.get() or os.getcwd())
+        graph = ContextEngine(_tool_working_dir.get() or os.getcwd())
         graph.build()
         dependencies = {str(path): graph.dependencies(path) for path in paths}
         return "🧭 Repository impact analysis\n" + json.dumps(
@@ -2098,9 +2098,9 @@ def tool_repo_impact(paths: list[str]) -> str:
 
 
 def _built_graph():
-    from nexus.repo_graph import RepoGraph
+    from nexus.context_engine import ContextEngine
 
-    graph = RepoGraph(_tool_working_dir.get() or os.getcwd())
+    graph = ContextEngine(_tool_working_dir.get() or os.getcwd())
     graph.build()
     return graph
 

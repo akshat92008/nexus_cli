@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from nexus.api import DEFAULT_GROQ_MODEL, NvidiaClient
-from nexus.two_node_backend import CeilingCallTimeout, _run_ceiling_call
 
 
 @pytest.fixture(autouse=True)
@@ -144,25 +143,6 @@ def test_active_round_robin_key_rotation():
         assert client.current_key_idx == 0
 
 
-def test_cloud_api_exhaustion_falls_back_to_local_nova():
-    """Verify that when all cloud APIs fail, agent.run falls back to local Nova turn."""
-    from nexus.agent import Agent
-
-    agent = Agent(api_key="nvapi-test", model_key="deepseek-v4", enable_nova_fallback=True)
-    agent.local_intern_enabled = True
-
-    # Mock client.chat to simulate cloud rate limit exhaustion on a chat query
-    with patch.object(
-        agent.client, "chat", side_effect=RuntimeError("Rate limited after multiple retries")
-    ):
-        with patch.object(
-            agent, "_run_nova_turn", return_value=("Local Nova fallback response", [])
-        ) as mock_nova:
-            res = agent.run("hello, explain binary search trees")
-            assert res == "Local Nova fallback response"
-            mock_nova.assert_called_once()
-
-
 def test_round_robin_key_pool():
     """Verify explicit RoundRobinKeyPool cycling and cooldown skipping."""
     from nexus.api import NvidiaClient, RoundRobinKeyPool
@@ -186,46 +166,3 @@ def test_round_robin_key_pool():
     assert client.get_next_key("nvidia") == "keyB"
 
 
-def test_ceiling_timeout_works_outside_main_thread():
-    result = {}
-
-    def run():
-        try:
-            _run_ceiling_call(lambda: time.sleep(0.1), 0.01)
-        except CeilingCallTimeout:
-            result["timed_out"] = True
-
-    worker = threading.Thread(target=run)
-    worker.start()
-    worker.join(timeout=1)
-
-    assert not worker.is_alive()
-    assert result == {"timed_out": True}
-
-
-def test_timed_out_ceiling_transport_cannot_block_process_shutdown():
-    release = threading.Event()
-    result = {}
-
-    def run():
-        try:
-            _run_ceiling_call(lambda: release.wait(timeout=1), 0.01)
-        except CeilingCallTimeout as exc:
-            result["error"] = str(exc)
-
-    caller = threading.Thread(target=run)
-    caller.start()
-    caller.join(timeout=0.5)
-
-    transports = [
-        thread for thread in threading.enumerate() if thread.name == "nexus-ceiling-call"
-    ]
-    try:
-        assert not caller.is_alive()
-        assert "daemonized transport" in result["error"]
-        assert transports
-        assert all(thread.daemon for thread in transports)
-    finally:
-        release.set()
-        for thread in transports:
-            thread.join(timeout=0.5)

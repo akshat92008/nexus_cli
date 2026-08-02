@@ -26,13 +26,13 @@ from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.memory import ConversationMemory
 from nexus.models import ALIASES, DEFAULT_MODEL, list_models
 from nexus.tools import TOOL_DEFINITIONS
 
 # Global state
-_agents: dict[str, Agent] = {}  # session_id -> Agent
+_agents: dict[str, NexusRuntime] = {}  # session_id -> Agent
 _agent_busy: dict[str, bool] = {}
 _agent_locks: dict[str, threading.Lock] = {}
 _agents_lock = threading.RLock()
@@ -104,7 +104,7 @@ def _normalize_session_id(value: object, default: str = "default") -> str:
     return candidate
 
 
-def _get_agent(session_id: str) -> Agent:
+def _get_agent(session_id: str) -> NexusRuntime:
     """Get or create an agent for a normalized session without races."""
     session_id = _normalize_session_id(session_id)
     with _agents_lock:
@@ -114,7 +114,7 @@ def _get_agent(session_id: str) -> Agent:
                 _agents.pop(oldest_key).close(discard_workspace=True)
                 _agent_busy.pop(oldest_key, None)
                 _agent_locks.pop(oldest_key, None)
-            _agents[session_id] = Agent(
+            _agents[session_id] = NexusRuntime(
                 api_key=_api_key,
                 model_key=_default_model,
                 working_dir=_working_dir,
@@ -130,7 +130,7 @@ def _get_agent(session_id: str) -> Agent:
         return _agents[session_id]
 
 
-def _run_agent_locked(session_id: str, agent: Agent, message: str):
+def _run_agent_locked(session_id: str, agent: NexusRuntime, message: str):
     """Run an agent session with an atomic, non-blocking per-session lease."""
     session_id = _normalize_session_id(session_id)
     with _agents_lock:

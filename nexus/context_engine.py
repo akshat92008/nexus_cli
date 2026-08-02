@@ -114,7 +114,7 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-class RepoGraph:
+class ContextEngine:
     """Incremental repository graph persisted outside the project tree."""
 
     def __init__(

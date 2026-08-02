@@ -1,5 +1,5 @@
 """
-Regression tests for Agent-level safety enforcement.
+Regression tests for NexusRuntime-level safety enforcement.
 """
 
 import os
@@ -9,14 +9,14 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import nexus.history as nexus_history
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.policy import get_mode_policy
 from nexus.sandbox import SandboxBackend, SandboxRunner
 
 
-def _agent_for_tmp_path(tmp_path, monkeypatch) -> Agent:
+def _agent_for_tmp_path(tmp_path, monkeypatch) -> NexusRuntime:
     monkeypatch.setattr(nexus_history, "HISTORY_DIR", tmp_path / ".nexusai" / "history")
-    return Agent(model_key="nova3b", working_dir=str(tmp_path))
+    return NexusRuntime(model_key="claude-3-5-sonnet-20241022", working_dir=str(tmp_path))
 
 
 def test_dangerous_command_requires_confirmation(tmp_path, monkeypatch):
@@ -80,8 +80,8 @@ def test_autonomous_mode_disables_shell_and_fails_closed_without_native_sandbox(
     target = tmp_path / "must_remain"
     target.mkdir()
     monkeypatch.setattr(SandboxRunner, "_backend_cache", SandboxBackend.RESTRICTED)
-    agent = Agent(
-        model_key="nova3b",
+    agent = NexusRuntime(
+        model_key="claude-3-5-sonnet-20241022",
         working_dir=str(tmp_path),
         permission_mode="acceptEdits",
         mode_policy=get_mode_policy("autonomous"),
@@ -107,7 +107,7 @@ def test_autonomous_mode_disables_shell_and_fails_closed_without_native_sandbox(
 
 def test_quality_mode_rejects_executor_model_as_reviewer(tmp_path, monkeypatch):
     monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
-    agent = Agent(
+    agent = NexusRuntime(
         api_key="test",
         working_dir=str(tmp_path),
         mode_policy=get_mode_policy("quality"),
@@ -149,51 +149,14 @@ def test_cancelled_dangerous_call_never_executes(tmp_path, monkeypatch):
     assert target.is_dir()
 
 
-def test_nova_file_edits_require_nova_guardrail_metadata(tmp_path, monkeypatch):
-    """Nova-backed file writes must have passed Nova guardrails before Nexus safety."""
-    old_cwd = os.getcwd()
-    try:
-        agent = _agent_for_tmp_path(tmp_path, monkeypatch)
-        result, success = agent._execute_tool_with_safety(
-            "write_file",
-            {"path": "unguarded.txt", "content": "hello"},
-        )
-    finally:
-        os.chdir(old_cwd)
-
-    assert not success
-    assert "without a passing Nova guardrail verdict" in result
-    assert not (tmp_path / "unguarded.txt").exists()
-
-
-def test_nova_guarded_file_edit_still_uses_nexus_safety(tmp_path, monkeypatch):
-    """A passed Nova verdict is not enough to bypass Nexus SafetyLayer."""
-    old_cwd = os.getcwd()
-    try:
-        agent = _agent_for_tmp_path(tmp_path, monkeypatch)
-        result, success = agent._execute_tool_with_safety(
-            "write_file",
-            {
-                "path": "/etc/nova_should_not_write",
-                "content": "hello",
-                "_nova_guardrail": {"passed": True, "summary": "test"},
-            },
-        )
-    finally:
-        os.chdir(old_cwd)
-
-    assert not success
-    assert "BLOCKED" in result
-
-
 def test_multi_edit_cannot_hide_an_outside_workspace_path(tmp_path, monkeypatch):
     """Every path in a batch is scope-checked, not just the top-level args."""
     outside = tmp_path.parent / f"outside-{tmp_path.name}.txt"
     outside.write_text("before\n")
     old_cwd = os.getcwd()
     try:
-        agent = Agent(
-            model_key="nova3b",
+        agent = NexusRuntime(
+            model_key="claude-3-5-sonnet-20241022",
             working_dir=str(tmp_path),
             permission_mode="acceptEdits",
         )
@@ -203,7 +166,6 @@ def test_multi_edit_cannot_hide_an_outside_workspace_path(tmp_path, monkeypatch)
                 "edits": [
                     {"path": str(outside), "old_text": "before", "new_text": "after"},
                 ],
-                "_nova_guardrail": {"passed": True, "summary": "test"},
             },
         )
     finally:

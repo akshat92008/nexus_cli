@@ -9,10 +9,11 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.budget import BudgetController, BudgetExceeded, BudgetLimits
 from nexus.evidence import EvidenceTrail
-from nexus.pipeline import ExecutionPipeline
+from nexus.execution_engine import ExecutionEngine
+from nexus.runtime.kernel import ExecutionKernel
 from nexus.planner import (
     Difficulty,
     ExecutionPlan,
@@ -23,7 +24,7 @@ from nexus.planner import (
 )
 from nexus.policy import get_mode_policy
 from nexus.run_state import RunLedger
-from nexus.runtime.kernel import ExecutionKernel
+from nexus.execution_engine import ExecutionEngine
 from nexus.subagents.orchestrator import SubagentOrchestrator
 from nexus.subagents.templates import SecurityAuditor
 from nexus.tools import tool_context, tool_process_run, tool_process_status
@@ -33,7 +34,7 @@ from nexus.workspace import GitWorktreeSession, WorkspaceManager
 
 def test_noninteractive_tool_handler_emits_no_rich_ui(tmp_path, monkeypatch):
     monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
-    agent = Agent(api_key="test", working_dir=str(tmp_path), workspace_isolation=False)
+    agent = NexusRuntime(api_key="test", working_dir=str(tmp_path), workspace_isolation=False)
     agent._execute_tool_with_safety = lambda *_args, **_kwargs: ("ok", True)
 
     def unexpected(*_args, **_kwargs):
@@ -185,7 +186,7 @@ def test_kernel_keeps_logical_role_alongside_physical_attempts(tmp_path):
                 ]
             )
 
-    list(ExecutionKernel(provider=Provider(), model_id="observed/model", ledger=ledger).run([]))
+    list(ExecutionKernel(provider=Provider(), model_id="observed/model", ledger=ledger).run_interactive([]))
     calls, corruption = ledger.read_jsonl("model_calls.jsonl")
 
     assert corruption is None
@@ -235,7 +236,7 @@ def test_planned_hosted_execution_advances_every_step(tmp_path, monkeypatch):
         return "done", [{"type": "model_turn"}]
 
     fake_agent._run_hosted_turn = run_step
-    pipeline = ExecutionPipeline(fake_agent)
+    pipeline = ExecutionEngine(fake_agent)
     response, events = pipeline._run_hosted_execution(
         "Build a complex service with tests",
         {"intent": IntentType.BUILD},
@@ -271,14 +272,14 @@ def test_simple_build_plan_still_implements_and_verifies():
 
 
 def test_reviewer_json_parser_fails_closed():
-    approved = Agent._parse_review_payload(
+    approved = NexusRuntime._parse_review_payload(
         '```json\n{"approved": true, "summary": "looks good", "findings": []}\n```'
     )
     assert approved["approved"] is True
 
     for invalid in ("not json", '{"approved": "yes", "summary": "x", "findings": []}'):
         try:
-            Agent._parse_review_payload(invalid)
+            NexusRuntime._parse_review_payload(invalid)
         except (ValueError, json.JSONDecodeError):
             pass
         else:  # pragma: no cover - explicit assertion message
@@ -287,7 +288,7 @@ def test_reviewer_json_parser_fails_closed():
 
 def test_build_evidence_cannot_satisfy_lint_and_type_contract(tmp_path, monkeypatch):
     monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
-    agent = Agent(api_key="test", working_dir=str(tmp_path), workspace_isolation=False)
+    agent = NexusRuntime(api_key="test", working_dir=str(tmp_path), workspace_isolation=False)
     plan = ExecutionPlan(
         id="strict-evidence",
         goal="check evidence types",
@@ -318,7 +319,7 @@ def test_build_evidence_cannot_satisfy_lint_and_type_contract(tmp_path, monkeypa
 
 def test_model_tool_schema_honors_agent_allowlist_and_plan_step(tmp_path, monkeypatch):
     monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
-    agent = Agent(
+    agent = NexusRuntime(
         api_key="test",
         working_dir=str(tmp_path),
         allowed_tools=["read_file", "search_code"],
@@ -406,7 +407,7 @@ def test_git_workspace_recovery_diff_includes_untracked_files(tmp_path):
 def test_subagent_runtime_enforces_template_tools_and_turn_limit(tmp_path, monkeypatch):
     captured = {}
 
-    class FakeAgent:
+    class FakeNexusRuntime:
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
@@ -419,7 +420,7 @@ def test_subagent_runtime_enforces_template_tools_and_turn_limit(tmp_path, monke
         def close(self):
             return None
 
-    monkeypatch.setattr("nexus.agent.Agent", FakeAgent)
+    monkeypatch.setattr("nexus.nexus_runtime.NexusRuntime", FakeNexusRuntime)
     subagent = SecurityAuditor("audit auth", working_dir=str(tmp_path))
     result = SubagentOrchestrator(
         api_key="test",
@@ -525,7 +526,7 @@ def test_hosted_write_test_review_reaches_verified_without_stdout_noise(
                 ]
             )
 
-    agent = Agent(
+    agent = NexusRuntime(
         api_key="test",
         working_dir=str(tmp_path),
         permission_mode="acceptEdits",
@@ -540,7 +541,7 @@ def test_hosted_write_test_review_reaches_verified_without_stdout_noise(
         "skills_needed": [],
     }
 
-    result = ExecutionPipeline(agent).run(
+    result = ExecutionEngine(agent).run(
         "Create hello.py that returns hello-nexus and make the test pass",
         interactive=False,
         emit_ui=False,
@@ -564,7 +565,7 @@ def test_agent_close_archives_and_removes_isolated_workspace(tmp_path, monkeypat
     (source / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
     state = tmp_path / "state"
     monkeypatch.setenv("NEXUS_HOME", str(state))
-    agent = Agent(
+    agent = NexusRuntime(
         api_key="test",
         working_dir=str(source),
         workspace_isolation=True,
@@ -582,7 +583,7 @@ def test_agent_close_archives_and_removes_isolated_workspace(tmp_path, monkeypat
 
 def test_agent_close_stops_owned_background_processes(tmp_path, monkeypatch):
     monkeypatch.setenv("NEXUS_HOME", str(tmp_path / "state"))
-    agent = Agent(api_key="test", working_dir=str(tmp_path), workspace_isolation=False)
+    agent = NexusRuntime(api_key="test", working_dir=str(tmp_path), workspace_isolation=False)
     command = f'{sys.executable} -c "import time; time.sleep(60)"'
     with tool_context(agent.working_dir, agent.history, agent.conversation_id):
         result = tool_process_run(command)

@@ -35,13 +35,13 @@ class _UndeclaredFilesystemExtension(_FilesystemExtension):
 
 
 def test_extension_custom_path_field_is_scoped_by_declared_contract(tmp_path):
-    from nexus.agent import Agent
+    from nexus.nexus_runtime import NexusRuntime
 
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     outside = tmp_path / "secret.txt"
     outside.write_text("secret", encoding="utf-8")
-    agent = Agent(api_key="test", working_dir=str(workspace))
+    agent = NexusRuntime(api_key="test", working_dir=str(workspace))
     agent.extensions.loaded = lambda group: [_FilesystemExtension()] if group == "tools" else []
     agent._register_external_tool_capabilities()
 
@@ -55,9 +55,9 @@ def test_extension_custom_path_field_is_scoped_by_declared_contract(tmp_path):
 
 
 def test_filesystem_extension_without_argument_contract_is_hidden(tmp_path):
-    from nexus.agent import Agent
+    from nexus.nexus_runtime import NexusRuntime
 
-    agent = Agent(api_key="test", working_dir=str(tmp_path))
+    agent = NexusRuntime(api_key="test", working_dir=str(tmp_path))
     agent.extensions.loaded = (
         lambda group: [_UndeclaredFilesystemExtension()] if group == "tools" else []
     )

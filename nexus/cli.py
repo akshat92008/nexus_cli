@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from nexus import __version__, ui
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.doctor import run_doctor
 from nexus.memory import ConversationMemory
 from nexus.models import DEFAULT_MODEL, resolve_model
@@ -563,7 +563,7 @@ def _solve_issue_prompt() -> bool:
     return True
 
 
-def handle_slash_command(cmd: str, agent: Agent) -> bool:
+def handle_slash_command(cmd: str, agent: NexusRuntime) -> bool:
     """Handle slash commands. Returns True if the command was handled."""
     parts = cmd.strip().split(maxsplit=1)
     command = parts[0].lower()
@@ -911,7 +911,7 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
     return True
 
 
-def run_interactive(agent: Agent):
+def run_interactive(agent: NexusRuntime):
     """Run the interactive REPL loop."""
     ui.print_banner()
     ui.print_model_info(agent.model_key, agent.model_cfg)
@@ -1056,7 +1056,7 @@ def non_interactive_exit_code(content: str, events: list[dict]) -> int:
     return 2 if any(marker in lowered for marker in failure_markers) else 0
 
 
-def _close_and_exit(agent: Agent, exit_code: int) -> None:
+def _close_and_exit(agent: NexusRuntime, exit_code: int) -> None:
     """Release session-owned resources before terminating the CLI process."""
 
     agent.close(discard_workspace=not getattr(agent, "keep_workspace", False))
@@ -1161,7 +1161,7 @@ def main():
             # The effective mode from the user's --mode flag is preserved in
             # the output metadata so callers can inspect it.
             _mode_policy = get_mode_policy("plan")
-            agent = Agent(
+            agent = NexusRuntime(
                 api_key="offline-direct-command",
                 model_key="custom",
                 model_id_override="offline/direct",
@@ -1280,7 +1280,7 @@ def main():
         working_dir_path = Path(args.working_dir or os.getcwd()).resolve()
         is_git_repo = (working_dir_path / ".git").exists()
         automatic_workspace = _mode_policy.may_edit and not args.resume_run and is_git_repo
-        agent = Agent(
+        agent = NexusRuntime(
             api_key=api_key,
             model_key=args.model,
             working_dir=args.working_dir,

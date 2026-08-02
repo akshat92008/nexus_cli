@@ -255,7 +255,7 @@ class TestBudgetControllerConcurrency:
 
 
 class TestMemoryStability:
-    """Verify that repeated Agent creation/destruction does not leak state."""
+    """Verify that repeated NexusRuntime creation/destruction does not leak state."""
 
     def test_multiple_agent_instances_do_not_share_sandbox_cache(self, tmp_path):
         """Each SandboxRunner instance must have an independent backend cache."""

@@ -28,7 +28,7 @@ from nexus.planner import TaskStatus
 from nexus.run_state import RunStatus
 
 if TYPE_CHECKING:
-    from nexus.agent import Agent
+    from nexus.nexus_runtime import NexusRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +114,7 @@ class PipelineResult:
 # ── Pipeline ──────────────────────────────────────────────────────────────────
 
 
-class ExecutionPipeline:
+class ExecutionEngine:
     """
     Canonical execution pipeline — the single authoritative path through which
     all agent modes execute user requests.
@@ -424,11 +424,6 @@ class ExecutionPipeline:
 
     def _stage_model_routing(self, analysis: dict[str, Any]) -> str:
         """Determine which execution path to use for this request."""
-        agent = self._agent
-        if agent._is_nova_model():  # noqa: SLF001
-            return "nova"
-        if agent._should_use_two_node(analysis):  # noqa: SLF001
-            return "two_node"
         return "hosted"
 
     def _stage_execution(
@@ -445,12 +440,7 @@ class ExecutionPipeline:
         t = time.monotonic()
         agent = self._agent
         try:
-            if routing_mode == "nova":
-                response, events = agent._run_nova_turn(user_input, emit_ui=emit_ui)  # noqa: SLF001
-            elif routing_mode == "two_node":
-                response, events = agent._run_two_node_turn(user_input, analysis, emit_ui=emit_ui)  # noqa: SLF001
-            else:
-                response, events = self._run_hosted_execution(  # noqa: SLF001
+            response, events = self._run_hosted_execution(  # noqa: SLF001
                     user_input,
                     analysis,
                     plan,

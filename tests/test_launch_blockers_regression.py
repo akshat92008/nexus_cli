@@ -3,10 +3,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.cli import _close_and_exit
 from nexus.doctor import _ISOLATION_REQUIRED_MODES
-from nexus.pipeline import ExecutionPipeline
+from nexus.execution_engine import ExecutionEngine
 from nexus.policy import get_mode_policy
 from nexus.sandbox import SandboxRunner
 
@@ -46,7 +46,7 @@ def test_review_mode_policy():
 
 def test_quality_mode_distinct_reviewer():
     policy = get_mode_policy("quality")
-    agent = Agent(api_key="dummy", model_key="custom", model_id_override="test_model", mode_policy=policy, working_dir="/tmp")
+    agent = NexusRuntime(api_key="dummy", model_key="custom", model_id_override="test_model", mode_policy=policy, working_dir="/tmp")
     agent.client = MagicMock()
     agent.client.id = "dummy_provider"
     
@@ -66,8 +66,8 @@ def test_quality_mode_distinct_reviewer():
 
 
 def test_pipeline_repo_understanding_path_fix(tmp_path):
-    agent = Agent(api_key="dummy", working_dir=str(tmp_path))
-    pipeline = ExecutionPipeline(agent)
+    agent = NexusRuntime(api_key="dummy", working_dir=str(tmp_path))
+    pipeline = ExecutionEngine(agent)
     
     # This shouldn't raise a TypeError because working_dir is converted to a Path object
     result = pipeline._stage_repo_understanding()
@@ -76,7 +76,7 @@ def test_pipeline_repo_understanding_path_fix(tmp_path):
 
 def test_cli_keep_workspace_default():
     # If keep-workspace is False (the default) and exit code is 0, the workspace should be discarded.
-    agent = Agent(api_key="dummy", working_dir="/tmp")
+    agent = NexusRuntime(api_key="dummy", working_dir="/tmp")
     agent.keep_workspace = False
     agent.close = MagicMock()
     
@@ -88,7 +88,7 @@ def test_cli_keep_workspace_default():
 
 def test_cli_keep_workspace_true():
     # If keep-workspace is True, the workspace should NOT be discarded even on success.
-    agent = Agent(api_key="dummy", working_dir="/tmp")
+    agent = NexusRuntime(api_key="dummy", working_dir="/tmp")
     agent.keep_workspace = True
     agent.close = MagicMock()
     

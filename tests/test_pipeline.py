@@ -1,13 +1,13 @@
 import os
 
 os.environ["NVIDIA_API_KEY"] = "test"
-from nexus.agent import Agent
-from nexus.pipeline import ExecutionPipeline, PipelineResult
+from nexus.nexus_runtime import NexusRuntime
+from nexus.execution_engine import ExecutionEngine, PipelineResult
 
 
 def test_pipeline_preserves_ledger_and_emits_hooks():
-    agent = Agent(working_dir=".", workspace_isolation=False)
-    pipeline = ExecutionPipeline(agent)
+    agent = NexusRuntime(working_dir=".", workspace_isolation=False)
+    pipeline = ExecutionEngine(agent)
 
     def mock_analyze(*args, **kwargs):
         return {"plan_type": "direct", "intent": "build", "skills_needed": []}

@@ -7,9 +7,9 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-from nexus.agent import Agent
+from nexus.nexus_runtime import NexusRuntime
 from nexus.benchmark import BenchmarkRunner, BenchmarkSuite, BenchmarkTask, _quality_gates
-from nexus.pipeline import ExecutionPipeline
+from nexus.execution_engine import ExecutionEngine
 from nexus.planner import (
     Difficulty,
     ExecutionPlan,
@@ -204,7 +204,7 @@ def test_pipeline_consumes_persisted_resume_plan_once():
         _resume_plan_override=plan,
     )
 
-    recovered_analysis, recovered_plan, stage = ExecutionPipeline(agent)._stage_planning(
+    recovered_analysis, recovered_plan, stage = ExecutionEngine(agent)._stage_planning(
         "recovery prompt"
     )
 
@@ -258,7 +258,7 @@ def test_resume_retries_only_unfinished_plan_steps(tmp_path, monkeypatch):
     )
     ledger.checkpoint("architecture-complete", plan=plan)
 
-    agent = Agent(api_key="test", working_dir=str(workspace), workspace_isolation=False)
+    agent = NexusRuntime(api_key="test", working_dir=str(workspace), workspace_isolation=False)
     captured = {}
 
     def inspect_resume(prompt):

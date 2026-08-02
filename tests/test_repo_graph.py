@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from nexus.repo_graph import RepoGraph
+from nexus.context_engine import ContextEngine
 
 
 def test_repo_graph_python_ast(tmp_path: Path):
@@ -18,7 +18,7 @@ class Server(Base):
 """
     (tmp_path / "server.py").write_text(source)
 
-    graph = RepoGraph(tmp_path)
+    graph = ContextEngine(tmp_path)
     stats = graph.build()
 
     assert stats.indexed == 1
@@ -49,7 +49,7 @@ class UserController {}
 """
     (tmp_path / "app.js").write_text(source)
 
-    graph = RepoGraph(tmp_path)
+    graph = ContextEngine(tmp_path)
     graph.build()
 
     record = graph.files["app.js"]
@@ -65,7 +65,7 @@ class UserController {}
 def test_repo_graph_incremental_update(tmp_path: Path):
     file1 = tmp_path / "f1.py"
     file1.write_text("def a(): pass")
-    graph = RepoGraph(tmp_path)
+    graph = ContextEngine(tmp_path)
     graph.build()
     assert len(graph.files) == 1
 
@@ -80,7 +80,7 @@ def test_dependencies_and_impact(tmp_path: Path):
     (tmp_path / "app.py").write_text("import core")
     (tmp_path / "test_app.py").write_text("import app\ndef test_app(): pass")
 
-    graph = RepoGraph(tmp_path)
+    graph = ContextEngine(tmp_path)
     graph.build()
 
     deps = graph.dependencies("core.py")

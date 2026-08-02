@@ -279,7 +279,7 @@ class SubagentOrchestrator:
 
         try:
             # Import here to avoid circular imports
-            from nexus.agent import Agent
+            from nexus.nexus_runtime import NexusRuntime
             from nexus.run_state import RunStatus
             from nexus.workspace import GitWorktreeSession
 
@@ -296,7 +296,7 @@ class SubagentOrchestrator:
                 working_dir = isolated_workspace.create().path
 
             # Create a fresh, isolated agent for this subagent
-            agent = Agent(
+            agent = NexusRuntime(
                 api_key=self.api_key,
                 model_key=self.model_id,
                 working_dir=working_dir,
