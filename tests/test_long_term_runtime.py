@@ -16,7 +16,7 @@ from nexus.planner import Difficulty, IntentType, PlanningEngine, PlanType, Task
 from nexus.policy import get_mode_policy
 from nexus.repo_graph import RepoGraph
 from nexus.run_state import CriterionResult, CriterionStatus, RunLedger, RunStatus
-from nexus.workspace import GitWorktreeSession, WorktreeError
+from nexus.workspace import GitWorktreeSession
 
 
 def test_run_ledger_persists_request_events_checkpoint_and_report(tmp_path):

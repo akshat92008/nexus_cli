@@ -78,3 +78,6 @@ jobs:
 
       - name: Run offline command scenarios
         run: uv run python scripts/run_offline_scenarios.py
+
+      - name: Run randomized full suite
+        run: uv run pytest tests --randomly-seed=${{ github.run_id }}

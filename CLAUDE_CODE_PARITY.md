@@ -50,7 +50,7 @@ Research date: 2026-07-29. Source of truth: Anthropic's official [Claude Code do
 | IDE plugins, voice, mobile, Remote Control, browser computer use | External product surfaces; not simulated |
 | Hosted artifacts, PR cloud review, enterprise analytics/policy delivery | Anthropic/cloud services; not simulated |
 
-These are not part of the Nexus 3.2.0 open CLI specification. Host-dependent
+These are not part of the Nexus 3.2.1 open CLI specification. Host-dependent
 features such as LSP, Tree-sitter, Playwright, compilers, services, and native
 sandboxing are reported as available, unavailable, or policy-only at runtime;
 Nexus never converts an unavailable check into verified success.

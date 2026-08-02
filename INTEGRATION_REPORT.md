@@ -1,8 +1,8 @@
-# Nexus CLI 3.2.0 Integration Report
+# Nexus CLI 3.2.1 Integration Report
 
 ## Delivery
 
-- Version: 3.2.0
+- Version: 3.2.1
 - Deterministic tests: 340 passed
 - Concurrent offline stress: 20 passed, 0 failed
 - Byte compilation: passed
@@ -33,7 +33,7 @@
 
 ### Added
 
-- `LAUNCH_READINESS_3.2.0.md`
+- `LAUNCH_READINESS_3.2.1.md`
 - `benchmarks/release_long_horizon.json`
 - `tests/test_baseline_verification.py`
 - `tests/test_sdk_contract.py`
@@ -85,4 +85,4 @@
 
 ## Honest launch boundary
 
-Nexus 3.2.0 is a hardened public-beta launch candidate for verified, reviewable repository engineering. It does not prove unattended Shopify-scale generation or Claude Code model-reasoning parity. The release workflow blocks those claims until repeated live-provider long-horizon trials pass with external verification.
+Nexus 3.2.1 is a hardened public-beta launch candidate for verified, reviewable repository engineering. It does not prove unattended Shopify-scale generation or Claude Code model-reasoning parity. The release workflow blocks those claims until repeated live-provider long-horizon trials pass with external verification.

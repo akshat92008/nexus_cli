@@ -1,7 +1,8 @@
+import os
 import threading
 import time
-import os
-from typing import Callable, Any
+from typing import Callable
+
 
 class RoutineOrchestrator:
     """Manages scheduled background tasks and peer agent messages."""
@@ -74,8 +75,8 @@ def schedule_routine(cron_or_interval: str, task: str, agent=None) -> str:
     working_dir = _tool_working_dir.get() or os.getcwd()
     
     def run_task(task_text):
-        from nexus.subagents.templates import create_subagent
         from nexus.subagents.orchestrator import SubagentOrchestrator
+        from nexus.subagents.templates import create_subagent
         
         # Determine API key contextually
         api_key = os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("OPENROUTER_API_KEY") or os.environ.get("NVIDIA_API_KEY", "")

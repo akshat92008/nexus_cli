@@ -349,45 +349,22 @@ def main() -> int:
             env=smoke_env,
         )
         run([python, "-m", "nexus", "--version"], cwd=root, env=smoke_env)
-        run(
-            [
-                python,
-                "-m",
-                "nexus",
-                "benchmark",
-                "--manifest",
-                str(REPO / "benchmark-manifest.json"),
-                "--dry-run",
-            ],
-            cwd=root,
-            env=smoke_env,
-        )
-        run(
-            [
-                python,
-                "-m",
-                "nexus",
-                "benchmark",
-                "--manifest",
-                str(REPO / "benchmarks" / "core.json"),
-                "--dry-run",
-            ],
-            cwd=root,
-            env=smoke_env,
-        )
-        run(
-            [
-                python,
-                "-m",
-                "nexus",
-                "benchmark",
-                "--manifest",
-                str(REPO / "benchmarks" / "long_horizon.json"),
-                "--dry-run",
-            ],
-            cwd=root,
-            env=smoke_env,
-        )
+        manifests = [REPO / "benchmark-manifest.json"]
+        manifests.extend((REPO / "benchmarks").glob("*.json"))
+        for manifest in manifests:
+            run(
+                [
+                    python,
+                    "-m",
+                    "nexus",
+                    "benchmark",
+                    "--manifest",
+                    str(manifest),
+                    "--dry-run",
+                ],
+                cwd=root,
+                env=smoke_env,
+            )
 
         doctor_env = dict(smoke_env)
         doctor_env["NVIDIA_API_KEY"] = "nvapi-release-smoke"

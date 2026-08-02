@@ -1,0 +1,786 @@
+<USER_REQUEST>
+# Nexus CLI Deep Audit
+
+## Executive verdict
+
+**Nexus CLI is a strong engineering beta, but it is not ready for an unrestricted public launch or defensible Claude Code parity claims.**
+
+The system has real depth: 38 built-in tools, worktree-based execution, provider fallback, policy modes, evidence tracking, verification, repair, plugins, MCP, subagents, repository intelligence, and a credible benchmark framework.
+
+However, four launch-blocking defects currently undermine the product contract:
+
+1. Sandboxed commands can inherit provider credentials.
+2. The default review-mode readiness contract is internally inconsistent.
+3. Repository intelligence silently fails in the canonical pipeline.
+4. Quality mode does not consistently enforce an independent reviewer.
+
+**Overall rating: 6.5/10**
+
+After fixing the launch blockers and proving live benchmark reliability, the same codebase could move into the **7.5–8/10 range** without a complete rewrite.
+
+---
+
+## Verified engineering baseline
+
+| Area                   |     Verified result |
+| ---------------------- | ------------------: |
+| Python source files    | 93 production files |
+| Production Python      |       ~34,000 lines |
+| Total Python footprint |       ~44,100 lines |
+| Built-in tools         |                  38 |
+| Test collection        |           463 tests |
+| Passing                |                 460 |
+| Failing                |                   1 |
+| Platform-skipped       |                   2 |
+| Statement coverage     |              69.32% |
+| Wheel build            |          Successful |
+| Wheel size             |       363,609 bytes |
+| Python support         |               3.10+ |
+| Package version        |               3.2.1 |
+
+The wheel builds correctly and contains the web interface and configured benchmark assets. The package structure is fundamentally viable.
+
+One correction to an earlier signal: **I could not reproduce a persistent E2E test-process hang.** The isolated workflow test terminated normally. Treat the earlier suspected process leak as unconfirmed.
+
+---
+
+# Launch blockers
+
+## 1. Provider credentials leak into sandboxed commands
+
+**Severity: Critical**
+
+The sandbox environment filter currently preserves:
+
+* Every environment variable starting with `NEXUS_`
+* `PYTHONPATH`
+* `NODE_PATH`
+* Several other inherited runtime variables
+
+Relevant logic is in:
+
+* `nexus/sandbox.py:155–176`
+* `nexus/sandbox.py:549–554`
+
+Because `NEXUS_OPENAI_API_KEY` is a supported credential name, model-generated code can directly read it.
+
+I reproduced the issue by running a restricted sandbox command with:
+
+```text
+NEXUS_OPENAI_API_KEY=supersecret
+PYTHONPATH=/tmp/evil
+```
+
+The sandboxed process printed both values successfully.
+
+### Why this is launch-blocking
+
+Even when network access is disabled, generated code could:
+
+1. Read the API key.
+2. Write it into a workspace file.
+3. Cause that file to appear in a diff, tool result, error log, or model context.
+4. Exfiltrate it during a later hosted-model request.
+
+Bubblewrap does not solve this because the secret is deliberately passed into the child process environment.
+
+### Required fix
+
+Replace prefix-based permission with an explicit allowlist:
+
+```python
+SAFE_NEXUS_ENV_KEYS = {
+    "NEXUS_MODE",
+    "NEXUS_LOG_LEVEL",
+    "NEXUS_DISABLE_COLOR",
+}
+```
+
+Reject names containing terms such as:
+
+```text
+KEY
+TOKEN
+SECRET
+PASSWORD
+CREDENTIAL
+AUTH
+```
+
+Remove `PYTHONPATH` and `NODE_PATH` from the default child environment. Permit them only through an explicit trusted-command override.
+
+Regression tests should verify that secrets are inaccessible under every sandbox backend.
+
+---
+
+## 2. Default review mode contradicts doctor and sandbox policy
+
+**Severity: High**
+
+The product currently has three conflicting contracts:
+
+* Review is the default mode.
+* User-facing behavior implies review mode can operate without full OS isolation because edits require confirmation.
+* Internal policy sets `require_os_isolation=True` for review.
+* Doctor treats review as an isolation-required mode.
+
+Relevant areas:
+
+* `nexus/policy.py:32–40`
+* `nexus/doctor.py:51–71`
+
+This causes the only current test failure:
+
+```text
+tests/test_release_cli.py::
+test_doctor_accepts_hosted_backend_when_ollama_is_offline
+```
+
+On Linux without Bubblewrap:
+
+* Plan mode reports ready.
+* Review mode reports action required.
+* Default onboarding therefore fails even with a valid hosted provider.
+
+The Windows release gate is also structurally at risk because Bubblewrap is unavailable there while review is considered required.
+
+### Required decision
+
+Choose one explicit product contract.
+
+**Recommended contract:**
+
+* `plan`: no OS isolation required
+* `review`: no mandatory OS isolation; all writes and dangerous commands require confirmation
+* `workspace`, `autonomous`, `quality`, `budget`, `ci`: mandatory isolation or fail closed
+
+Then update the policy, doctor output, tests, CLI help, and documentation together.
+
+The alternative is to keep review isolation mandatory, but then the default mode, test expectation, Windows behavior, and marketing must all change.
+
+---
+
+## 3. Repository intelligence silently fails in normal pipeline runs
+
+**Severity: High**
+
+The canonical pipeline executes repository understanding before planning, but contains this operation:
+
+```python
+self._agent.working_dir / ".git"
+```
+
+`Agent.working_dir` is stored as a string rather than a `Path`.
+
+Relevant location:
+
+* `nexus/pipeline.py:254`
+
+This raises:
+
+```text
+TypeError: unsupported operand type(s) for /: 'str' and 'str'
+```
+
+The broad exception handling converts it into a nonfatal warning, allowing the run to continue. As a result, the CLI appears operational while silently losing repository graph refresh and project understanding.
+
+### Fix
+
+```python
+repo_root = Path(self._agent.working_dir)
+if (repo_root / ".git").exists():
+    ...
+```
+
+More importantly, add a pipeline-level regression test that verifies:
+
+* The stage returns success.
+* The graph is refreshed.
+* Symbols and dependencies are available to planning.
+* Failure cannot be silently downgraded without structured telemetry.
+
+This defect demonstrates the downside of the codebase’s extensive fail-soft exception handling: availability is preserved, but core capabilities can disappear without being noticed.
+
+---
+
+## 4. Quality mode bypasses independent-review guarantees
+
+**Severity: High**
+
+Quality mode declares:
+
+```python
+require_distinct_reviewer=True
+```
+
+Relevant policy:
+
+* `nexus/policy.py:57–69`
+
+The standard hosted execution path verifies that the reviewer model is distinct from the executor:
+
+* `nexus/agent.py:1044–1072`
+
+The two-node path does not enforce the same rule.
+
+`TwoNodeBackend` creates one `NvidiaCeilingNode` and uses it for:
+
+* Decomposition
+* Direct execution
+* Plan review
+
+Relevant areas:
+
+* `nexus/two_node_backend.py:425–429`
+* `nexus/two_node_backend.py:553–557`
+
+The pipeline then accepts the resulting review evidence:
+
+* `nexus/pipeline.py:675–689`
+
+Therefore, the same ceiling model can generate the solution and approve it while quality mode reports an independent review.
+
+### Required fix
+
+Every execution result should record:
+
+```text
+executor_provider
+executor_model
+reviewer_provider
+reviewer_model
+reviewed_artifact_fingerprint
+```
+
+Quality mode must reject approval when the normalized executor and reviewer identities match.
+
+The two-node review should be treated as an internal planning review, not the final quality review.
+
+---
+
+# Major reliability problems
+
+## Review occurs before the final applied state
+
+In the two-node workflow, the reviewer sees proposal context before final workspace application and verification.
+
+Additionally:
+
+* Review context is truncated to approximately 30,000 characters.
+* Generated file context is limited to roughly 1,200 characters per file.
+* Repairs can modify the result after review.
+* No mandatory second review covers the actual final diff.
+
+This allows the system to approve an incomplete representation of code that is later changed.
+
+### Better pipeline
+
+```text
+Plan
+→ Generate
+→ Apply in worktree
+→ Deterministic verification
+→ Repair
+→ Reverify
+→ Produce final diff
+→ Independent review of final diff
+→ Evidence finalization
+→ Apply or request confirmation
+```
+
+The reviewer should inspect the final repository delta, not the proposal that preceded it.
+
+---
+
+## Successful autonomous runs can leave worktrees behind
+
+The worktree merge path applies verified changes, but normal CLI shutdown calls:
+
+```python
+agent.close()
+```
+
+without requesting workspace removal.
+
+Relevant areas:
+
+* `nexus/agent.py:1287–1340`
+* `nexus/agent.py:1950–1992`
+* `nexus/cli.py:1004–1008`
+
+Over time this can leave behind:
+
+* Worktrees
+* Temporary branches
+* Metadata
+* Recovery state
+
+This becomes operational debt for frequent users and CI agents.
+
+A better policy would be:
+
+* Successful applied run: clean worktree automatically.
+* Failed or interrupted run: retain recoverable worktree.
+* `--keep-workspace`: explicit opt-in for successful runs.
+* Always retain a patch, report, and evidence ledger.
+
+---
+
+## Evidence finalization can hide unrelated failures
+
+The finalizer deduplicates failed tool events primarily by tool name.
+
+Relevant logic:
+
+* `nexus/agent.py:1538–1544`
+
+Example:
+
+1. `read_file` fails on a critical configuration file.
+2. A later `read_file` succeeds on a different file.
+3. The later success may suppress the earlier failed evidence because both operations share the same tool name.
+
+Failures should be keyed by an operation identity containing at least:
+
+```text
+tool
+target path or resource
+arguments fingerprint
+stage
+attempt lineage
+```
+
+A later success should resolve only the exact failed operation it supersedes.
+
+---
+
+# Security posture
+
+## What is strong
+
+The CLI already has a serious security foundation:
+
+* Workspace path confinement
+* Shell-disabled command execution by default
+* Typed command arguments
+* Dangerous-command confirmation
+* Bubblewrap and macOS sandbox probing
+* Fail-closed autonomous policies
+* Slopsquatting/package guard
+* Trust gates for plugins and MCP
+* Output bounds and execution timeouts
+* Resource limits
+* Worktree isolation
+* Verification evidence and fingerprints
+* Local-only web binding
+* Symlink and path-escape protection
+
+This is materially better than a typical early-stage coding agent.
+
+## What weakens the security claim
+
+The environment credential leak overrides much of that positive work. Until fixed, the sandbox cannot be described as a safe boundary for untrusted generated code.
+
+---
+
+## Plugin isolation is not actual confinement
+
+The plugin worker describes plugins as isolated or untrusted, but execution is essentially a normal Python subprocess with a filtered environment.
+
+It does not enforce:
+
+* Filesystem restrictions
+* Network restrictions
+* Process-spawning restrictions
+* OS resource confinement
+* Capability-based path access
+
+Therefore, a trusted plugin can access the user’s files and network directly regardless of manifest capability declarations.
+
+The current system provides **process separation**, not security isolation.
+
+Either:
+
+1. Describe plugins as trusted out-of-process extensions, or
+2. Launch plugin workers through the same native sandbox infrastructure with explicit filesystem mounts, network policy, and process limits.
+
+Also address:
+
+* Undrained `stderr` pipes
+* Child-process descendants
+* Process-group termination
+* Plugin shutdown guarantees
+
+---
+
+## MCP subprocess lifecycle needs hardening
+
+MCP benefits from explicit trust approval, but its subprocess lifecycle has gaps:
+
+* Initialization failure can return without fully cleaning up the process.
+* `stderr` is piped but not consistently drained.
+* Verbose servers could block when the pipe buffer fills.
+* The declared call-timeout constant and hardcoded request timeout differ.
+* Termination may kill only the immediate parent, not descendants.
+
+This is not presently the biggest launch risk, but it will generate difficult support incidents once users connect arbitrary MCP servers.
+
+---
+
+# Web interface audit
+
+## Strong controls
+
+The local UI correctly:
+
+* Binds to `127.0.0.1`
+* Checks browser origins
+* Blocks workspace traversal
+* Resolves symlink escapes
+* Hides common credential files
+* Limits file reads
+* Caps active agents
+
+## Token security is overstated
+
+The root route is unauthenticated and injects the web token into the returned HTML:
+
+* `nexus/webapp/server.py:151–158`
+
+Any local process can request the root page and extract that token. CORS does not restrict command-line programs or local malware.
+
+Therefore, the token protects mainly against browser-based cross-origin requests, not against malicious local processes.
+
+The practical fix is either:
+
+* Narrow the documented threat model to browser-origin attacks, or
+* Use an OS-user-protected bootstrap mechanism such as a permission-restricted token file or authenticated local IPC.
+
+Additional hardening required:
+
+* Acquire per-agent locks for edit decisions and model changes.
+* Validate JSON body types before calling string methods.
+* Add request and message-size limits.
+* Add run cancellation and execution deadlines.
+* Avoid placing tokens in query strings.
+* Surface background server bind failures instead of swallowing them.
+
+---
+
+# Architecture diagnosis
+
+## The central `Agent` has become a god object
+
+`Agent` currently coordinates nearly everything:
+
+* Providers
+* Budgets
+* Worktrees
+* Evidence
+* Memory
+* Repository graph
+* Planning
+* Reflection
+* Safety
+* Verification
+* Skills
+* Hooks
+* MCP
+* Plugins
+* Subagents
+* Tools
+* Finalization
+
+Several methods are exceptionally large:
+
+| Method                           | Approximate size |
+| -------------------------------- | ---------------: |
+| `_execute_tool_with_safety_impl` |        425 lines |
+| `_finish_managed_run`            |        379 lines |
+| `cli.main`                       |        364 lines |
+| `handle_slash_command`           |        302 lines |
+| `Agent.__init__`                 |        244 lines |
+| `_run_hosted_turn`               |        219 lines |
+
+There are approximately:
+
+* 30 functions over 100 lines
+* 12 functions over 200 lines
+* 133 broad exception catches in production code
+
+The static dependency graph also contains a cycle involving:
+
+```text
+agent
+pipeline
+repair
+subagents.orchestrator
+```
+
+## Several “extracted services” are still façades
+
+Classes such as `RunFinalizer` and `ToolExecutionController` appear modular, but substantial behavior is delegated straight back to private `Agent` methods.
+
+This creates the appearance of separation without moving responsibility. It also introduces the risk of multiple competing implementations of the same run-status or tool-execution logic.
+
+### Target architecture
+
+```text
+AgentFacade
+├── RunOrchestrator
+├── ToolGateway
+│   ├── PolicyEngine
+│   ├── Sandbox
+│   └── EvidenceRecorder
+├── WorkspaceLifecycle
+├── VerificationService
+├── ReviewService
+├── ProviderRouter
+├── RepositoryService
+└── RunFinalizer
+```
+
+Each component should own its behavior rather than forwarding back into `Agent`.
+
+The `Agent` should eventually become a lightweight API façade, not the operational core.
+
+---
+
+# Test and benchmark assessment
+
+## Test suite
+
+The breadth is respectable:
+
+* 463 collected
+* 460 passing
+* 1 failing
+* 2 platform-skipped
+* 69.32% statement coverage
+
+The safety scenarios passed, including:
+
+* Safe direct commands
+* Dangerous command confirmation
+* Slopsquatting blocking
+* Missing-provider behavior
+* Missing-Ollama behavior
+
+Coverage gaps remain in strategically important modules:
+
+| Module                | Coverage |
+| --------------------- | -------: |
+| Web server            |      43% |
+| UI                    |      34% |
+| Subagent orchestrator |      38% |
+| Reflection            |      53% |
+| Two-node backend      |      63% |
+| Tools                 |      66% |
+| Sandbox               |      79% |
+| Workspace             |      80% |
+
+The test quantity is good, but many tests use controlled fixtures. They validate mechanisms more strongly than real-world autonomous outcomes.
+
+## Benchmark framework
+
+The benchmark design is credible. It includes:
+
+* Deterministic validation
+* Long-horizon manifests
+* Multi-tenant/authentication requirements
+* Transactional behavior
+* Concurrency and idempotency expectations
+* Repeated-trial release criteria
+
+However, the archive contains validation-ready benchmark definitions, not completed live-provider evidence.
+
+The current benchmark scope is also narrow:
+
+* Core calculator repair
+* Python/SQLite/WSGI startup control plane
+* Python/SQLite/WSGI operations ERP
+* Small generated Python bugs
+
+It does not yet demonstrate reliability on:
+
+* TypeScript
+* React or Next.js
+* Modern frontend state
+* Large existing repositories
+* Monorepos
+* Package-manager failures
+* Database migrations
+* Multi-service systems
+* Docker workflows
+* Flaky tests
+* Framework upgrades
+* Broad refactors
+* Merge-conflict recovery
+
+**Dry-run validity proves the benchmark harness understands the task. It does not prove Nexus can complete the task.**
+
+---
+
+# Release engineering issues
+
+## Documentation and release state are stale
+
+The package is version `3.2.1`, while several documents still reference `3.2.1` and approximately 340 tests.
+
+The real baseline is 463 collected tests.
+
+The release-gate script also generates a fixed `LAUNCH_READINESS_3.2.1.md` file rather than deriving the version dynamically. It mutates a tracked repository file during qualification.
+
+The release gate should:
+
+1. Read the version from package metadata.
+2. Generate evidence under an ignored build/evidence directory.
+3. Assert that the source tree remains clean afterward.
+4. Stream test progress.
+5. Apply a bounded timeout.
+6. Produce machine-readable JSON in addition to Markdown.
+
+## Dependency policy
+
+Runtime dependencies mainly have lower bounds without compatible upper bounds. CI is reproducible through the lockfile, but end-user installation can resolve future incompatible major releases.
+
+Use either compatible-release constraints or a published constraints file for production installations.
+
+---
+
+# Claude Code parity assessment
+
+Nexus has achieved **feature-surface similarity** in several areas:
+
+* Tool use
+* Repository editing
+* Planning
+* Worktrees
+* Verification
+* Hooks
+* MCP
+* Plugins
+* Provider routing
+* Subagents
+* Web control surface
+* Evidence reports
+
+It has not yet demonstrated **outcome parity**.
+
+Outcome parity requires consistent success on large, unfamiliar repositories across repeated trials. The current archive does not contain sufficient live-run evidence to support claims such as:
+
+* “Build any complex product from one prompt”
+* “Claude Code-level reliability”
+* “Production-ready autonomous software engineering”
+* “Distinct independent quality review” in every execution route
+
+A defensible current positioning would be:
+
+> A multi-provider coding agent with worktree isolation, deterministic verification, evidence-based execution, and configurable autonomous workflows.
+
+That is still a meaningful product. Overclaiming parity would create support, trust, and retention problems before the reliability data supports it.
+
+---
+
+# Priority remediation sequence
+
+## P0 — block public launch
+
+1. Remove credentials and path-injection variables from sandbox environments.
+2. Resolve review-mode and doctor policy inconsistency.
+3. Fix repository-understanding `Path` handling.
+4. Enforce distinct executor/reviewer identities.
+5. Require final review of the actual post-repair diff.
+6. Add regression tests for all five issues.
+7. Obtain a completely green cross-platform release gate.
+
+## P1 — stabilize beta operations
+
+1. Harden web UI locking, body validation, cancellation, and token handling.
+2. Clean successful worktrees automatically.
+3. Fix MCP and plugin subprocess lifecycle.
+4. Make plugin security claims match actual confinement.
+5. Correct evidence deduplication.
+6. Version release artifacts dynamically.
+7. Expand coverage around two-node orchestration and the web server.
+
+## P2 — prove product reliability
+
+Build a benchmark matrix covering:
+
+* Python backend repair
+* TypeScript backend repair
+* React/Next.js feature delivery
+* Existing monorepo modification
+* Multi-file architectural refactor
+* Database migration
+* Package installation and dependency conflicts
+* Test failure diagnosis
+* Full-stack product generation
+* Interrupted-run recovery
+
+Run every task multiple times and report:
+
+```text
+completion rate
+verification rate
+human intervention rate
+false-success rate
+median tool calls
+median cost
+median runtime
+failure category
+```
+
+The most important metric is **false-success rate**: runs Nexus marks verified even though the output is incomplete or incorrect.
+
+## P3 — reduce architectural drag
+
+Move real ownership out of `Agent`, eliminate wrapper-only abstractions, break dependency cycles, and centralize run finalization.
+
+Do this incrementally behind existing tests rather than rewriting the CLI.
+
+---
+
+# Final scorecard
+
+| Dimension                      |      Score | Assessment                                        |
+| ------------------------------ | ---------: | ------------------------------------------------- |
+| Product ambition               |       9/10 | Broad and differentiated                          |
+| Feature depth                  |     8.5/10 | Far beyond a basic coding wrapper                 |
+| Core execution                 |       7/10 | Credible orchestration with several semantic gaps |
+| Verification/evidence          |     7.5/10 | Strong design, inconsistent final-review path     |
+| Provider resilience            |     7.5/10 | Good fallback and budgeting mechanisms            |
+| Architecture                   |       6/10 | Excessive Agent coupling and pseudo-extraction    |
+| Security                       |     5.5/10 | Strong controls undermined by credential leakage  |
+| Test engineering               |       7/10 | Broad suite, weak live-system evidence            |
+| Packaging                      |     7.5/10 | Wheel builds cleanly                              |
+| Release readiness              |     5.5/10 | One failing test and multiple launch blockers     |
+| Proven long-horizon capability |       4/10 | Harness exists; completed evidence does not       |
+| **Overall**                    | **6.5/10** | **Strong beta, not GA-ready**                     |
+
+## Launch decision
+
+**Public general availability: No-go.**
+
+**Private or invite-only beta:** viable after the P0 defects are fixed and the release gate is fully green.
+
+The codebase is not a failed prototype. It has a strong operational foundation and several sophisticated systems already in place. The immediate strategy should not be adding more agents or features. The highest-leverage move is to tighten security boundaries, enforce the execution contract consistently, and produce credible repeated benchmark evidence.FIX ALL ERROR TILL P3 MENTIONED
+
+</USER_REQUEST>
+<ADDITIONAL_METADATA>
+The current local time is: 2026-08-02T11:01:20+05:30.
+
+The user's current state is as follows:
+Active Document: /Users/ashishsingh/Desktop/product/tests/test_cli_coverage.py (LANGUAGE_PYTHON)
+Cursor is on line: 1
+Other open documents:
+- /Users/ashishsingh/Desktop/product/tests/test_cli_coverage.py (LANGUAGE_PYTHON)
+- /Users/ashishsingh/Desktop/product/.github/workflows/ci.yml (LANGUAGE_YAML)
+- /Users/ashishsingh/Desktop/product/nexus/__init__.py (LANGUAGE_PYTHON)
+- /Users/ashishsingh/Desktop/product/nexus/doctor.py (LANGUAGE_PYTHON)
+- /Users/ashishsingh/Desktop/product/nexus/cli.py (LANGUAGE_PYTHON)
+</ADDITIONAL_METADATA>
+<USER_SETTINGS_CHANGE>
+The user changed setting `Model Selection` from None to Gemini 3.1 Pro (High). No need to comment on this change if the user doesn't ask about it. If reporting what model you are, please use a human readable name instead of the exact string.
+</USER_SETTINGS_CHANGE>

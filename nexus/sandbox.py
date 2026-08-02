@@ -20,6 +20,7 @@ import platform
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
@@ -231,53 +232,76 @@ class SandboxRunner:
 
         started = time.monotonic()
         try:
-            completed = subprocess.run(
+            kwargs = {}
+            if os.name == "posix":
+                kwargs["start_new_session"] = True
+                kwargs["preexec_fn"] = self._resource_limits
+            elif os.name == "nt":
+                kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 512)
+            
+            process = subprocess.Popen(
                 command,
                 cwd=cwd,
                 env=env,
-                capture_output=True,
-                text=False,
-                timeout=spec.timeout_seconds,
-                shell=False,
-                preexec_fn=self._resource_limits if os.name == "posix" else None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                **kwargs
             )
+            try:
+                stdout_data, stderr_data = process.communicate(timeout=spec.timeout_seconds)
+                completed_returncode = process.returncode
+                timed_out = False
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+                    try:
+                        process.communicate(timeout=0.5)
+                    except subprocess.TimeoutExpired:
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except OSError:
+                            pass
+                else:
+                    subprocess.run(["taskkill", "/F", "/T", "/PID", str(process.pid)], capture_output=True)
+                stdout_data, stderr_data = process.communicate()
+                completed_returncode = None
+            
             duration = int((time.monotonic() - started) * 1000)
             stdout, stdout_cut = self._decode_bounded(
-                completed.stdout or b"", spec.max_output_bytes
+                stdout_data or b"", spec.max_output_bytes
             )
             stderr, stderr_cut = self._decode_bounded(
-                completed.stderr or b"", spec.max_output_bytes
+                stderr_data or b"", spec.max_output_bytes
             )
+            
+            if timed_out:
+                return CommandResult(
+                    argv=list(spec.argv),
+                    cwd=str(cwd),
+                    backend=backend,
+                    success=False,
+                    exit_code=None,
+                    stdout=stdout,
+                    stderr=stderr,
+                    timed_out=True,
+                    duration_ms=duration,
+                    network_allowed=spec.network,
+                    network_enforced=backend != SandboxBackend.RESTRICTED,
+                    output_truncated=stdout_cut or stderr_cut,
+                )
+            
             return CommandResult(
                 argv=list(spec.argv),
                 cwd=str(cwd),
                 backend=backend,
-                success=completed.returncode == 0,
-                exit_code=completed.returncode,
+                success=completed_returncode == 0,
+                exit_code=completed_returncode,
                 stdout=stdout,
                 stderr=stderr,
-                duration_ms=duration,
-                network_allowed=spec.network,
-                network_enforced=backend != SandboxBackend.RESTRICTED,
-                output_truncated=stdout_cut or stderr_cut,
-            )
-        except subprocess.TimeoutExpired as exc:
-            duration = int((time.monotonic() - started) * 1000)
-            stdout, stdout_cut = self._decode_bounded(
-                self._as_bytes(exc.stdout), spec.max_output_bytes
-            )
-            stderr, stderr_cut = self._decode_bounded(
-                self._as_bytes(exc.stderr), spec.max_output_bytes
-            )
-            return CommandResult(
-                argv=list(spec.argv),
-                cwd=str(cwd),
-                backend=backend,
-                success=False,
-                exit_code=None,
-                stdout=stdout,
-                stderr=stderr,
-                timed_out=True,
                 duration_ms=duration,
                 network_allowed=spec.network,
                 network_enforced=backend != SandboxBackend.RESTRICTED,

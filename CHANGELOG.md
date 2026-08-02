@@ -6,7 +6,7 @@ All notable changes to NexusAI CLI are documented here.
 
 No changes yet.
 
-## [3.2.0] - 2026-08-01
+## [3.2.1] - 2026-08-01
 
 Launch-containment and evidence-integrity release.
 

@@ -30,6 +30,7 @@ untrusted input. Keep the default approval mode for unfamiliar repositories,
 review every proposed diff and dangerous-operation confirmation, and use
 read-only `plan` mode when no mutation is intended.
 
-The safety layer reduces risk; it is not a process, container, or operating
-system sandbox. Run Nexus with the least filesystem and credential access
-needed for the task.
+The safety layer reduces risk, but is not a bulletproof sandbox. Note the following limitations:
+- **Restricted-Process Mode is not full isolation**: The `restricted-process` mode filters environment variables and uses basic controls, but it is **not equivalent to container or native kernel isolation**. It lacks strong CPU, memory, and process-count limits.
+- **Windows Support**: Windows does not have a native kernel sandbox isolation implementation in Nexus.
+Run Nexus with the least filesystem and credential access needed for the task.

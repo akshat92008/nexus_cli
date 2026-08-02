@@ -10,9 +10,8 @@ All tests are hermetic — no provider credentials required.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import MagicMock
-
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from nexus.run_finalizer import (
     EvidenceClass,

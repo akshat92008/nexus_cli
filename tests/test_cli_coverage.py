@@ -268,7 +268,7 @@ def test_handle_run_management_all():
 def test_handle_benchmark_valid():
     from nexus.cli import _handle_benchmark
     with patch.object(sys, "argv", ["nexus", "benchmark", "--manifest", "nonexistent.json"]):
-        with patch("nexus.benchmark.BenchmarkSuite.load") as MockLoad:
+        with patch("nexus.benchmark.BenchmarkSuite.load"):
             with patch("nexus.benchmark.BenchmarkRunner") as MockRunner:
                 from types import SimpleNamespace
                 MockRunner.return_value.run.return_value = SimpleNamespace(to_dict=lambda: {"summary": {"failed": 0, "tasks": 1}})
@@ -277,7 +277,7 @@ def test_handle_benchmark_valid():
 def test_handle_benchmark_error():
     from nexus.cli import _handle_benchmark
     with patch.object(sys, "argv", ["nexus", "benchmark", "--manifest", "nonexistent.json"]):
-        with patch("nexus.benchmark.BenchmarkSuite.load") as MockLoad:
+        with patch("nexus.benchmark.BenchmarkSuite.load"):
             with patch("nexus.benchmark.BenchmarkRunner") as MockRunner:
                 MockRunner.return_value.run.side_effect = ValueError("Error")
                 with pytest.raises(SystemExit):
@@ -286,7 +286,7 @@ def test_handle_benchmark_error():
 def test_handle_generate_dashboard_valid():
     from nexus.cli import _handle_generate_dashboard
     with patch.object(sys, "argv", ["nexus", "generate-dashboard", "--input", "in.json", "--output", "out.html"]):
-        with patch("nexus.dashboard.RegressionDashboard.generate") as mock_gen:
+        with patch("nexus.dashboard.RegressionDashboard.generate"):
             assert _handle_generate_dashboard() is True
 
 def test_main_cli_doctor():
@@ -314,7 +314,7 @@ def test_run_interactive_loop():
 
 def test_handle_slash_commands_all():
     from nexus.cli import handle_slash_command
-    with patch("nexus.cli.Agent") as MockAgent,          patch("nexus.cli.get_history") as mock_get_history,          patch("nexus.cli.ConversationMemory") as mock_mem,          patch("nexus.cli.start_background_web_server") as mock_web:
+    with patch("nexus.cli.Agent") as MockAgent,          patch("nexus.cli.get_history") as mock_get_history,          patch("nexus.cli.ConversationMemory") as mock_mem,          patch("nexus.cli.start_background_web_server"):
         
         agent = MockAgent.return_value
         agent.model_key = "test"
@@ -332,7 +332,7 @@ def test_handle_slash_commands_all():
         assert handle_slash_command("/clear", agent) is True
         assert handle_slash_command("/reset", agent) is True
         
-        with patch("nexus.tools.tool_get_project_structure") as p:
+        with patch("nexus.tools.tool_get_project_structure"):
             assert handle_slash_command("/project", agent) is True
         
         assert handle_slash_command("/cost", agent) is True

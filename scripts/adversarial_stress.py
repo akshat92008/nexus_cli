@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-import subprocess
-import time
 import os
+import subprocess
 import sys
+import time
 
 PROMPTS = [
     {

@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,6 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-import statistics
 
 from nexus import __version__
 from nexus.sandbox import CommandSpec, SandboxRunner

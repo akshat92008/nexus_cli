@@ -2,7 +2,7 @@
 
 NexusAI is an open-source, multi-provider coding CLI focused on verification, worktree safety, and extensibility. A hosted model plans and reviews difficult work; local Nova V11 executes suitable atomic changes through Ollama. Nexus owns repository understanding, permissions, workspaces, tools, tests, repair, evidence, budgets, rollback, and recovery.
 
-Version 3.2.0 is the launch-hardening runtime described by the product
+Version 3.2.1 is the launch-hardening runtime described by the product
 specification:
 
 - requests become acceptance criteria and dependency-aware execution
@@ -270,7 +270,7 @@ The public benchmark manifest is versioned and shell-free:
 ```bash
 nexus benchmark --manifest benchmarks/core.json --dry-run
 nexus benchmark --manifest benchmarks/core.json \
-  --output benchmarks/results/nexus-3.2.0.json
+  --output benchmarks/results/nexus-3.2.1.json
 
 # Validate the large single-prompt product contract without spending credits
 nexus benchmark --manifest benchmarks/long_horizon.json --dry-run
@@ -310,6 +310,12 @@ subsystem contracts, integration/deployment gates, and failure-driven plan
 revisions. File/interface summaries and dependency impact are cached across
 restarts so later turns do not have to reconstruct the entire system from raw
 file clips.
+
+## Security Limitations
+
+The safety layer reduces risk, but is not a bulletproof sandbox. Note the following limitations:
+- **Restricted-Process Mode is not full isolation**: The `restricted-process` mode filters environment variables and uses basic controls, but it is **not equivalent to container or native kernel isolation**. It lacks strong CPU, memory, and process-count limits.
+- **Windows Support**: Windows does not have a native kernel sandbox isolation implementation in Nexus.
 
 ## Built-in tools
 
