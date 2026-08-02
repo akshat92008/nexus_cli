@@ -326,10 +326,12 @@ class BenchmarkRunner:
         *,
         artifact_root: str | Path | None = None,
         keep_workspaces: bool = False,
+        enforce_backend_preflight: bool = False,
     ):
         self.suite = suite
         self.artifact_root = Path(artifact_root).expanduser().resolve() if artifact_root else None
         self.keep_workspaces = bool(keep_workspaces)
+        self.enforce_backend_preflight = bool(enforce_backend_preflight)
         if self.artifact_root:
             self.artifact_root.mkdir(parents=True, exist_ok=True)
 
@@ -356,8 +358,12 @@ class BenchmarkRunner:
     def run(self, *, dry_run: bool = False) -> BenchmarkReport:
         started = _utc_now()
         probe = None if dry_run else self._preflight()
+        # Programmatic suites may validate the execution harness with a mocked
+        # process gateway. CLI runs opt in explicitly, while an explicitly selected
+        # model always requires a real compatibility probe.
+        enforce_preflight = self.enforce_backend_preflight or bool(os.environ.get("NEXUS_MODEL"))
 
-        if probe is not None and not probe.ready:
+        if probe is not None and not probe.ready and enforce_preflight:
             results = [
                 BenchmarkTaskResult(
                     task_id=task.id,

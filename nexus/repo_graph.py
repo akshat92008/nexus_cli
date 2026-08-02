@@ -592,6 +592,9 @@ class RepoGraph:
             "generated_at": self.generated_at,
             "files": len(self.files),
             "symbols": symbols,
+            # Stable aliases retained for planner/backward compatibility.
+            "total_files": len(self.files),
+            "total_symbols": symbols,
             "imports": imports,
             "tests": tests,
             "routes": routes,

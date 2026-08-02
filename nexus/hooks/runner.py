@@ -48,8 +48,16 @@ class HookRunner:
                 pass
     """
 
-    def __init__(self, working_dir: str = ""):
+    def __init__(
+        self,
+        working_dir: str = "",
+        *,
+        require_os_isolation: bool = False,
+        allow_network: bool = False,
+    ):
         self.working_dir = working_dir
+        self.require_os_isolation = bool(require_os_isolation)
+        self.allow_network = bool(allow_network)
         self._hooks: list[BaseHook] = []
 
     def register(self, hook: BaseHook):
@@ -198,8 +206,8 @@ class HookRunner:
             command=command,
             workspace=cwd,
             timeout_seconds=30,
-            isolation_policy="required",
-            network_policy="allow", # Hooks might need network access
+            isolation_policy="required" if self.require_os_isolation else "optional",
+            network_policy="allow" if self.allow_network else "deny",
         )
         result = ProcessExecutionGateway.run(request)
 

@@ -128,23 +128,30 @@ def compact_messages(messages: list[dict], keep_recent: int = 10) -> list[dict]:
     old_messages = messages[:-keep_recent]
     recent_messages = messages[-keep_recent:]
 
-    # Build a summary of old messages
-    summary_parts = []
-    for msg in old_messages:
-        role = msg.get("role", "unknown")
-        content = msg.get("content", "")
-        if role == "user" and content:
-            summary_parts.append(f"User asked: {content[:200]}")
-        elif role == "assistant" and content:
-            summary_parts.append(f"Assistant: {content[:200]}")
-        elif role == "tool":
-            tool_id = msg.get("tool_call_id", "")
-            summary_parts.append(f"Tool result for {tool_id}: {content[:100]}")
+    # Preserve decisions, exact paths, commands and failures. This is deterministic
+    # compaction, not a semantic model summary, so it must fail by retaining too much.
+    summary_parts: list[str] = []
+    per_message_limit = 1_500
+    for index, msg in enumerate(old_messages):
+        role = str(msg.get("role", "unknown"))
+        content = str(msg.get("content", "") or "").strip()
+        if not content:
+            continue
+        tool_id = str(msg.get("tool_call_id", "") or "")
+        label = f"{index:04d} {role}"
+        if tool_id:
+            label += f" tool_call_id={tool_id}"
+        excerpt = (
+            content
+            if len(content) <= per_message_limit
+            else content[:per_message_limit] + "\n[…truncated at message boundary…]"
+        )
+        summary_parts.append(f"## {label}\n{excerpt}")
 
     summary_text = (
-        "[CONVERSATION SUMMARY — Earlier messages have been compacted]\n\n"
-        + "\n".join(summary_parts[-20:])  # Keep last 20 summary entries
-        + "\n\n[END SUMMARY — Recent messages follow]"
+        "[CONVERSATION SUMMARY — STRUCTURED ARCHIVE; exact recent messages follow]\n\n"
+        + "\n\n".join(summary_parts[-80:])
+        + "\n\n[END STRUCTURED ARCHIVE]"
     )
 
     compacted = [{"role": "user", "content": summary_text}]

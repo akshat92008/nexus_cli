@@ -91,6 +91,16 @@ TOOL_CAPABILITIES: dict[str, ToolCapabilityDeclaration] = {
         frozenset({ToolCapability.FS_READ}),
         "Unified diff between two files",
     ),
+    "read_notebook": ToolCapabilityDeclaration(
+        "read_notebook",
+        frozenset({ToolCapability.FS_READ}),
+        "Read Jupyter notebook cells without executing them",
+    ),
+    "edit_notebook_cell": ToolCapabilityDeclaration(
+        "edit_notebook_cell",
+        frozenset({ToolCapability.FS_READ, ToolCapability.FS_WRITE}),
+        "Edit one Jupyter notebook cell with mutation tracking",
+    ),
     # Search tools
     "search_code": ToolCapabilityDeclaration(
         "search_code",

@@ -1,0 +1,35 @@
+{
+  "source_archive": "nexus_cli-reliability-upgrade.zip",
+  "source_archive_sha256": "bc91a6d19452c6a1f86d33b22de8ddf0556db6d83806aa164b218124d21f50b8",
+  "patch": "NEXUS_RELIABILITY_UPGRADE.patch",
+  "patch_sha256": "13cf5d8f1f013978a890ab98c1fd31c21aa498f42db3faf974f83fbd16bfd484",
+  "wheel": "nexusai_cli-3.2.1-reliability-upgrade-py3-none-any.whl",
+  "wheel_sha256": "ee5607f48a62a77f6874b440cf2ee6b10393ccd3ad1fcd10023ab14a1c408ec2",
+  "changed_files": [
+    "NEXUS_RELIABILITY_UPGRADE_REPORT.md",
+    "nexus/agent.py",
+    "nexus/api.py",
+    "nexus/benchmark.py",
+    "nexus/capabilities.py",
+    "nexus/cli.py",
+    "nexus/code_validation.py",
+    "nexus/hooks/runner.py",
+    "nexus/memory.py",
+    "nexus/pipeline.py",
+    "nexus/planner.py",
+    "nexus/preflight.py",
+    "nexus/repo_graph.py",
+    "nexus/run_finalizer.py",
+    "nexus/sandbox.py",
+    "scripts/run_release_gate.py",
+    "tests/test_audit_blockers_fixed.py"
+  ],
+  "changed_file_count": 17,
+  "qualification": {
+    "tests_passed": 496,
+    "tests_skipped": 2,
+    "single_process": true,
+    "compileall": true,
+    "wheel_smoke": true
+  }
+}

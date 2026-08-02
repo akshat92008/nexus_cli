@@ -117,6 +117,15 @@ def probe_hosted() -> BackendProbe:
                 detail="NEXUS_OPENAI_BASE_URL must be an absolute HTTP(S) URL.",
                 remediation=("Use a URL such as https://provider.example/v1.",),
             )
+        loopback_hosts = {"localhost", "127.0.0.1", "::1"}
+        if parsed.scheme == "http" and parsed.hostname not in loopback_hosts:
+            return BackendProbe(
+                ready=False,
+                backend="hosted",
+                code="plaintext_remote_endpoint",
+                detail="Remote custom provider endpoints must use HTTPS; HTTP is allowed only for loopback hosts.",
+                remediation=("Use HTTPS or route the provider through localhost.",),
+            )
     if custom_url and not os.environ.get("NEXUS_OPENAI_API_KEY"):
         return BackendProbe(
             ready=False,

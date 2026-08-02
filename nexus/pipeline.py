@@ -153,11 +153,43 @@ class ExecutionPipeline:
         stage_results = result.stage_results
 
         # ── Stage 1: Repo Understanding ───────────────────────────────────────
-        stage_results.append(self._stage_repo_understanding())
+        repo_result = self._stage_repo_understanding()
+        stage_results.append(repo_result)
 
         # ── Stage 2: Planning ─────────────────────────────────────────────────
         analysis, plan, planning_result = self._stage_planning(user_input)
         stage_results.append(planning_result)
+
+        if not planning_result.success:
+            self._agent._begin_managed_run(user_input, analysis, plan)
+            response = f"BLOCKED: Planning failed safely: {planning_result.error}"
+            report = self._agent._run_finalizer.finish(
+                response, [], status_override=RunStatus.BLOCKED
+            )
+            result.response = response
+            result.status = report.get("status", RunStatus.BLOCKED.value)
+            result.outcome = report.get("outcome", "BLOCKED_BY_PLANNING")
+            result.total_duration_ms = int((time.monotonic() - pipeline_start) * 1000)
+            return result
+
+        intent_value = getattr(analysis.get("intent"), "value", analysis.get("intent", "unknown"))
+        difficulty_value = getattr(
+            analysis.get("difficulty"), "value", analysis.get("difficulty", "trivial")
+        )
+        repo_required = intent_value in {
+            "build", "fix", "refactor", "migrate", "security", "optimize", "test"
+        } and difficulty_value in {"complex", "massive"}
+        if repo_required and not repo_result.success:
+            self._agent._begin_managed_run(user_input, analysis, plan)
+            response = f"BLOCKED: Repository understanding is required for this task: {repo_result.error}"
+            report = self._agent._run_finalizer.finish(
+                response, [], status_override=RunStatus.BLOCKED
+            )
+            result.response = response
+            result.status = report.get("status", RunStatus.BLOCKED.value)
+            result.outcome = report.get("outcome", "BLOCKED_BY_REPOSITORY_UNDERSTANDING")
+            result.total_duration_ms = int((time.monotonic() - pipeline_start) * 1000)
+            return result
 
         # ── Stage 3: Context Selection ────────────────────────────────────────
         stage_results.append(self._stage_context_selection(user_input))
@@ -252,14 +284,8 @@ class ExecutionPipeline:
         """Refresh the repository graph index if stale."""
         t = time.monotonic()
         try:
-            if not (Path(self._agent.working_dir) / ".git").exists():
-                return StageResult(
-                    stage=PipelineStage.REPO_UNDERSTANDING,
-                    success=True,
-                    duration_ms=int((time.monotonic() - t) * 1000),
-                    metadata={"refreshed": False, "reason": "Not a git repository"},
-                )
-            
+            # Repository intelligence is source-tree based, not Git based. Archives,
+            # generated projects and benchmark copies require the same understanding.
             updated = self._agent.repo_graph.build(force=False)
             return StageResult(
                 stage=PipelineStage.REPO_UNDERSTANDING,
@@ -329,9 +355,12 @@ class ExecutionPipeline:
                     verification,
                 )
                 for step in plan.steps:
-                    step.acceptance_criteria = list(plan.acceptance_criteria)
+                    if not step.acceptance_criteria:
+                        step.acceptance_criteria = self._agent.planner._step_acceptance_criteria(
+                            step, plan.acceptance_criteria
+                        )
                     if step.checks:
-                        step.checks = list(verification)
+                        step.checks = list(dict.fromkeys(step.checks))
             return (
                 analysis,
                 plan,
@@ -346,16 +375,21 @@ class ExecutionPipeline:
                 ),
             )
         except Exception as exc:
-            self._logger.warning("Planning stage error (continuing): %s", exc)
+            self._logger.exception("Planning stage failed closed")
             return (
-                {"intent": "unknown", "plan_type": "direct", "skills_needed": []},
+                {
+                    "intent": "unknown",
+                    "difficulty": "complex",
+                    "plan_type": "blocked",
+                    "skills_needed": [],
+                },
                 None,
                 StageResult(
                     stage=PipelineStage.PLANNING,
                     success=False,
                     duration_ms=int((time.monotonic() - t) * 1000),
-                    metadata={"degraded": True},
-                    error=str(exc),
+                    metadata={"degraded": False, "fail_closed": True},
+                    error=f"{type(exc).__name__}: {exc}",
                 ),
             )
 

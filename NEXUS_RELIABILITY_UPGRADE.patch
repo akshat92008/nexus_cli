@@ -1,0 +1,1278 @@
+--- a/NEXUS_RELIABILITY_UPGRADE_REPORT.md
++++ b/NEXUS_RELIABILITY_UPGRADE_REPORT.md
+@@ -0,0 +1,127 @@
++# Nexus CLI Reliability & Intelligence Upgrade
++
++## Outcome
++
++This upgrade closes the highest-impact correctness defects reproduced from the supplied audit and hardens the execution path against stale evidence, unsafe fallback, environment contamination, false verification, and persistent-process test drift.
++
++It does **not** make Nexus equal to Claude Code's frontier model intelligence or mature ecosystem. It establishes a substantially more trustworthy base for the next planning, semantic-verification, context-engine, and benchmark phases.
++
++## Implemented fixes
++
++### Run correctness and evidence
++
++- Per-turn evidence now starts from the agent-owned marker; older turns cannot satisfy or poison the current turn.
++- Tool retries are reconciled by logical operation plus canonical arguments, not by tool name.
++- A successful edit to one file cannot hide a failed edit to another file.
++- Re-running the same failed verification command can supersede that exact failed attempt.
++- Test metrics now count test evidence only; lint, build, security, and type checks are no longer mislabeled as tests.
++- Final reports expose verification-record counts, unique test commands, evidence boundaries, and more useful work descriptions.
++
++### Planning and repository understanding
++
++- Large-repository planning reads the actual repository graph keys and now activates correctly.
++- Repository intelligence runs for source archives and non-Git workspaces.
++- Complex mutation tasks fail closed when repository understanding fails.
++- Planning exceptions fail closed instead of silently degrading to direct execution.
++- Step-level criteria are preserved and narrowed rather than overwritten by all plan-level criteria.
++- Default hosted-call and token budgets are finite.
++
++### Runtime and process isolation
++
++- Parser/code-validation subprocesses can run in a portable restricted mode without requiring Bubblewrap.
++- Shell hooks accept an explicit isolation policy and deny network by default.
++- The sandbox backend cache has an explicit reset path for lifecycle and test isolation.
++- Remote plaintext custom provider endpoints are rejected; loopback HTTP remains available for local providers.
++
++### Provider reliability
++
++- Provider-key cooldown no longer blocks the interactive thread.
++- Cooldown state has one canonical source of truth.
++- Provider attempt telemetry records all ordinary SDK exceptions.
++- Abandoned or interrupted streams finalize telemetry as cancelled rather than remaining open.
++- Repository `.env` files are ignored by the provider runtime and cannot mutate the parent process environment.
++- Trusted user-level Nexus environment files are loaded into an isolated mapping.
++
++### Context and tools
++
++- Conversation compaction preserves complete message boundaries, roles, tool-call IDs, and substantially more history.
++- Notebook read/edit tools are registered in the capability system and are no longer silently filtered out.
++
++### Qualification and release gates
++
++- Full suite passes in one persistent Python process.
++- The release gate now requires both:
++  1. one complete persistent-process suite, and
++  2. isolated coverage shards.
++- Persistent and isolated test counts must agree.
++- Real CLI benchmark runs require backend preflight; programmatic harness tests can inject a fake gateway without depending on local credentials.
++
++## Qualification evidence
++
++- `python -m compileall -q nexus tests scripts`: passed.
++- Full single-process suite: **496 passed, 2 skipped**.
++- Skips are platform-specific macOS and Windows sandbox assertions on the Linux qualification host.
++- Wheel build: `nexusai_cli-3.2.1-py3-none-any.whl` built successfully.
++- Wheel installation smoke test: passed.
++- Installed CLI version check: `NexusAI 3.2.1`.
++
++## Changed source files
++
++- `nexus/agent.py`
++- `nexus/api.py`
++- `nexus/benchmark.py`
++- `nexus/capabilities.py`
++- `nexus/cli.py`
++- `nexus/code_validation.py`
++- `nexus/hooks/runner.py`
++- `nexus/memory.py`
++- `nexus/pipeline.py`
++- `nexus/planner.py`
++- `nexus/preflight.py`
++- `nexus/repo_graph.py`
++- `nexus/run_finalizer.py`
++- `nexus/sandbox.py`
++- `scripts/run_release_gate.py`
++- `tests/test_audit_blockers_fixed.py`
++
++## Integration
++
++### Replace the local source
++
++Extract the supplied full-source archive and use it as the new project directory.
++
++### Apply only the patch
++
++From the root of the older Nexus checkout:
++
++```bash
++git apply NEXUS_RELIABILITY_UPGRADE.patch
++python -m compileall -q nexus tests scripts
++python -m pytest -q
++```
++
++### Install the qualified wheel
++
++```bash
++python -m pip install --force-reinstall --no-deps nexusai_cli-3.2.1-py3-none-any.whl
++nexus --version
++```
++
++## Important remaining competitive gaps
++
++The following require additional architecture and product work and are not honestly solved by this patch:
++
++- Model-generated, repository-conditioned candidate plans and strategy comparison.
++- First-class uncertainty, assumptions, clarification, and approval objects.
++- Criterion-to-symbol-to-test evidence bindings for every requirement.
++- Strong semantic completion and hypothesis-driven debugging throughout the main loop.
++- One canonical orchestration runtime replacing duplicated managers and kernels.
++- Hierarchical semantic context, type/data-flow graphs, runtime traces, and code-aware retrieval.
++- Durable multi-agent scheduling, cross-process messaging, event monitors, and richer MCP support.
++- Container/VM execution backend and complete Windows execution parity.
++- A public 100+ real-repository benchmark with false-success, regression, cost, and intervention metrics.
++- IDE, managed CI, updater, marketplace, and enterprise administration surfaces.
++
++## Recommended positioning
++
++Do not claim full Claude Code parity yet. Position this build as a reliability-focused beta of a transparent, affordable, local-first multi-model coding agent, and measure false-success rate before expanding the feature surface.
+--- a/nexus/agent.py
++++ b/nexus/agent.py
+@@ -441,7 +441,11 @@
+             self.skills.register(extension_skill)
+ 
+         # ── Phase 3: Hooks Engine ────────────────────────────────────────
+-        self.hooks = HookRunner(self.working_dir)
++        self.hooks = HookRunner(
++            self.working_dir,
++            require_os_isolation=self.mode_policy.require_os_isolation,
++            allow_network=False,
++        )
+         for hook in create_builtin_hooks():
+             self.hooks.register(hook)
+ 
+--- a/nexus/api.py
++++ b/nexus/api.py
+@@ -67,7 +67,17 @@
+                 for key in usage:
+                     usage[key] = max(usage[key], current[key])
+                 yield chunk
+-        except BaseException as exc:
++        except GeneratorExit:
++            self._complete(
++                "cancelled",
++                {
++                    "error": "stream abandoned before complete consumption",
++                    "request_id": request_id,
++                    "usage": usage,
++                },
++            )
++            raise
++        except Exception as exc:
+             self._complete(
+                 "failed",
+                 {
+@@ -77,8 +87,42 @@
+                 },
+             )
+             raise
++        except BaseException as exc:
++            self._complete(
++                "cancelled",
++                {
++                    "error": str(exc) or type(exc).__name__,
++                    "request_id": request_id,
++                    "usage": usage,
++                },
++            )
++            raise
+         else:
+             self._complete("verified", {"request_id": request_id, "usage": usage})
++
++    def close(self) -> None:
++        """Close an abandoned stream and finalize telemetry exactly once."""
++        close = getattr(self._stream, "close", None)
++        try:
++            if callable(close):
++                close()
++        finally:
++            self._complete("cancelled", {"error": "stream closed before complete consumption"})
++
++    def __enter__(self) -> "_ObservedStream":
++        return self
++
++    def __exit__(self, exc_type, exc, traceback) -> None:
++        del exc_type, exc, traceback
++        self.close()
++
++    def __del__(self) -> None:
++        if not self._finished:
++            try:
++                self.close()
++            except Exception:
++                # Destructors must never mask interpreter shutdown.
++                pass
+ 
+     def _complete(self, status: str, metadata: dict[str, Any]) -> None:
+         if not self._finished:
+@@ -86,33 +130,42 @@
+             self._finish(status, metadata)
+ 
+ 
+-def _load_env_file():
+-    """Load local Nexus environment files without overriding process values."""
+-    cwd = os.getcwd()
+-    checkout = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++def _load_env_file() -> dict[str, str]:
++    """Return an isolated provider environment without mutating ``os.environ``.
++
++    Repository-controlled ``.env`` files are intentionally ignored. Operators can
++    load credentials from the process environment, the Nexus user config files, or
++    an explicit ``NEXUS_ENV_FILE`` path. This prevents an untrusted workspace from
++    changing the parent agent process or its toolchain configuration.
++    """
++    values = dict(os.environ)
++    explicit = os.environ.get("NEXUS_ENV_FILE", "").strip()
+     possible_paths = [
+-        os.path.join(cwd, ".env"),
+-        os.path.join(checkout, ".env"),
++        *( [os.path.expanduser(explicit)] if explicit else [] ),
+         os.path.expanduser("~/.config/nexus/.env"),
+         os.path.expanduser("~/.nexusai/.env"),
+     ]
+-    for p in possible_paths:
+-        if os.path.exists(p):
+-            try:
+-                with open(p, "r", encoding="utf-8") as f:
+-                    for line in f:
+-                        line = line.strip()
+-                        if line and not line.startswith("#") and "=" in line:
+-                            k, v = line.split("=", 1)
+-                            k, v = k.strip(), v.strip().strip("'\"")
+-                            if p == os.path.join(cwd, ".env"):
+-                                if k.startswith(("NEXUS_", "OPENAI_", "ANTHROPIC_", "GROQ_", "NVIDIA_", "OPENROUTER_")) or k in {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"}:
+-                                    continue
+-                            # Explicit process environment wins over repository .env.
+-                            # This is required for CLI flags, CI, and isolated tests.
+-                            os.environ.setdefault(k, v)
+-            except (OSError, TypeError, ValueError):
+-                pass
++    if os.environ.get("NEXUS_ALLOW_CHECKOUT_ENV") == "1":
++        checkout = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
++        possible_paths.append(os.path.join(checkout, ".env"))
++
++    for path in possible_paths:
++        if not os.path.isfile(path):
++            continue
++        try:
++            with open(path, "r", encoding="utf-8") as handle:
++                for raw_line in handle:
++                    line = raw_line.strip()
++                    if not line or line.startswith("#") or "=" not in line:
++                        continue
++                    key, value = line.split("=", 1)
++                    key = key.strip()
++                    if not key or "\x00" in key or "=" in key:
++                        continue
++                    values.setdefault(key, value.strip().strip("'\""))
++        except (OSError, TypeError, ValueError):
++            continue
++    return values
+ 
+ 
+ class RoundRobinKeyPool:
+@@ -129,9 +182,7 @@
+         self._lock = threading.RLock()
+ 
+     def get_next_key(self) -> str | None:
+-        """Select and return the next active round-robin key, skipping cooling-down keys."""
+-        wait_time = 0
+-        earliest_key = None
++        """Return an active key immediately; never sleep the interactive execution thread."""
+         with self._lock:
+             if not self.keys:
+                 return None
+@@ -140,16 +191,26 @@
+             for offset in range(len(self.keys)):
+                 idx = (start_idx + offset) % len(self.keys)
+                 key = self.keys[idx]
+-                if key not in self.cooldowns or now >= self.cooldowns[key]:
++                if now >= self.cooldowns.get(key, 0):
+                     self.current_idx = (idx + 1) % len(self.keys)
++                    self.cooldowns.pop(key, None)
+                     return key
+-            earliest_key = min(self.keys, key=lambda k: self.cooldowns.get(k, 0))
+-            wait_time = max(0, self.cooldowns[earliest_key] - now)
+-            self.current_idx = (self.keys.index(earliest_key) + 1) % len(self.keys)
+-
+-        if wait_time > 0:
+-            time.sleep(wait_time)
+-        return earliest_key
++            return None
++
++    def cooldown_status(self) -> dict[str, float]:
++        """Seconds remaining for each cooling key, suitable for structured failover."""
++        now = time.time()
++        with self._lock:
++            return {
++                key: max(0.0, expires - now)
++                for key, expires in self.cooldowns.items()
++                if expires > now
++            }
++
++    def remaining_cooldown(self, key: str) -> float:
++        """Return remaining cooldown seconds for one key without changing selection."""
++        with self._lock:
++            return max(0.0, self.cooldowns.get(key, 0.0) - time.time())
+ 
+     def mark_cooldown(self, key: str, duration: float | None = None):
+         """Mark a key as temporarily cooling down (e.g. on HTTP 429 rate limit)."""
+@@ -183,41 +244,40 @@
+         attempt_controller: Any = None,
+         attempt_observer: Callable[[dict[str, Any]], None] | None = None,
+     ):
+-        _load_env_file()
+-        self.primary_key = api_key or os.environ.get("NVIDIA_API_KEY", "")
++        self.runtime_env = _load_env_file() or dict(os.environ)
++        self.primary_key = api_key or self.runtime_env.get("NVIDIA_API_KEY", "")
+         self.api_key = self.primary_key
+         self.timeout = timeout
+         self._attempt_controller = attempt_controller
+         self._attempt_observer = attempt_observer
+-        self.custom_base_url = os.environ.get("NEXUS_OPENAI_BASE_URL", "").strip().rstrip("/")
+-        self.custom_api_key = os.environ.get("NEXUS_OPENAI_API_KEY", "").strip()
+-        self.custom_model = os.environ.get("NEXUS_MODEL_ID", "").strip()
++        self.custom_base_url = self.runtime_env.get("NEXUS_OPENAI_BASE_URL", "").strip().rstrip("/")
++        self.custom_api_key = self.runtime_env.get("NEXUS_OPENAI_API_KEY", "").strip()
++        self.custom_model = self.runtime_env.get("NEXUS_MODEL_ID", "").strip()
+ 
+         # Collect all NVIDIA keys
+         self.nvidia_keys = [self.primary_key] if self.primary_key else []
+-        for k in sorted(os.environ.keys()):
++        for k in sorted(self.runtime_env):
+             if (
+                 k.startswith("NVIDIA_FALLBACK_API_KEY") or k.startswith("NVIDIA_API_KEY_")
+-            ) and os.environ[k]:
+-                self.nvidia_keys.append(os.environ[k])
++            ) and self.runtime_env[k]:
++                self.nvidia_keys.append(self.runtime_env[k])
+ 
+         # Deduplicate keys while preserving insertion order
+         self.nvidia_keys = list(dict.fromkeys([k for k in self.nvidia_keys if k]))
+         self.current_key_idx = 0
+-        self.key_cooldowns = {}
+-
+-        # Round-Robin Key Pools
++
++        # Round-Robin Key Pools are the single source of cooldown truth.
+         self.nvidia_pool = RoundRobinKeyPool(self.nvidia_keys, cooldown_seconds=60.0)
+ 
+         # Groq key fallback pool
+         self.groq_keys = []
+-        if os.environ.get("GROQ_API_KEY"):
+-            self.groq_keys.append(os.environ["GROQ_API_KEY"])
+-        for k in sorted(os.environ.keys()):
++        if self.runtime_env.get("GROQ_API_KEY"):
++            self.groq_keys.append(self.runtime_env["GROQ_API_KEY"])
++        for k in sorted(self.runtime_env):
+             if (
+                 k.startswith("GROQ_API_KEY_") or k.startswith("GROQ_FALLBACK_API_KEY")
+-            ) and os.environ[k]:
+-                self.groq_keys.append(os.environ[k])
++            ) and self.runtime_env[k]:
++                self.groq_keys.append(self.runtime_env[k])
+         self.groq_keys = list(dict.fromkeys([k for k in self.groq_keys if k]))
+         self.groq_key = self.groq_keys[0] if self.groq_keys else ""
+         self.groq_pool = RoundRobinKeyPool(self.groq_keys, cooldown_seconds=60.0)
+@@ -244,10 +304,10 @@
+                 timeout=DEFAULT_GROQ_TIMEOUT,
+                 max_retries=2,
+             )
+-        elif os.environ.get("OPENROUTER_API_KEY"):
++        elif self.runtime_env.get("OPENROUTER_API_KEY"):
+             self.client = OpenAI(
+                 base_url=OPENROUTER_BASE_URL,
+-                api_key=os.environ["OPENROUTER_API_KEY"],
++                api_key=self.runtime_env["OPENROUTER_API_KEY"],
+                 timeout=DEFAULT_GROQ_TIMEOUT,
+                 max_retries=2,
+             )
+@@ -303,8 +363,8 @@
+ 
+         try:
+             response = request()
+-        except (OSError, ValueError) as exc:
+-            finish("failed", {"error": str(exc)})
++        except Exception as exc:
++            finish("failed", {"error": str(exc) or type(exc).__name__})
+             raise
+         if streaming:
+             return _ObservedStream(response, finish)
+@@ -448,7 +508,7 @@
+                     break
+                 idx = (start_idx + offset) % len(self.nvidia_keys)
+                 key = self.nvidia_keys[idx]
+-                if key in self.key_cooldowns and now < self.key_cooldowns[key]:
++                if self.nvidia_pool.remaining_cooldown(key) > 0:
+                     continue  # Skip key currently in rate-limit cooldown
+                 attempted += 1
+                 try:
+@@ -472,7 +532,7 @@
+                     if any(
+                         t in err_str.lower() for t in ("429", "rate limit", "too many requests")
+                     ):
+-                        self.key_cooldowns[key] = time.time() + 60.0
++                        self.nvidia_pool.mark_cooldown(key, 60.0)
+                     if any(
+                         t in err_str.lower()
+                         for t in ("timeout", "timed out", "connection", "connect", "unreachable")
+@@ -492,7 +552,7 @@
+                 if fb_model == model_id:
+                     continue
+                 for idx, key in enumerate(self.nvidia_keys):
+-                    if key in self.key_cooldowns and now < self.key_cooldowns[key]:
++                    if self.nvidia_pool.remaining_cooldown(key) > 0:
+                         continue
+                     try:
+                         client = self._get_nvidia_client(key)
+@@ -516,7 +576,7 @@
+                         if any(
+                             t in err_str.lower() for t in ("429", "rate limit", "too many requests")
+                         ):
+-                            self.key_cooldowns[key] = time.time() + 60.0
++                            self.nvidia_pool.mark_cooldown(key, 60.0)
+                         if any(
+                             t in err_str.lower()
+                             for t in (
+@@ -572,7 +632,7 @@
+                             continue  # Try next model or key if rate-limited or invalid model
+ 
+         # ── Step 4: Fallback to OpenRouter if a key is present ───────────────
+-        openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
++        openrouter_key = self.runtime_env.get("OPENROUTER_API_KEY", "")
+         if openrouter_key:
+             try:
+                 or_client = OpenAI(
+@@ -585,7 +645,7 @@
+                 if or_kwargs.get("max_tokens", 16384) > 8192:
+                     or_kwargs["max_tokens"] = 8192
+                 openrouter_model = (
+-                    os.environ.get("NEXUS_OPENROUTER_MODEL", "").strip()
++                    self.runtime_env.get("NEXUS_OPENROUTER_MODEL", "").strip()
+                     or self.custom_model
+                     or model_id
+                 )
+--- a/nexus/benchmark.py
++++ b/nexus/benchmark.py
+@@ -326,10 +326,12 @@
+         *,
+         artifact_root: str | Path | None = None,
+         keep_workspaces: bool = False,
++        enforce_backend_preflight: bool = False,
+     ):
+         self.suite = suite
+         self.artifact_root = Path(artifact_root).expanduser().resolve() if artifact_root else None
+         self.keep_workspaces = bool(keep_workspaces)
++        self.enforce_backend_preflight = bool(enforce_backend_preflight)
+         if self.artifact_root:
+             self.artifact_root.mkdir(parents=True, exist_ok=True)
+ 
+@@ -356,8 +358,12 @@
+     def run(self, *, dry_run: bool = False) -> BenchmarkReport:
+         started = _utc_now()
+         probe = None if dry_run else self._preflight()
+-
+-        if probe is not None and not probe.ready:
++        # Programmatic suites may validate the execution harness with a mocked
++        # process gateway. CLI runs opt in explicitly, while an explicitly selected
++        # model always requires a real compatibility probe.
++        enforce_preflight = self.enforce_backend_preflight or bool(os.environ.get("NEXUS_MODEL"))
++
++        if probe is not None and not probe.ready and enforce_preflight:
+             results = [
+                 BenchmarkTaskResult(
+                     task_id=task.id,
+--- a/nexus/capabilities.py
++++ b/nexus/capabilities.py
+@@ -91,6 +91,16 @@
+         frozenset({ToolCapability.FS_READ}),
+         "Unified diff between two files",
+     ),
++    "read_notebook": ToolCapabilityDeclaration(
++        "read_notebook",
++        frozenset({ToolCapability.FS_READ}),
++        "Read Jupyter notebook cells without executing them",
++    ),
++    "edit_notebook_cell": ToolCapabilityDeclaration(
++        "edit_notebook_cell",
++        frozenset({ToolCapability.FS_READ, ToolCapability.FS_WRITE}),
++        "Edit one Jupyter notebook cell with mutation tracking",
++    ),
+     # Search tools
+     "search_code": ToolCapabilityDeclaration(
+         "search_code",
+--- a/nexus/cli.py
++++ b/nexus/cli.py
+@@ -506,6 +506,7 @@
+             suite,
+             artifact_root=benchmark_args.artifact_dir,
+             keep_workspaces=benchmark_args.keep_workspaces,
++            enforce_backend_preflight=not benchmark_args.dry_run,
+         ).run(dry_run=benchmark_args.dry_run)
+     except (OSError, ValueError, json.JSONDecodeError) as exc:
+         print(f"Error: {exc}", file=sys.stderr)
+@@ -1219,13 +1220,13 @@
+ 
+     from nexus.api import _load_env_file
+ 
+-    _load_env_file()
+-    api_key = args.api_key or os.environ.get("NVIDIA_API_KEY")
++    runtime_env = _load_env_file()
++    api_key = args.api_key or runtime_env.get("NVIDIA_API_KEY")
+     has_hosted_key = bool(
+         api_key
+-        or os.environ.get("NEXUS_OPENAI_API_KEY")
+-        or os.environ.get("GROQ_API_KEY")
+-        or os.environ.get("OPENROUTER_API_KEY")
++        or runtime_env.get("NEXUS_OPENAI_API_KEY")
++        or runtime_env.get("GROQ_API_KEY")
++        or runtime_env.get("OPENROUTER_API_KEY")
+     )
+     is_local_nova = model_cfg.get("backend") == "nova"
+     if not has_hosted_key and not is_local_nova:
+--- a/nexus/code_validation.py
++++ b/nexus/code_validation.py
+@@ -131,7 +131,11 @@
+             workspace=self.workspace_dir,
+             timeout_seconds=self.timeout,
+             env_additions={"PYTHONDONTWRITEBYTECODE": "1", "CI": "true"},
+-            isolation_policy="required",
++            # Syntax/compile checks are parser-layer validation. They still use
++            # the typed gateway with network denied, but do not depend on a
++            # platform-specific native sandbox being installed.
++            isolation_policy="optional",
++            network_policy="deny",
+         )
+         result = ProcessExecutionGateway.run(request)
+         if result.timed_out:
+--- a/nexus/hooks/runner.py
++++ b/nexus/hooks/runner.py
+@@ -48,8 +48,16 @@
+                 pass
+     """
+ 
+-    def __init__(self, working_dir: str = ""):
++    def __init__(
++        self,
++        working_dir: str = "",
++        *,
++        require_os_isolation: bool = False,
++        allow_network: bool = False,
++    ):
+         self.working_dir = working_dir
++        self.require_os_isolation = bool(require_os_isolation)
++        self.allow_network = bool(allow_network)
+         self._hooks: list[BaseHook] = []
+ 
+     def register(self, hook: BaseHook):
+@@ -198,8 +206,8 @@
+             command=command,
+             workspace=cwd,
+             timeout_seconds=30,
+-            isolation_policy="required",
+-            network_policy="allow", # Hooks might need network access
++            isolation_policy="required" if self.require_os_isolation else "optional",
++            network_policy="allow" if self.allow_network else "deny",
+         )
+         result = ProcessExecutionGateway.run(request)
+ 
+--- a/nexus/memory.py
++++ b/nexus/memory.py
+@@ -128,23 +128,30 @@
+     old_messages = messages[:-keep_recent]
+     recent_messages = messages[-keep_recent:]
+ 
+-    # Build a summary of old messages
+-    summary_parts = []
+-    for msg in old_messages:
+-        role = msg.get("role", "unknown")
+-        content = msg.get("content", "")
+-        if role == "user" and content:
+-            summary_parts.append(f"User asked: {content[:200]}")
+-        elif role == "assistant" and content:
+-            summary_parts.append(f"Assistant: {content[:200]}")
+-        elif role == "tool":
+-            tool_id = msg.get("tool_call_id", "")
+-            summary_parts.append(f"Tool result for {tool_id}: {content[:100]}")
++    # Preserve decisions, exact paths, commands and failures. This is deterministic
++    # compaction, not a semantic model summary, so it must fail by retaining too much.
++    summary_parts: list[str] = []
++    per_message_limit = 1_500
++    for index, msg in enumerate(old_messages):
++        role = str(msg.get("role", "unknown"))
++        content = str(msg.get("content", "") or "").strip()
++        if not content:
++            continue
++        tool_id = str(msg.get("tool_call_id", "") or "")
++        label = f"{index:04d} {role}"
++        if tool_id:
++            label += f" tool_call_id={tool_id}"
++        excerpt = (
++            content
++            if len(content) <= per_message_limit
++            else content[:per_message_limit] + "\n[…truncated at message boundary…]"
++        )
++        summary_parts.append(f"## {label}\n{excerpt}")
+ 
+     summary_text = (
+-        "[CONVERSATION SUMMARY — Earlier messages have been compacted]\n\n"
+-        + "\n".join(summary_parts[-20:])  # Keep last 20 summary entries
+-        + "\n\n[END SUMMARY — Recent messages follow]"
++        "[CONVERSATION SUMMARY — STRUCTURED ARCHIVE; exact recent messages follow]\n\n"
++        + "\n\n".join(summary_parts[-80:])
++        + "\n\n[END STRUCTURED ARCHIVE]"
+     )
+ 
+     compacted = [{"role": "user", "content": summary_text}]
+--- a/nexus/pipeline.py
++++ b/nexus/pipeline.py
+@@ -153,11 +153,43 @@
+         stage_results = result.stage_results
+ 
+         # ── Stage 1: Repo Understanding ───────────────────────────────────────
+-        stage_results.append(self._stage_repo_understanding())
++        repo_result = self._stage_repo_understanding()
++        stage_results.append(repo_result)
+ 
+         # ── Stage 2: Planning ─────────────────────────────────────────────────
+         analysis, plan, planning_result = self._stage_planning(user_input)
+         stage_results.append(planning_result)
++
++        if not planning_result.success:
++            self._agent._begin_managed_run(user_input, analysis, plan)
++            response = f"BLOCKED: Planning failed safely: {planning_result.error}"
++            report = self._agent._run_finalizer.finish(
++                response, [], status_override=RunStatus.BLOCKED
++            )
++            result.response = response
++            result.status = report.get("status", RunStatus.BLOCKED.value)
++            result.outcome = report.get("outcome", "BLOCKED_BY_PLANNING")
++            result.total_duration_ms = int((time.monotonic() - pipeline_start) * 1000)
++            return result
++
++        intent_value = getattr(analysis.get("intent"), "value", analysis.get("intent", "unknown"))
++        difficulty_value = getattr(
++            analysis.get("difficulty"), "value", analysis.get("difficulty", "trivial")
++        )
++        repo_required = intent_value in {
++            "build", "fix", "refactor", "migrate", "security", "optimize", "test"
++        } and difficulty_value in {"complex", "massive"}
++        if repo_required and not repo_result.success:
++            self._agent._begin_managed_run(user_input, analysis, plan)
++            response = f"BLOCKED: Repository understanding is required for this task: {repo_result.error}"
++            report = self._agent._run_finalizer.finish(
++                response, [], status_override=RunStatus.BLOCKED
++            )
++            result.response = response
++            result.status = report.get("status", RunStatus.BLOCKED.value)
++            result.outcome = report.get("outcome", "BLOCKED_BY_REPOSITORY_UNDERSTANDING")
++            result.total_duration_ms = int((time.monotonic() - pipeline_start) * 1000)
++            return result
+ 
+         # ── Stage 3: Context Selection ────────────────────────────────────────
+         stage_results.append(self._stage_context_selection(user_input))
+@@ -252,14 +284,8 @@
+         """Refresh the repository graph index if stale."""
+         t = time.monotonic()
+         try:
+-            if not (Path(self._agent.working_dir) / ".git").exists():
+-                return StageResult(
+-                    stage=PipelineStage.REPO_UNDERSTANDING,
+-                    success=True,
+-                    duration_ms=int((time.monotonic() - t) * 1000),
+-                    metadata={"refreshed": False, "reason": "Not a git repository"},
+-                )
+-            
++            # Repository intelligence is source-tree based, not Git based. Archives,
++            # generated projects and benchmark copies require the same understanding.
+             updated = self._agent.repo_graph.build(force=False)
+             return StageResult(
+                 stage=PipelineStage.REPO_UNDERSTANDING,
+@@ -329,9 +355,12 @@
+                     verification,
+                 )
+                 for step in plan.steps:
+-                    step.acceptance_criteria = list(plan.acceptance_criteria)
++                    if not step.acceptance_criteria:
++                        step.acceptance_criteria = self._agent.planner._step_acceptance_criteria(
++                            step, plan.acceptance_criteria
++                        )
+                     if step.checks:
+-                        step.checks = list(verification)
++                        step.checks = list(dict.fromkeys(step.checks))
+             return (
+                 analysis,
+                 plan,
+@@ -346,16 +375,21 @@
+                 ),
+             )
+         except Exception as exc:
+-            self._logger.warning("Planning stage error (continuing): %s", exc)
++            self._logger.exception("Planning stage failed closed")
+             return (
+-                {"intent": "unknown", "plan_type": "direct", "skills_needed": []},
++                {
++                    "intent": "unknown",
++                    "difficulty": "complex",
++                    "plan_type": "blocked",
++                    "skills_needed": [],
++                },
+                 None,
+                 StageResult(
+                     stage=PipelineStage.PLANNING,
+                     success=False,
+                     duration_ms=int((time.monotonic() - t) * 1000),
+-                    metadata={"degraded": True},
+-                    error=str(exc),
++                    metadata={"degraded": False, "fail_closed": True},
++                    error=f"{type(exc).__name__}: {exc}",
+                 ),
+             )
+ 
+--- a/nexus/planner.py
++++ b/nexus/planner.py
+@@ -153,9 +153,9 @@
+     budgets: dict[str, int | float | None] = field(
+         default_factory=lambda: {
+             "max_tool_calls": 50,
+-            "max_hosted_calls": None,
+-            "max_prompt_tokens": None,
+-            "max_completion_tokens": None,
++            "max_hosted_calls": 24,
++            "max_prompt_tokens": 1_000_000,
++            "max_completion_tokens": 200_000,
+             "max_cost_usd": None,
+         }
+     )
+@@ -246,9 +246,9 @@
+                 "budgets",
+                 {
+                     "max_tool_calls": 50,
+-                    "max_hosted_calls": None,
+-                    "max_prompt_tokens": None,
+-                    "max_completion_tokens": None,
++                    "max_hosted_calls": 24,
++                    "max_prompt_tokens": 1_000_000,
++                    "max_completion_tokens": 200_000,
+                     "max_cost_usd": None,
+                 },
+             ),
+@@ -678,7 +678,8 @@
+ 
+         # Enforce repo_understanding if the codebase is large
+         if repo_summary and (
+-            repo_summary.get("total_files", 0) > 10 or repo_summary.get("total_symbols", 0) > 50
++            int(repo_summary.get("total_files", repo_summary.get("files", 0)) or 0) > 10
++            or int(repo_summary.get("total_symbols", repo_summary.get("symbols", 0)) or 0) > 50
+         ):
+             from nexus.planner import PlanStep
+ 
+@@ -704,9 +705,10 @@
+ 
+         for step in steps:
+             step.permitted_files = list(permitted_files)
+-            step.acceptance_criteria = list(
+-                dict.fromkeys([*step.acceptance_criteria, *acceptance])
+-            )
++            if not step.acceptance_criteria:
++                step.acceptance_criteria = self._step_acceptance_criteria(step, acceptance)
++            else:
++                step.acceptance_criteria = list(dict.fromkeys(step.acceptance_criteria))
+             if "test" in step.title.lower() or "verify" in step.title.lower():
+                 step.checks = list(dict.fromkeys([*step.checks, *verification]))
+             step.risk = self._step_risk(step, intent)
+@@ -755,9 +757,15 @@
+                         Difficulty.COMPLEX: 75,
+                     }.get(difficulty, 15)
+                 ),
+-                "max_hosted_calls": None,
+-                "max_prompt_tokens": None,
+-                "max_completion_tokens": None,
++                "max_hosted_calls": (
++                    80 if difficulty == Difficulty.MASSIVE else 40 if difficulty == Difficulty.COMPLEX else 24
++                ),
++                "max_prompt_tokens": (
++                    4_000_000 if difficulty == Difficulty.MASSIVE else 2_000_000 if difficulty == Difficulty.COMPLEX else 1_000_000
++                ),
++                "max_completion_tokens": (
++                    800_000 if difficulty == Difficulty.MASSIVE else 400_000 if difficulty == Difficulty.COMPLEX else 200_000
++                ),
+                 "max_cost_usd": None,
+             },
+         )
+@@ -1374,6 +1382,29 @@
+         )
+ 
+     @staticmethod
++    def _step_acceptance_criteria(step: PlanStep, plan_criteria: list[str]) -> list[str]:
++        """Bind only criteria relevant to this step; system criteria remain plan-level."""
++        title = f"{step.title} {step.description}".lower()
++        selected: list[str] = []
++        for criterion in plan_criteria:
++            lowered = criterion.lower()
++            if "unrelated files" in lowered or "fingerprinted" in lowered:
++                selected.append(criterion)
++            elif any(word in title for word in ("test", "verify", "quality")) and any(
++                word in lowered for word in ("test", "build", "lint", "type", "verification")
++            ):
++                selected.append(criterion)
++            elif any(word in title for word in ("security", "auth", "permission")) and any(
++                word in lowered for word in ("security", "vulnerab", "permission")
++            ):
++                selected.append(criterion)
++            elif any(word in title for word in ("implement", "build", "fix", "refactor", "migrate")) and (
++                "requested objective is implemented" in lowered
++            ):
++                selected.append(criterion)
++        return list(dict.fromkeys(selected or ["Step output is produced and linked to fresh evidence."]))
++
++    @staticmethod
+     def _step_risk(step: PlanStep, intent: IntentType) -> str:
+         text = f"{step.title} {step.description}".lower()
+         high_risk_terms = (
+--- a/nexus/preflight.py
++++ b/nexus/preflight.py
+@@ -117,6 +117,15 @@
+                 detail="NEXUS_OPENAI_BASE_URL must be an absolute HTTP(S) URL.",
+                 remediation=("Use a URL such as https://provider.example/v1.",),
+             )
++        loopback_hosts = {"localhost", "127.0.0.1", "::1"}
++        if parsed.scheme == "http" and parsed.hostname not in loopback_hosts:
++            return BackendProbe(
++                ready=False,
++                backend="hosted",
++                code="plaintext_remote_endpoint",
++                detail="Remote custom provider endpoints must use HTTPS; HTTP is allowed only for loopback hosts.",
++                remediation=("Use HTTPS or route the provider through localhost.",),
++            )
+     if custom_url and not os.environ.get("NEXUS_OPENAI_API_KEY"):
+         return BackendProbe(
+             ready=False,
+--- a/nexus/repo_graph.py
++++ b/nexus/repo_graph.py
+@@ -592,6 +592,9 @@
+             "generated_at": self.generated_at,
+             "files": len(self.files),
+             "symbols": symbols,
++            # Stable aliases retained for planner/backward compatibility.
++            "total_files": len(self.files),
++            "total_symbols": symbols,
+             "imports": imports,
+             "tests": tests,
+             "routes": routes,
+--- a/nexus/run_finalizer.py
++++ b/nexus/run_finalizer.py
+@@ -300,7 +300,8 @@
+         """Evaluate evidence and write a machine-readable final report."""
+         if not self._agent.run_ledger.turn_dir:
+             return {}
+-        evidence = self._agent.evidence.records()[getattr(self, "_turn_evidence_start", 0) :]
++        evidence_start = max(0, int(getattr(self._agent, "_turn_evidence_start", 0)))
++        evidence = self._agent.evidence.records()[evidence_start:]
+         mutation_records = self._agent._effective_evidence(evidence, "file_mutation")
+         verification_records = self._agent._effective_evidence(evidence, "verification_check")
+         effective_state_ids = {
+@@ -316,11 +317,46 @@
+         successful_command_text = {
+             item.get("command", "") for item in passing_commands if item.get("command")
+         }
+-        latest_behavioral_status = {
+-            item.get("tool", ""): item.get("status")
+-            for item in evidence
+-            if item.get("kind") == "behavioral_verification"
+-        }
++        def evidence_identity(item: dict[str, Any]) -> tuple[str, str, str, str, str]:
++            """Identify a logical evidence operation without merging unrelated work.
++
++            Evidence record IDs are append-only event IDs, not retry identities. Prefer an
++            explicit operation ID; otherwise bind retries to the same step, criterion, target,
++            and tool/command. This lets a later successful retry supersede the matching failure
++            while preserving failures against different files or criteria.
++            """
++            metadata = item.get("metadata", {}) or {}
++            explicit_id = metadata.get("operation_id") or item.get("operation_id")
++            target = (
++                metadata.get("path")
++                or metadata.get("file_path")
++                or metadata.get("target")
++                or metadata.get("url")
++                or ""
++            )
++            action = item.get("tool") or item.get("command") or item.get("kind") or ""
++            logical_id = explicit_id or json.dumps(
++                {
++                    "action": action,
++                    "target": target,
++                    "arguments": metadata.get("arguments", {}),
++                },
++                sort_keys=True,
++                separators=(",", ":"),
++                default=str,
++            )
++            return (
++                str(logical_id),
++                str(metadata.get("step_id") or item.get("step_id") or ""),
++                str(metadata.get("criterion_id") or item.get("criterion_id") or ""),
++                str(target),
++                str(action),
++            )
++
++        latest_behavioral_status: dict[tuple[str, str, str, str, str], str] = {}
++        for item in evidence:
++            if item.get("kind") == "behavioral_verification":
++                latest_behavioral_status[evidence_identity(item)] = str(item.get("status", ""))
+         failed_evidence = [
+             item
+             for item in evidence
+@@ -335,7 +371,7 @@
+             )
+             and not (
+                 item.get("kind") == "behavioral_verification"
+-                and latest_behavioral_status.get(item.get("tool", "")) == "verified"
++                and latest_behavioral_status.get(evidence_identity(item)) == "verified"
+             )
+         ]
+         verified_mutations = [item for item in mutation_records if item.get("status") == "verified"]
+@@ -486,10 +522,45 @@
+         # Autonomous execution is iterative: a failed command or edit attempt
+         # is not an unresolved run failure when a later call to that tool
+         # succeeds and final deterministic verification passes.
+-        latest_tool_events: dict[str, dict[str, Any]] = {}
+-        for item in events or []:
++        def event_identity(item: dict[str, Any], index: int) -> tuple[str, str, str, str, str]:
++            """Return the logical identity of a tool call for retry reconciliation.
++
++            Tool-call IDs are preferred when the runtime supplies a stable operation ID. When
++            it does not, canonical arguments provide a deterministic retry key. Consequently,
++            rerunning the same failing pytest command can clear that failure, but successfully
++            editing README.md can never conceal a failed edit of auth.py.
++            """
++            metadata = item.get("metadata", {}) or {}
++            name = str(item.get("name") or "unknown")
++            arguments = item.get("args", {}) or {}
++            explicit_id = item.get("operation_id") or metadata.get("operation_id")
++            canonical_args = json.dumps(
++                arguments,
++                sort_keys=True,
++                separators=(",", ":"),
++                default=str,
++            )
++            logical_id = str(explicit_id or f"{name}:{canonical_args}")
++            path = (
++                item.get("path")
++                or metadata.get("path")
++                or (arguments.get("path") if isinstance(arguments, dict) else "")
++                or ""
++            )
++            return (
++                logical_id,
++                str(item.get("step_id") or metadata.get("step_id") or ""),
++                str(item.get("criterion_id") or metadata.get("criterion_id") or ""),
++                str(path),
++                name,
++            )
++
++        # Preserve every distinct operation. A later README edit must not hide an
++        # earlier failed auth.py edit merely because both used ``edit_file``.
++        latest_tool_events: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
++        for index, item in enumerate(events or []):
+             if item.get("type") == "tool_call":
+-                latest_tool_events[str(item.get("name", "unknown"))] = item
++                latest_tool_events[event_identity(item, index)] = item
+         event_failures = [
+             item for item in latest_tool_events.values() if not item.get("success", False)
+         ]
+@@ -592,6 +663,49 @@
+                 return 0
+             return sum(item.get("kind") == kind for item in records)
+ 
++        def is_test_command(command: str) -> bool:
++            lowered = f" {str(command).lower()} "
++            markers = (
++                " pytest ",
++                " py.test ",
++                " unittest ",
++                " npm test",
++                " npm run test",
++                " pnpm test",
++                " yarn test",
++                " vitest",
++                " jest",
++                " cargo test",
++                " go test",
++                " dotnet test",
++                " mvn test",
++                " gradle test",
++                " gradlew test",
++            )
++            return any(marker in lowered for marker in markers)
++
++        test_verification_records = [
++            item
++            for item in verification_records
++            if item.get("metadata", {}).get("check_type") == "test"
++        ]
++        declared_test_commands = {
++            str(item.get("command", ""))
++            for item in test_verification_records
++            if item.get("command")
++        }
++        test_command_records = [
++            item
++            for item in command_records
++            if is_test_command(item.get("command", ""))
++            or str(item.get("command", "")) in declared_test_commands
++        ]
++        test_commands = {
++            str(item.get("command", ""))
++            for item in [*test_verification_records, *test_command_records]
++            if item.get("command")
++        }
++
+         report = self._agent.run_ledger.finalize(
+             run_status,
+             objective=self._agent._active_objective,
+@@ -601,7 +715,15 @@
+             checks=checks,
+             costs=self._agent.budget.snapshot(),
+             risks=risks,
+-            work_completed=[f"Updated {Path(item['filepath']).name}" for item in changes],
++            work_completed=[
++                (
++                    f"{item.get('description') or item.get('tool', 'Updated')} "
++                    f"{Path(item['filepath']).relative_to(Path(self._agent.working_dir)).as_posix()}"
++                    if _is_relative_to(Path(item["filepath"]), Path(self._agent.working_dir))
++                    else f"{item.get('description') or item.get('tool', 'Updated')} {item['filepath']}"
++                )
++                for item in changes
++            ],
+             checks_skipped=[
+                 item.criterion
+                 for item in results
+@@ -651,7 +773,12 @@
+                 "model_calls": len(logical_model_calls),
+                 "provider_attempts": len(provider_attempt_records),
+                 "tool_calls": jsonl_count("tool_calls.jsonl"),
+-                "tests_executed": len(verification_records),
++                # Count only evidence records that actually represent tests. This avoids
++                # the former bug where lint/build/security checks were mislabeled as tests.
++                "tests_executed": len(test_verification_records) + len(test_command_records),
++                "unique_test_commands": len(test_commands),
++                "verification_records": len(verification_records),
++                "evidence_start": evidence_start,
+                 "criteria_satisfied": sum(
+                     item.status == CriterionStatus.SATISFIED for item in results
+                 ),
+--- a/nexus/sandbox.py
++++ b/nexus/sandbox.py
+@@ -207,9 +207,14 @@
+         if not self.workspace.is_dir():
+             raise ValueError(f"Sandbox workspace does not exist: {self.workspace}")
+ 
++    @classmethod
++    def reset_backend_cache(cls) -> None:
++        """Invalidate process-wide backend detection after environment changes."""
++        cls._backend_cache = None
++
+     def backend(self) -> SandboxBackend:
+-        if self._backend_cache is not None:
+-            return self._backend_cache
++        if type(self)._backend_cache is not None:
++            return type(self)._backend_cache
+         system = platform.system().lower()
+         selected = SandboxBackend.RESTRICTED
+         if system == "linux" and shutil.which("bwrap") and self._probe_bubblewrap():
+--- a/scripts/run_release_gate.py
++++ b/scripts/run_release_gate.py
+@@ -147,6 +147,50 @@
+     return [*installer, "--no-deps", "--target", str(target), str(wheel)]
+ 
+ 
++def run_persistent_pytest(
++    python: str,
++    *,
++    env: dict[str, str],
++    repo: Path = REPO,
++) -> tuple[int, int]:
++    """Run the complete suite in one process to detect lifecycle contamination."""
++    import re
++
++    timeout_seconds = int(os.environ.get("NEXUS_PERSISTENT_TEST_TIMEOUT", "600"))
++    command = [
++        python,
++        "-m",
++        "pytest",
++        "-q",
++        "--disable-warnings",
++    ]
++    print("\n==> persistent single-process pytest suite", flush=True)
++    try:
++        result = subprocess.run(
++            command,
++            cwd=repo,
++            env=env,
++            capture_output=True,
++            text=True,
++            timeout=timeout_seconds,
++        )
++    except subprocess.TimeoutExpired as exc:
++        raise RuntimeError(
++            f"persistent pytest suite exceeded {timeout_seconds}s; possible leaked process/thread"
++        ) from exc
++    print(result.stdout, end="")
++    if result.returncode != 0:
++        print(result.stderr, file=sys.stderr)
++        raise RuntimeError(
++            f"persistent pytest suite failed with exit code {result.returncode}"
++        )
++    passed = re.search(r"(\d+) passed", result.stdout)
++    skipped = re.search(r"(\d+) skipped", result.stdout)
++    if not passed:
++        raise RuntimeError("persistent pytest suite reported no passing tests")
++    return int(passed.group(1)), int(skipped.group(1)) if skipped else 0
++
++
+ def run_pytest_shards(
+     python: str,
+     *,
+@@ -254,11 +298,23 @@
+     assert_dependency_mirror()
+     run([python, "-m", "ruff", "check", "nexus", "tests", "scripts"], env=offline_env)
+     
+-    test_count, skipped_count = run_pytest_shards(
++    persistent_count, persistent_skipped = run_persistent_pytest(
+         python,
+         env=offline_env,
+         repo=REPO,
+     )
++    sharded_count, sharded_skipped = run_pytest_shards(
++        python,
++        env=offline_env,
++        repo=REPO,
++    )
++    if (persistent_count, persistent_skipped) != (sharded_count, sharded_skipped):
++        raise RuntimeError(
++            "persistent and isolated test counts disagree: "
++            f"persistent={persistent_count}/{persistent_skipped} "
++            f"isolated={sharded_count}/{sharded_skipped}"
++        )
++    test_count, skipped_count = persistent_count, persistent_skipped
+     minimum_tests = int(os.environ.get("NEXUS_RELEASE_MIN_TESTS", "400"))
+     if test_count < minimum_tests:
+         raise RuntimeError(
+--- a/tests/test_audit_blockers_fixed.py
++++ b/tests/test_audit_blockers_fixed.py
+@@ -0,0 +1,111 @@
++from __future__ import annotations
++
++from types import SimpleNamespace
++
++from nexus.agent import Agent
++from nexus.pipeline import ExecutionPipeline
++from nexus.planner import Difficulty, IntentType, PlanningEngine
++from nexus.preflight import probe_hosted
++from nexus.run_state import RunStatus
++
++
++def test_repo_summary_aliases_activate_large_repo_planning(tmp_path):
++    for index in range(12):
++        (tmp_path / f"m{index}.py").write_text(f"def f{index}():\n    return {index}\n")
++    agent = Agent(api_key="dummy", working_dir=str(tmp_path), workspace_isolation=False)
++    agent.repo_graph.build(force=True)
++    summary = agent.repo_graph.summary()
++    assert summary["files"] == summary["total_files"]
++    assert summary["symbols"] == summary["total_symbols"]
++    analysis = {
++        "intent": IntentType.REFACTOR,
++        "difficulty": Difficulty.COMPLEX,
++        "skills_needed": ["backend"],
++    }
++    plan = agent.planner.create_plan("Refactor modules safely", analysis, repo_summary=summary)
++    assert plan.steps[0].title == "Understand Repository (Mandatory)"
++
++
++def test_non_git_workspace_is_indexed(tmp_path):
++    (tmp_path / "app.py").write_text("VALUE = 1\n")
++    agent = Agent(api_key="dummy", working_dir=str(tmp_path), workspace_isolation=False)
++    result = ExecutionPipeline(agent)._stage_repo_understanding()
++    assert result.success is True
++    assert agent.repo_graph.summary()["files"] >= 1
++
++
++def test_planning_failure_fails_closed(tmp_path, monkeypatch):
++    agent = Agent(api_key="dummy", working_dir=str(tmp_path), workspace_isolation=False)
++    def fail(_prompt):
++        raise RuntimeError("boom")
++    monkeypatch.setattr(agent.planner, "analyze", fail)
++    result = ExecutionPipeline(agent).run("Refactor authentication across the repository")
++    assert result.status == RunStatus.BLOCKED.value
++    assert result.response.startswith("BLOCKED: Planning failed safely")
++
++
++def test_finalizer_uses_agent_turn_evidence_marker(tmp_path):
++    agent = Agent(api_key="dummy", working_dir=str(tmp_path), workspace_isolation=False)
++    agent.evidence.append(
++        kind="verification_check",
++        claim="old pass",
++        status="verified",
++        metadata={"check_type": "test"},
++    )
++    analysis = {
++        "intent": IntentType.TEST,
++        "difficulty": Difficulty.SIMPLE,
++        "plan_type": "direct",
++        "skills_needed": [],
++    }
++    agent._begin_managed_run("new turn", analysis, None)
++    report = agent._run_finalizer.finish("done", [])
++    assert report["metadata"]["evidence_start"] == 1
++    assert report["metadata"]["verification_records"] == 0
++    assert report["status"] != RunStatus.VERIFIED.value
++
++
++def test_remote_plain_http_provider_is_rejected(monkeypatch):
++    monkeypatch.setenv("NEXUS_OPENAI_BASE_URL", "http://provider.example/v1")
++    monkeypatch.setenv("NEXUS_OPENAI_API_KEY", "x")
++    probe = probe_hosted()
++    assert probe.ready is False
++    assert probe.code == "plaintext_remote_endpoint"
++
++
++def test_step_criteria_remain_narrow():
++    planner = PlanningEngine()
++    criteria = [
++        "The requested objective is implemented.",
++        "Project tests pass.",
++        "No unrelated files are changed.",
++    ]
++    step = SimpleNamespace(title="Implement token validation", description="Change auth behavior")
++    selected = planner._step_acceptance_criteria(step, criteria)
++    assert "The requested objective is implemented." in selected
++    assert "Project tests pass." not in selected
++    assert "No unrelated files are changed." in selected
++
++
++def test_project_dotenv_does_not_mutate_parent_environment(tmp_path, monkeypatch):
++    from nexus.api import _load_env_file
++
++    monkeypatch.chdir(tmp_path)
++    monkeypatch.delenv("MALICIOUS_REPO_VALUE", raising=False)
++    (tmp_path / ".env").write_text("MALICIOUS_REPO_VALUE=owned\n", encoding="utf-8")
++
++    runtime_env = _load_env_file()
++
++    assert "MALICIOUS_REPO_VALUE" not in runtime_env
++    assert "MALICIOUS_REPO_VALUE" not in __import__("os").environ
++
++
++def test_abandoned_stream_finalizes_provider_telemetry():
++    from nexus.api import _ObservedStream
++
++    statuses = []
++    stream = _ObservedStream(iter([object(), object()]), lambda status, _meta: statuses.append(status))
++    next(iter(stream))
++    stream.close()
++
++    assert statuses == ["cancelled"]

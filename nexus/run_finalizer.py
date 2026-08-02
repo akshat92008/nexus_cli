@@ -300,7 +300,8 @@ class RunFinalizer:
         """Evaluate evidence and write a machine-readable final report."""
         if not self._agent.run_ledger.turn_dir:
             return {}
-        evidence = self._agent.evidence.records()[getattr(self, "_turn_evidence_start", 0) :]
+        evidence_start = max(0, int(getattr(self._agent, "_turn_evidence_start", 0)))
+        evidence = self._agent.evidence.records()[evidence_start:]
         mutation_records = self._agent._effective_evidence(evidence, "file_mutation")
         verification_records = self._agent._effective_evidence(evidence, "verification_check")
         effective_state_ids = {
@@ -316,11 +317,46 @@ class RunFinalizer:
         successful_command_text = {
             item.get("command", "") for item in passing_commands if item.get("command")
         }
-        latest_behavioral_status = {
-            item.get("tool", ""): item.get("status")
-            for item in evidence
-            if item.get("kind") == "behavioral_verification"
-        }
+        def evidence_identity(item: dict[str, Any]) -> tuple[str, str, str, str, str]:
+            """Identify a logical evidence operation without merging unrelated work.
+
+            Evidence record IDs are append-only event IDs, not retry identities. Prefer an
+            explicit operation ID; otherwise bind retries to the same step, criterion, target,
+            and tool/command. This lets a later successful retry supersede the matching failure
+            while preserving failures against different files or criteria.
+            """
+            metadata = item.get("metadata", {}) or {}
+            explicit_id = metadata.get("operation_id") or item.get("operation_id")
+            target = (
+                metadata.get("path")
+                or metadata.get("file_path")
+                or metadata.get("target")
+                or metadata.get("url")
+                or ""
+            )
+            action = item.get("tool") or item.get("command") or item.get("kind") or ""
+            logical_id = explicit_id or json.dumps(
+                {
+                    "action": action,
+                    "target": target,
+                    "arguments": metadata.get("arguments", {}),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            return (
+                str(logical_id),
+                str(metadata.get("step_id") or item.get("step_id") or ""),
+                str(metadata.get("criterion_id") or item.get("criterion_id") or ""),
+                str(target),
+                str(action),
+            )
+
+        latest_behavioral_status: dict[tuple[str, str, str, str, str], str] = {}
+        for item in evidence:
+            if item.get("kind") == "behavioral_verification":
+                latest_behavioral_status[evidence_identity(item)] = str(item.get("status", ""))
         failed_evidence = [
             item
             for item in evidence
@@ -335,7 +371,7 @@ class RunFinalizer:
             )
             and not (
                 item.get("kind") == "behavioral_verification"
-                and latest_behavioral_status.get(item.get("tool", "")) == "verified"
+                and latest_behavioral_status.get(evidence_identity(item)) == "verified"
             )
         ]
         verified_mutations = [item for item in mutation_records if item.get("status") == "verified"]
@@ -486,10 +522,45 @@ class RunFinalizer:
         # Autonomous execution is iterative: a failed command or edit attempt
         # is not an unresolved run failure when a later call to that tool
         # succeeds and final deterministic verification passes.
-        latest_tool_events: dict[str, dict[str, Any]] = {}
-        for item in events or []:
+        def event_identity(item: dict[str, Any], index: int) -> tuple[str, str, str, str, str]:
+            """Return the logical identity of a tool call for retry reconciliation.
+
+            Tool-call IDs are preferred when the runtime supplies a stable operation ID. When
+            it does not, canonical arguments provide a deterministic retry key. Consequently,
+            rerunning the same failing pytest command can clear that failure, but successfully
+            editing README.md can never conceal a failed edit of auth.py.
+            """
+            metadata = item.get("metadata", {}) or {}
+            name = str(item.get("name") or "unknown")
+            arguments = item.get("args", {}) or {}
+            explicit_id = item.get("operation_id") or metadata.get("operation_id")
+            canonical_args = json.dumps(
+                arguments,
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            logical_id = str(explicit_id or f"{name}:{canonical_args}")
+            path = (
+                item.get("path")
+                or metadata.get("path")
+                or (arguments.get("path") if isinstance(arguments, dict) else "")
+                or ""
+            )
+            return (
+                logical_id,
+                str(item.get("step_id") or metadata.get("step_id") or ""),
+                str(item.get("criterion_id") or metadata.get("criterion_id") or ""),
+                str(path),
+                name,
+            )
+
+        # Preserve every distinct operation. A later README edit must not hide an
+        # earlier failed auth.py edit merely because both used ``edit_file``.
+        latest_tool_events: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
+        for index, item in enumerate(events or []):
             if item.get("type") == "tool_call":
-                latest_tool_events[str(item.get("name", "unknown"))] = item
+                latest_tool_events[event_identity(item, index)] = item
         event_failures = [
             item for item in latest_tool_events.values() if not item.get("success", False)
         ]
@@ -592,6 +663,49 @@ class RunFinalizer:
                 return 0
             return sum(item.get("kind") == kind for item in records)
 
+        def is_test_command(command: str) -> bool:
+            lowered = f" {str(command).lower()} "
+            markers = (
+                " pytest ",
+                " py.test ",
+                " unittest ",
+                " npm test",
+                " npm run test",
+                " pnpm test",
+                " yarn test",
+                " vitest",
+                " jest",
+                " cargo test",
+                " go test",
+                " dotnet test",
+                " mvn test",
+                " gradle test",
+                " gradlew test",
+            )
+            return any(marker in lowered for marker in markers)
+
+        test_verification_records = [
+            item
+            for item in verification_records
+            if item.get("metadata", {}).get("check_type") == "test"
+        ]
+        declared_test_commands = {
+            str(item.get("command", ""))
+            for item in test_verification_records
+            if item.get("command")
+        }
+        test_command_records = [
+            item
+            for item in command_records
+            if is_test_command(item.get("command", ""))
+            or str(item.get("command", "")) in declared_test_commands
+        ]
+        test_commands = {
+            str(item.get("command", ""))
+            for item in [*test_verification_records, *test_command_records]
+            if item.get("command")
+        }
+
         report = self._agent.run_ledger.finalize(
             run_status,
             objective=self._agent._active_objective,
@@ -601,7 +715,15 @@ class RunFinalizer:
             checks=checks,
             costs=self._agent.budget.snapshot(),
             risks=risks,
-            work_completed=[f"Updated {Path(item['filepath']).name}" for item in changes],
+            work_completed=[
+                (
+                    f"{item.get('description') or item.get('tool', 'Updated')} "
+                    f"{Path(item['filepath']).relative_to(Path(self._agent.working_dir)).as_posix()}"
+                    if _is_relative_to(Path(item["filepath"]), Path(self._agent.working_dir))
+                    else f"{item.get('description') or item.get('tool', 'Updated')} {item['filepath']}"
+                )
+                for item in changes
+            ],
             checks_skipped=[
                 item.criterion
                 for item in results
@@ -651,7 +773,12 @@ class RunFinalizer:
                 "model_calls": len(logical_model_calls),
                 "provider_attempts": len(provider_attempt_records),
                 "tool_calls": jsonl_count("tool_calls.jsonl"),
-                "tests_executed": len(verification_records),
+                # Count only evidence records that actually represent tests. This avoids
+                # the former bug where lint/build/security checks were mislabeled as tests.
+                "tests_executed": len(test_verification_records) + len(test_command_records),
+                "unique_test_commands": len(test_commands),
+                "verification_records": len(verification_records),
+                "evidence_start": evidence_start,
                 "criteria_satisfied": sum(
                     item.status == CriterionStatus.SATISFIED for item in results
                 ),

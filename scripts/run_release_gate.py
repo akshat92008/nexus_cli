@@ -147,6 +147,50 @@ def wheel_install_command(python: str, target: Path, wheel: Path) -> list[str]:
     return [*installer, "--no-deps", "--target", str(target), str(wheel)]
 
 
+def run_persistent_pytest(
+    python: str,
+    *,
+    env: dict[str, str],
+    repo: Path = REPO,
+) -> tuple[int, int]:
+    """Run the complete suite in one process to detect lifecycle contamination."""
+    import re
+
+    timeout_seconds = int(os.environ.get("NEXUS_PERSISTENT_TEST_TIMEOUT", "600"))
+    command = [
+        python,
+        "-m",
+        "pytest",
+        "-q",
+        "--disable-warnings",
+    ]
+    print("\n==> persistent single-process pytest suite", flush=True)
+    try:
+        result = subprocess.run(
+            command,
+            cwd=repo,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            f"persistent pytest suite exceeded {timeout_seconds}s; possible leaked process/thread"
+        ) from exc
+    print(result.stdout, end="")
+    if result.returncode != 0:
+        print(result.stderr, file=sys.stderr)
+        raise RuntimeError(
+            f"persistent pytest suite failed with exit code {result.returncode}"
+        )
+    passed = re.search(r"(\d+) passed", result.stdout)
+    skipped = re.search(r"(\d+) skipped", result.stdout)
+    if not passed:
+        raise RuntimeError("persistent pytest suite reported no passing tests")
+    return int(passed.group(1)), int(skipped.group(1)) if skipped else 0
+
+
 def run_pytest_shards(
     python: str,
     *,
@@ -254,11 +298,23 @@ def main() -> int:
     assert_dependency_mirror()
     run([python, "-m", "ruff", "check", "nexus", "tests", "scripts"], env=offline_env)
     
-    test_count, skipped_count = run_pytest_shards(
+    persistent_count, persistent_skipped = run_persistent_pytest(
         python,
         env=offline_env,
         repo=REPO,
     )
+    sharded_count, sharded_skipped = run_pytest_shards(
+        python,
+        env=offline_env,
+        repo=REPO,
+    )
+    if (persistent_count, persistent_skipped) != (sharded_count, sharded_skipped):
+        raise RuntimeError(
+            "persistent and isolated test counts disagree: "
+            f"persistent={persistent_count}/{persistent_skipped} "
+            f"isolated={sharded_count}/{sharded_skipped}"
+        )
+    test_count, skipped_count = persistent_count, persistent_skipped
     minimum_tests = int(os.environ.get("NEXUS_RELEASE_MIN_TESTS", "400"))
     if test_count < minimum_tests:
         raise RuntimeError(

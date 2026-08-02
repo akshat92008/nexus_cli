@@ -441,7 +441,11 @@ class Agent:
             self.skills.register(extension_skill)
 
         # ── Phase 3: Hooks Engine ────────────────────────────────────────
-        self.hooks = HookRunner(self.working_dir)
+        self.hooks = HookRunner(
+            self.working_dir,
+            require_os_isolation=self.mode_policy.require_os_isolation,
+            allow_network=False,
+        )
         for hook in create_builtin_hooks():
             self.hooks.register(hook)
 

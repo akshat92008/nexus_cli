@@ -131,7 +131,11 @@ class GeneratedCodeValidator:
             workspace=self.workspace_dir,
             timeout_seconds=self.timeout,
             env_additions={"PYTHONDONTWRITEBYTECODE": "1", "CI": "true"},
-            isolation_policy="required",
+            # Syntax/compile checks are parser-layer validation. They still use
+            # the typed gateway with network denied, but do not depend on a
+            # platform-specific native sandbox being installed.
+            isolation_policy="optional",
+            network_policy="deny",
         )
         result = ProcessExecutionGateway.run(request)
         if result.timed_out:

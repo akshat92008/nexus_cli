@@ -506,6 +506,7 @@ def _handle_benchmark() -> bool:
             suite,
             artifact_root=benchmark_args.artifact_dir,
             keep_workspaces=benchmark_args.keep_workspaces,
+            enforce_backend_preflight=not benchmark_args.dry_run,
         ).run(dry_run=benchmark_args.dry_run)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -1219,13 +1220,13 @@ def main():
 
     from nexus.api import _load_env_file
 
-    _load_env_file()
-    api_key = args.api_key or os.environ.get("NVIDIA_API_KEY")
+    runtime_env = _load_env_file()
+    api_key = args.api_key or runtime_env.get("NVIDIA_API_KEY")
     has_hosted_key = bool(
         api_key
-        or os.environ.get("NEXUS_OPENAI_API_KEY")
-        or os.environ.get("GROQ_API_KEY")
-        or os.environ.get("OPENROUTER_API_KEY")
+        or runtime_env.get("NEXUS_OPENAI_API_KEY")
+        or runtime_env.get("GROQ_API_KEY")
+        or runtime_env.get("OPENROUTER_API_KEY")
     )
     is_local_nova = model_cfg.get("backend") == "nova"
     if not has_hosted_key and not is_local_nova:

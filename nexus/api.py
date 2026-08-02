@@ -67,9 +67,29 @@ class _ObservedStream:
                 for key in usage:
                     usage[key] = max(usage[key], current[key])
                 yield chunk
-        except BaseException as exc:
+        except GeneratorExit:
+            self._complete(
+                "cancelled",
+                {
+                    "error": "stream abandoned before complete consumption",
+                    "request_id": request_id,
+                    "usage": usage,
+                },
+            )
+            raise
+        except Exception as exc:
             self._complete(
                 "failed",
+                {
+                    "error": str(exc) or type(exc).__name__,
+                    "request_id": request_id,
+                    "usage": usage,
+                },
+            )
+            raise
+        except BaseException as exc:
+            self._complete(
+                "cancelled",
                 {
                     "error": str(exc) or type(exc).__name__,
                     "request_id": request_id,
@@ -80,39 +100,72 @@ class _ObservedStream:
         else:
             self._complete("verified", {"request_id": request_id, "usage": usage})
 
+    def close(self) -> None:
+        """Close an abandoned stream and finalize telemetry exactly once."""
+        close = getattr(self._stream, "close", None)
+        try:
+            if callable(close):
+                close()
+        finally:
+            self._complete("cancelled", {"error": "stream closed before complete consumption"})
+
+    def __enter__(self) -> "_ObservedStream":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        del exc_type, exc, traceback
+        self.close()
+
+    def __del__(self) -> None:
+        if not self._finished:
+            try:
+                self.close()
+            except Exception:
+                # Destructors must never mask interpreter shutdown.
+                pass
+
     def _complete(self, status: str, metadata: dict[str, Any]) -> None:
         if not self._finished:
             self._finished = True
             self._finish(status, metadata)
 
 
-def _load_env_file():
-    """Load local Nexus environment files without overriding process values."""
-    cwd = os.getcwd()
-    checkout = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+def _load_env_file() -> dict[str, str]:
+    """Return an isolated provider environment without mutating ``os.environ``.
+
+    Repository-controlled ``.env`` files are intentionally ignored. Operators can
+    load credentials from the process environment, the Nexus user config files, or
+    an explicit ``NEXUS_ENV_FILE`` path. This prevents an untrusted workspace from
+    changing the parent agent process or its toolchain configuration.
+    """
+    values = dict(os.environ)
+    explicit = os.environ.get("NEXUS_ENV_FILE", "").strip()
     possible_paths = [
-        os.path.join(cwd, ".env"),
-        os.path.join(checkout, ".env"),
+        *( [os.path.expanduser(explicit)] if explicit else [] ),
         os.path.expanduser("~/.config/nexus/.env"),
         os.path.expanduser("~/.nexusai/.env"),
     ]
-    for p in possible_paths:
-        if os.path.exists(p):
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if line and not line.startswith("#") and "=" in line:
-                            k, v = line.split("=", 1)
-                            k, v = k.strip(), v.strip().strip("'\"")
-                            if p == os.path.join(cwd, ".env"):
-                                if k.startswith(("NEXUS_", "OPENAI_", "ANTHROPIC_", "GROQ_", "NVIDIA_", "OPENROUTER_")) or k in {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"}:
-                                    continue
-                            # Explicit process environment wins over repository .env.
-                            # This is required for CLI flags, CI, and isolated tests.
-                            os.environ.setdefault(k, v)
-            except (OSError, TypeError, ValueError):
-                pass
+    if os.environ.get("NEXUS_ALLOW_CHECKOUT_ENV") == "1":
+        checkout = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        possible_paths.append(os.path.join(checkout, ".env"))
+
+    for path in possible_paths:
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, value = line.split("=", 1)
+                    key = key.strip()
+                    if not key or "\x00" in key or "=" in key:
+                        continue
+                    values.setdefault(key, value.strip().strip("'\""))
+        except (OSError, TypeError, ValueError):
+            continue
+    return values
 
 
 class RoundRobinKeyPool:
@@ -129,9 +182,7 @@ class RoundRobinKeyPool:
         self._lock = threading.RLock()
 
     def get_next_key(self) -> str | None:
-        """Select and return the next active round-robin key, skipping cooling-down keys."""
-        wait_time = 0
-        earliest_key = None
+        """Return an active key immediately; never sleep the interactive execution thread."""
         with self._lock:
             if not self.keys:
                 return None
@@ -140,16 +191,26 @@ class RoundRobinKeyPool:
             for offset in range(len(self.keys)):
                 idx = (start_idx + offset) % len(self.keys)
                 key = self.keys[idx]
-                if key not in self.cooldowns or now >= self.cooldowns[key]:
+                if now >= self.cooldowns.get(key, 0):
                     self.current_idx = (idx + 1) % len(self.keys)
+                    self.cooldowns.pop(key, None)
                     return key
-            earliest_key = min(self.keys, key=lambda k: self.cooldowns.get(k, 0))
-            wait_time = max(0, self.cooldowns[earliest_key] - now)
-            self.current_idx = (self.keys.index(earliest_key) + 1) % len(self.keys)
+            return None
 
-        if wait_time > 0:
-            time.sleep(wait_time)
-        return earliest_key
+    def cooldown_status(self) -> dict[str, float]:
+        """Seconds remaining for each cooling key, suitable for structured failover."""
+        now = time.time()
+        with self._lock:
+            return {
+                key: max(0.0, expires - now)
+                for key, expires in self.cooldowns.items()
+                if expires > now
+            }
+
+    def remaining_cooldown(self, key: str) -> float:
+        """Return remaining cooldown seconds for one key without changing selection."""
+        with self._lock:
+            return max(0.0, self.cooldowns.get(key, 0.0) - time.time())
 
     def mark_cooldown(self, key: str, duration: float | None = None):
         """Mark a key as temporarily cooling down (e.g. on HTTP 429 rate limit)."""
@@ -183,41 +244,40 @@ class NvidiaClient:
         attempt_controller: Any = None,
         attempt_observer: Callable[[dict[str, Any]], None] | None = None,
     ):
-        _load_env_file()
-        self.primary_key = api_key or os.environ.get("NVIDIA_API_KEY", "")
+        self.runtime_env = _load_env_file() or dict(os.environ)
+        self.primary_key = api_key or self.runtime_env.get("NVIDIA_API_KEY", "")
         self.api_key = self.primary_key
         self.timeout = timeout
         self._attempt_controller = attempt_controller
         self._attempt_observer = attempt_observer
-        self.custom_base_url = os.environ.get("NEXUS_OPENAI_BASE_URL", "").strip().rstrip("/")
-        self.custom_api_key = os.environ.get("NEXUS_OPENAI_API_KEY", "").strip()
-        self.custom_model = os.environ.get("NEXUS_MODEL_ID", "").strip()
+        self.custom_base_url = self.runtime_env.get("NEXUS_OPENAI_BASE_URL", "").strip().rstrip("/")
+        self.custom_api_key = self.runtime_env.get("NEXUS_OPENAI_API_KEY", "").strip()
+        self.custom_model = self.runtime_env.get("NEXUS_MODEL_ID", "").strip()
 
         # Collect all NVIDIA keys
         self.nvidia_keys = [self.primary_key] if self.primary_key else []
-        for k in sorted(os.environ.keys()):
+        for k in sorted(self.runtime_env):
             if (
                 k.startswith("NVIDIA_FALLBACK_API_KEY") or k.startswith("NVIDIA_API_KEY_")
-            ) and os.environ[k]:
-                self.nvidia_keys.append(os.environ[k])
+            ) and self.runtime_env[k]:
+                self.nvidia_keys.append(self.runtime_env[k])
 
         # Deduplicate keys while preserving insertion order
         self.nvidia_keys = list(dict.fromkeys([k for k in self.nvidia_keys if k]))
         self.current_key_idx = 0
-        self.key_cooldowns = {}
 
-        # Round-Robin Key Pools
+        # Round-Robin Key Pools are the single source of cooldown truth.
         self.nvidia_pool = RoundRobinKeyPool(self.nvidia_keys, cooldown_seconds=60.0)
 
         # Groq key fallback pool
         self.groq_keys = []
-        if os.environ.get("GROQ_API_KEY"):
-            self.groq_keys.append(os.environ["GROQ_API_KEY"])
-        for k in sorted(os.environ.keys()):
+        if self.runtime_env.get("GROQ_API_KEY"):
+            self.groq_keys.append(self.runtime_env["GROQ_API_KEY"])
+        for k in sorted(self.runtime_env):
             if (
                 k.startswith("GROQ_API_KEY_") or k.startswith("GROQ_FALLBACK_API_KEY")
-            ) and os.environ[k]:
-                self.groq_keys.append(os.environ[k])
+            ) and self.runtime_env[k]:
+                self.groq_keys.append(self.runtime_env[k])
         self.groq_keys = list(dict.fromkeys([k for k in self.groq_keys if k]))
         self.groq_key = self.groq_keys[0] if self.groq_keys else ""
         self.groq_pool = RoundRobinKeyPool(self.groq_keys, cooldown_seconds=60.0)
@@ -244,10 +304,10 @@ class NvidiaClient:
                 timeout=DEFAULT_GROQ_TIMEOUT,
                 max_retries=2,
             )
-        elif os.environ.get("OPENROUTER_API_KEY"):
+        elif self.runtime_env.get("OPENROUTER_API_KEY"):
             self.client = OpenAI(
                 base_url=OPENROUTER_BASE_URL,
-                api_key=os.environ["OPENROUTER_API_KEY"],
+                api_key=self.runtime_env["OPENROUTER_API_KEY"],
                 timeout=DEFAULT_GROQ_TIMEOUT,
                 max_retries=2,
             )
@@ -303,8 +363,8 @@ class NvidiaClient:
 
         try:
             response = request()
-        except (OSError, ValueError) as exc:
-            finish("failed", {"error": str(exc)})
+        except Exception as exc:
+            finish("failed", {"error": str(exc) or type(exc).__name__})
             raise
         if streaming:
             return _ObservedStream(response, finish)
@@ -448,7 +508,7 @@ class NvidiaClient:
                     break
                 idx = (start_idx + offset) % len(self.nvidia_keys)
                 key = self.nvidia_keys[idx]
-                if key in self.key_cooldowns and now < self.key_cooldowns[key]:
+                if self.nvidia_pool.remaining_cooldown(key) > 0:
                     continue  # Skip key currently in rate-limit cooldown
                 attempted += 1
                 try:
@@ -472,7 +532,7 @@ class NvidiaClient:
                     if any(
                         t in err_str.lower() for t in ("429", "rate limit", "too many requests")
                     ):
-                        self.key_cooldowns[key] = time.time() + 60.0
+                        self.nvidia_pool.mark_cooldown(key, 60.0)
                     if any(
                         t in err_str.lower()
                         for t in ("timeout", "timed out", "connection", "connect", "unreachable")
@@ -492,7 +552,7 @@ class NvidiaClient:
                 if fb_model == model_id:
                     continue
                 for idx, key in enumerate(self.nvidia_keys):
-                    if key in self.key_cooldowns and now < self.key_cooldowns[key]:
+                    if self.nvidia_pool.remaining_cooldown(key) > 0:
                         continue
                     try:
                         client = self._get_nvidia_client(key)
@@ -516,7 +576,7 @@ class NvidiaClient:
                         if any(
                             t in err_str.lower() for t in ("429", "rate limit", "too many requests")
                         ):
-                            self.key_cooldowns[key] = time.time() + 60.0
+                            self.nvidia_pool.mark_cooldown(key, 60.0)
                         if any(
                             t in err_str.lower()
                             for t in (
@@ -572,7 +632,7 @@ class NvidiaClient:
                             continue  # Try next model or key if rate-limited or invalid model
 
         # ── Step 4: Fallback to OpenRouter if a key is present ───────────────
-        openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
+        openrouter_key = self.runtime_env.get("OPENROUTER_API_KEY", "")
         if openrouter_key:
             try:
                 or_client = OpenAI(
@@ -585,7 +645,7 @@ class NvidiaClient:
                 if or_kwargs.get("max_tokens", 16384) > 8192:
                     or_kwargs["max_tokens"] = 8192
                 openrouter_model = (
-                    os.environ.get("NEXUS_OPENROUTER_MODEL", "").strip()
+                    self.runtime_env.get("NEXUS_OPENROUTER_MODEL", "").strip()
                     or self.custom_model
                     or model_id
                 )

@@ -207,9 +207,14 @@ class SandboxRunner:
         if not self.workspace.is_dir():
             raise ValueError(f"Sandbox workspace does not exist: {self.workspace}")
 
+    @classmethod
+    def reset_backend_cache(cls) -> None:
+        """Invalidate process-wide backend detection after environment changes."""
+        cls._backend_cache = None
+
     def backend(self) -> SandboxBackend:
-        if self._backend_cache is not None:
-            return self._backend_cache
+        if type(self)._backend_cache is not None:
+            return type(self)._backend_cache
         system = platform.system().lower()
         selected = SandboxBackend.RESTRICTED
         if system == "linux" and shutil.which("bwrap") and self._probe_bubblewrap():

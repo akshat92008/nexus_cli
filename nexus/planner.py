@@ -153,9 +153,9 @@ class ExecutionPlan:
     budgets: dict[str, int | float | None] = field(
         default_factory=lambda: {
             "max_tool_calls": 50,
-            "max_hosted_calls": None,
-            "max_prompt_tokens": None,
-            "max_completion_tokens": None,
+            "max_hosted_calls": 24,
+            "max_prompt_tokens": 1_000_000,
+            "max_completion_tokens": 200_000,
             "max_cost_usd": None,
         }
     )
@@ -246,9 +246,9 @@ class ExecutionPlan:
                 "budgets",
                 {
                     "max_tool_calls": 50,
-                    "max_hosted_calls": None,
-                    "max_prompt_tokens": None,
-                    "max_completion_tokens": None,
+                    "max_hosted_calls": 24,
+                    "max_prompt_tokens": 1_000_000,
+                    "max_completion_tokens": 200_000,
                     "max_cost_usd": None,
                 },
             ),
@@ -678,7 +678,8 @@ class PlanningEngine:
 
         # Enforce repo_understanding if the codebase is large
         if repo_summary and (
-            repo_summary.get("total_files", 0) > 10 or repo_summary.get("total_symbols", 0) > 50
+            int(repo_summary.get("total_files", repo_summary.get("files", 0)) or 0) > 10
+            or int(repo_summary.get("total_symbols", repo_summary.get("symbols", 0)) or 0) > 50
         ):
             from nexus.planner import PlanStep
 
@@ -704,9 +705,10 @@ class PlanningEngine:
 
         for step in steps:
             step.permitted_files = list(permitted_files)
-            step.acceptance_criteria = list(
-                dict.fromkeys([*step.acceptance_criteria, *acceptance])
-            )
+            if not step.acceptance_criteria:
+                step.acceptance_criteria = self._step_acceptance_criteria(step, acceptance)
+            else:
+                step.acceptance_criteria = list(dict.fromkeys(step.acceptance_criteria))
             if "test" in step.title.lower() or "verify" in step.title.lower():
                 step.checks = list(dict.fromkeys([*step.checks, *verification]))
             step.risk = self._step_risk(step, intent)
@@ -755,9 +757,15 @@ class PlanningEngine:
                         Difficulty.COMPLEX: 75,
                     }.get(difficulty, 15)
                 ),
-                "max_hosted_calls": None,
-                "max_prompt_tokens": None,
-                "max_completion_tokens": None,
+                "max_hosted_calls": (
+                    80 if difficulty == Difficulty.MASSIVE else 40 if difficulty == Difficulty.COMPLEX else 24
+                ),
+                "max_prompt_tokens": (
+                    4_000_000 if difficulty == Difficulty.MASSIVE else 2_000_000 if difficulty == Difficulty.COMPLEX else 1_000_000
+                ),
+                "max_completion_tokens": (
+                    800_000 if difficulty == Difficulty.MASSIVE else 400_000 if difficulty == Difficulty.COMPLEX else 200_000
+                ),
                 "max_cost_usd": None,
             },
         )
@@ -1372,6 +1380,29 @@ class PlanningEngine:
                 item.lstrip("./") for item in candidates if item.lower() not in technology_names
             )
         )
+
+    @staticmethod
+    def _step_acceptance_criteria(step: PlanStep, plan_criteria: list[str]) -> list[str]:
+        """Bind only criteria relevant to this step; system criteria remain plan-level."""
+        title = f"{step.title} {step.description}".lower()
+        selected: list[str] = []
+        for criterion in plan_criteria:
+            lowered = criterion.lower()
+            if "unrelated files" in lowered or "fingerprinted" in lowered:
+                selected.append(criterion)
+            elif any(word in title for word in ("test", "verify", "quality")) and any(
+                word in lowered for word in ("test", "build", "lint", "type", "verification")
+            ):
+                selected.append(criterion)
+            elif any(word in title for word in ("security", "auth", "permission")) and any(
+                word in lowered for word in ("security", "vulnerab", "permission")
+            ):
+                selected.append(criterion)
+            elif any(word in title for word in ("implement", "build", "fix", "refactor", "migrate")) and (
+                "requested objective is implemented" in lowered
+            ):
+                selected.append(criterion)
+        return list(dict.fromkeys(selected or ["Step output is produced and linked to fresh evidence."]))
 
     @staticmethod
     def _step_risk(step: PlanStep, intent: IntentType) -> str:
