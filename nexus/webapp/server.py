@@ -154,6 +154,8 @@ def _require_web_token(request) -> Response | None:
 
 async def index(request):
     """Serve the main web UI."""
+    if (err := _require_web_token(request)) is not None:
+        return err
     static_dir = Path(__file__).parent / "static"
     html = (static_dir / "index.html").read_text(encoding="utf-8")
     html = html.replace(

@@ -404,7 +404,7 @@ class Agent:
         )
         self._external_tool_path_arguments: dict[str, tuple[str, ...]] = {}
         self.trust = TrustStore(self.working_dir)
-        self.policy = PolicyLoader(self.working_dir).load()
+        self.policy = PolicyLoader(self.working_dir, is_trusted=self.trust.is_approved).load()
         self.extensions = ExtensionRegistry()
         self.extensions.discover()
         self.routing_stats = {
@@ -1145,6 +1145,8 @@ class Agent:
                     detail=_redact_runtime_text(str(exc)[:1000]),
                 )
 
+        import hashlib
+        diff_sha256 = hashlib.sha256(diff.encode("utf-8")).hexdigest()
         summary = "\n".join(summaries)
         self.evidence.append(
             kind="independent_review",
@@ -1152,7 +1154,11 @@ class Agent:
             status="verified" if all_approved else "failed",
             raw_output=summary,
             metadata={
+                "executor_provider": str(getattr(self.client, "id", "")),
+                "executor_model": self.model_cfg["id"],
+                "reviewer_provider": str(getattr(self.client, "id", "")),
                 "reviewer_model": reviewer_model,
+                "reviewed_diff_sha256": diff_sha256,
                 "chunks": len(chunks),
                 "findings": all_findings,
             },
@@ -2144,7 +2150,6 @@ class Agent:
         if (
             name in ("run_command", "run_process", "process_run")
             and self.mode_policy.require_os_isolation
-            and not _user_confirmed
         ):
             args["require_os_isolation"] = True
 
@@ -3030,7 +3035,7 @@ class Agent:
                 detail=candidate.review_summary,
             )
             self.evidence.append(
-                kind="independent_review",
+                kind="planning_review",
                 claim=f"independent reviewer evaluated {phase} candidate",
                 status="verified" if candidate.review_approved else "failed",
                 raw_output=candidate.review_summary,

@@ -673,21 +673,6 @@ class ExecutionPipeline:
                     "independent_semantic_review": False,
                 },
             )
-        if routing_mode == "two_node":
-            evidence = self._agent.evidence.records()[
-                getattr(self._agent, "_turn_evidence_start", 0) :
-            ]
-            reviews = [item for item in evidence if item.get("kind") == "independent_review"]
-            approved = bool(reviews) and reviews[-1].get("status") == "verified"
-            return StageResult(
-                stage=PipelineStage.REVIEW,
-                success=approved,
-                duration_ms=int((time.monotonic() - t) * 1000),
-                metadata={"review_records": len(reviews)},
-                error="Two-node reviewer did not approve the final candidate."
-                if not approved
-                else "",
-            )
         try:
             approved, summary = self._agent._run_independent_review()  # noqa: SLF001
             return StageResult(

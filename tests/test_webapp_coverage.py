@@ -13,7 +13,8 @@ def client():
 
 
 def test_webapp_index(client):
-    response = client.get("/")
+    from nexus.webapp.server import _web_token
+    response = client.get(f"/?token={_web_token}")
     assert response.status_code == 200
     assert "window.CSRF_TOKEN" in response.text
 

@@ -76,3 +76,16 @@ class GitHubIntegration:
             args.extend(["--base", base_branch])
         out = cls._run_gh(args)
         return out
+
+    @classmethod
+    def view_pr(cls, number: str = "") -> dict[str, Any]:
+        """View a specific PR or current branch PR with comments."""
+        args = ["pr", "view"]
+        if number:
+            args.append(str(number))
+        args.extend(["--json", "number,title,body,comments,url,state"])
+        out = cls._run_gh(args)
+        try:
+            return json.loads(out)
+        except json.JSONDecodeError:
+            return {}

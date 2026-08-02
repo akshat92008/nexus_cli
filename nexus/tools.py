@@ -198,6 +198,90 @@ TOOL_DEFINITIONS = [
     {
         "type": "function",
         "function": {
+            "name": "read_notebook",
+            "description": "Read a Jupyter Notebook (.ipynb) and display its cells.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or relative file path to the notebook.",
+                    },
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_notebook_cell",
+            "description": "Edit a specific cell in a Jupyter Notebook.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Absolute or relative file path to the notebook.",
+                    },
+                    "cell_index": {
+                        "type": "integer",
+                        "description": "The 0-based index of the cell to edit.",
+                    },
+                    "new_source": {
+                        "type": "string",
+                        "description": "The new content for the cell.",
+                    },
+                },
+                "required": ["path", "cell_index", "new_source"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_routine",
+            "description": "Schedule a routine task to run in the background (e.g., monitor a log, poll an API).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "interval": {
+                        "type": "integer",
+                        "description": "The interval in seconds between runs.",
+                    },
+                    "task": {
+                        "type": "string",
+                        "description": "The task instruction for the background subagent.",
+                    },
+                },
+                "required": ["interval", "task"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "message_peer",
+            "description": "Message an active peer subagent by name.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "peer_name": {
+                        "type": "string",
+                        "description": "The name of the peer subagent.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "The message to send.",
+                    },
+                },
+                "required": ["peer_name", "message"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "file_info",
             "description": "Get detailed metadata about a file: size, permissions, last modified, type, encoding, line count.",
             "parameters": {
@@ -1485,36 +1569,11 @@ def tool_process_run(
         stdout_f = open(stdout_log, "w")
         stderr_f = open(stderr_log, "w")
 
-        safe_env = {
-            key: value
-            for key, value in os.environ.items()
-            if key
-            in {
-                "PATH",
-                "LANG",
-                "LC_ALL",
-                "TZ",
-                "TMPDIR",
-                "TEMP",
-                "TMP",
-                "SYSTEMROOT",
-                "WINDIR",
-                "PATHEXT",
-                "VIRTUAL_ENV",
-                "PYTHONPATH",
-                "NODE_PATH",
-                "JAVA_HOME",
-                "GOROOT",
-                "GOPATH",
-                "CARGO_HOME",
-            }
-            or key.startswith("NEXUS_")
-        }
-        safe_env["NEXUS_SANDBOX"] = "restricted-background"
-
         from nexus.sandbox import CommandSpec, SandboxBackend, SandboxRunner
 
         sandbox = SandboxRunner(Path(work_dir))
+        safe_env = sandbox._filtered_env({})
+        safe_env["NEXUS_SANDBOX"] = "restricted-background"
         spec = CommandSpec.create(
             argv,
             work_dir,
@@ -2628,6 +2687,75 @@ def tool_github_create_pr(title: str, body: str, base: str = "") -> str:
         return f"❌ GitHub Error: {e}"
 
 
+def tool_read_notebook(path: str) -> str:
+    """Read a Jupyter Notebook (.ipynb) and display its cells."""
+    import json
+    try:
+        p = _resolve_path(path)
+        if not p.exists():
+            return f"❌ File not found: {path}"
+        with open(p, "r", encoding="utf-8") as f:
+            nb = json.load(f)
+            
+        cells = nb.get("cells", [])
+        output = [f"Notebook: {p.name} ({len(cells)} cells)"]
+        for i, cell in enumerate(cells):
+            cell_type = cell.get("cell_type", "unknown")
+            source = "".join(cell.get("source", []))
+            output.append(f"--- Cell {i} [{cell_type}] ---")
+            output.append(source.strip())
+        return "\n".join(output)
+    except Exception as e:
+        return f"❌ Error reading notebook: {e}"
+
+
+def tool_edit_notebook_cell(path: str, cell_index: int, new_source: str) -> str:
+    """Edit a specific cell in a Jupyter Notebook."""
+    import json
+    try:
+        p = _resolve_path(path)
+        if not p.exists():
+            return f"❌ File not found: {path}"
+        with open(p, "r", encoding="utf-8") as f:
+            nb = json.load(f)
+            
+        cells = nb.get("cells", [])
+        if cell_index < 0 or cell_index >= len(cells):
+            return f"❌ Invalid cell index {cell_index}. Notebook has {len(cells)} cells."
+            
+        cells[cell_index]["source"] = [line + "\n" for line in new_source.split("\n")]
+        # Remove trailing newline from the last line if necessary
+        if cells[cell_index]["source"]:
+            cells[cell_index]["source"][-1] = cells[cell_index]["source"][-1].rstrip("\n")
+            
+        with open(p, "w", encoding="utf-8") as f:
+            json.dump(nb, f, indent=1)
+            
+        return f"✅ Cell {cell_index} updated successfully."
+    except Exception as e:
+        return f"❌ Error editing notebook: {e}"
+
+
+def tool_schedule_routine(interval: int, task: str) -> str:
+    """Schedule a routine task to run in the background."""
+    try:
+        from nexus.routine import schedule_routine
+        # Note: We need a way to pass the agent context. We will handle agent context injection in agent.py
+        # For now, schedule_routine will just use the global RoutineOrchestrator.
+        return schedule_routine(interval, task, agent=getattr(tool_schedule_routine, 'agent_instance', None))
+    except ImportError as e:
+        return f"❌ Routine Error: {e}"
+
+
+def tool_message_peer(peer_name: str, message: str) -> str:
+    """Message an active peer subagent."""
+    try:
+        from nexus.routine import message_peer
+        return message_peer(peer_name, message)
+    except ImportError as e:
+        return f"❌ Peer Messaging Error: {e}"
+
+
 TOOL_DISPATCH = {
     # File tools
     "read_file": tool_read_file,
@@ -2635,8 +2763,13 @@ TOOL_DISPATCH = {
     "edit_file": tool_edit_file,
     "patch_file": tool_patch_file,
     "multi_edit": tool_multi_edit,
+    "read_notebook": tool_read_notebook,
+    "edit_notebook_cell": tool_edit_notebook_cell,
     "file_info": tool_file_info,
     "diff_files": tool_diff_files,
+    # Routine and Peer tools
+    "schedule_routine": tool_schedule_routine,
+    "message_peer": tool_message_peer,
     # Search tools
     "search_code": tool_search_code,
     "list_directory": tool_list_directory,

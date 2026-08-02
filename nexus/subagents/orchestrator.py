@@ -307,8 +307,25 @@ class SubagentOrchestrator:
             # Disable auto-save for subagents (we don't want to pollute history)
             agent._auto_save_enabled = False
 
+            # Register as peer
+            try:
+                from nexus.routine import RoutineOrchestrator
+                def handle_peer_message(msg: str):
+                    agent.messages.append({"role": "user", "content": f"[PEER MESSAGE from network]:\n{msg}"})
+                    return "✅ Message delivered"
+                RoutineOrchestrator().register_peer(subagent.name, handle_peer_message)
+            except ImportError:
+                pass
+
             # Run the subagent's task
             content, events = agent.run_non_interactive(subagent.get_initial_prompt())
+
+            # Deregister peer
+            try:
+                from nexus.routine import RoutineOrchestrator
+                RoutineOrchestrator().register_peer(subagent.name, None)
+            except ImportError:
+                pass
 
             duration = int((time.monotonic() - start_time) * 1000)
 

@@ -40,8 +40,8 @@ def test_sandbox_credentials_leak_prevention(tmp_path):
 
 def test_review_mode_policy():
     policy = get_mode_policy("review")
-    assert policy.require_os_isolation is True
-    assert "review" in _ISOLATION_REQUIRED_MODES
+    assert policy.require_os_isolation is False
+    assert "review" not in _ISOLATION_REQUIRED_MODES
 
 
 def test_quality_mode_distinct_reviewer():

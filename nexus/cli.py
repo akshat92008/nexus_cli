@@ -197,7 +197,7 @@ Environment:
             "workspace — Git-isolated worktree, native sandbox required; "
             "autonomous — hands-free, native sandbox required (bubblewrap on Linux); "
             "local-only — Nova only, native sandbox required; "
-            "quality — maximum verification, review-level isolation; "
+            "quality — maximum verification, native sandbox required; "
             "budget — cost-capped autonomous, native sandbox required; "
             "ci — non-interactive JSON output, native sandbox required. "
             "Run 'nexus --doctor' to check your sandbox status."
@@ -514,7 +514,7 @@ def _handle_benchmark() -> bool:
     print(rendered)
     # A dry-run is a release gate, not a best-effort preview. Missing fixture
     # repositories and other blocked tasks must fail with a non-zero status.
-    if payload["summary"]["failed"]:
+    if payload["summary"]["failed"] or not payload["summary"]["tasks"]:
         raise SystemExit(2)
     return True
 
@@ -855,6 +855,37 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
             for rule in rules.conventions:
                 ui.console.print(f"  • {rule}")
 
+    elif command == "/login":
+        ui.print_info("Nexus uses API keys directly (e.g., NVIDIA_API_KEY, GROQ_API_KEY). No login required.")
+
+    elif command == "/logout":
+        ui.print_info("Clear your API key environment variables to logout.")
+
+    elif command == "/bug":
+        ui.print_info("To report a bug, please open an issue on the project repository.")
+
+    elif command == "/terminal":
+        ui.print_info("Use '!<command>' to run terminal commands directly from Nexus (e.g., '!ls -la').")
+        
+    elif command == "/pr_comments":
+        try:
+            from nexus.github import GitHubIntegration
+            pr_data = GitHubIntegration.view_pr(arg.strip())
+            if not pr_data:
+                ui.print_error("No PR found for the current branch or invalid PR number.")
+            else:
+                comments = pr_data.get("comments", [])
+                if not comments:
+                    ui.print_info(f"No comments on PR #{pr_data.get('number')}.")
+                else:
+                    ui.console.print(f"💬 Comments for PR #{pr_data.get('number')} ({pr_data.get('title')}):")
+                    for c in comments:
+                        author = c.get('author', {}).get('login', 'Unknown')
+                        ui.console.print(f"\n[bold]{author}[/] said:")
+                        ui.console.print(c.get('body', ''))
+        except Exception as e:
+            ui.print_error(f"Failed to fetch PR comments: {e}")
+
     else:
         ui.print_error(f"Unknown command: {command}. Type /help for available commands.")
 
@@ -926,12 +957,6 @@ def run_web(
 
         from nexus.webapp.server import create_app
 
-        ui.print_banner()
-        ui.console.print(
-            f"  [bold {ui.GREEN}]🌐 Web Interface[/] starting on [bold {ui.CYAN}]http://localhost:{port}[/]\n"
-            f"  [{ui.DIM}]Press Ctrl+C to stop[/]\n"
-        )
-
         app = create_app(
             api_key=api_key,
             model=model,
@@ -942,6 +967,15 @@ def run_web(
             plugins_enabled=plugins_enabled,
             tools_enabled=tools_enabled,
         )
+
+        import nexus.webapp.server
+        
+        ui.print_banner()
+        ui.console.print(
+            f"  [bold {ui.GREEN}]🌐 Web Interface[/] starting on [bold {ui.CYAN}]http://localhost:{port}/?token={nexus.webapp.server._web_token}[/]\n"
+            f"  [{ui.DIM}]Press Ctrl+C to stop[/]\n"
+        )
+
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
     except ImportError as e:
@@ -975,7 +1009,8 @@ def start_background_web_server(api_key: str, model: str, port: int, working_dir
     def _open_browser():
         time.sleep(1.2)
         try:
-            webbrowser.open(f"http://localhost:{port}")
+            import nexus.webapp.server
+            webbrowser.open(f"http://localhost:{port}/?token={nexus.webapp.server._web_token}")
         except OSError:
             pass
 

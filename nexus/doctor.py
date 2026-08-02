@@ -49,7 +49,7 @@ def _workspace_check(working_dir: Path) -> Diagnostic:
 # Modes that require a native OS sandbox to operate. A missing sandbox in
 # these modes is a hard operational failure, not merely advisory.
 _ISOLATION_REQUIRED_MODES = frozenset(
-    {"review", "workspace", "autonomous", "quality", "budget", "local-only", "ci"}
+    {"workspace", "autonomous", "quality", "budget", "local-only", "ci"}
 )
 
 _SANDBOX_INSTALL_HINT: dict[str, str] = {

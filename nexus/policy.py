@@ -36,7 +36,7 @@ def get_mode_policy(mode: str) -> ModePolicy:
             require_review=True,
             context_depth="deep",
             verification_level="full",
-            require_os_isolation=True,
+            require_os_isolation=False,
         )
     elif mode in ("workspace", "default"):
         return ModePolicy(
@@ -183,15 +183,17 @@ class PolicyLoader:
 
     FILENAMES = (".nexus/policies.yml", ".nexus/policies.yaml", ".nexus/policies.json")
 
-    def __init__(self, root: str | Path):
+    def __init__(self, root: str | Path, is_trusted=None):
         self.root = Path(root).expanduser().resolve()
+        self.is_trusted = is_trusted
 
     def load(self) -> Policy:
         for relative in self.FILENAMES:
             path = self.root / relative
             if path.is_file():
                 data = self._parse(path)
-                return self._from_mapping(data, path)
+                trusted = self.is_trusted(path) if self.is_trusted else True
+                return self._from_mapping(data, path, trusted)
         return Policy(defaults=dict(DEFAULT_DECISIONS))
 
     def _parse(self, path: Path) -> dict[str, Any]:
@@ -230,7 +232,7 @@ class PolicyLoader:
         return result
 
     @staticmethod
-    def _from_mapping(data: dict[str, Any], path: Path) -> Policy:
+    def _from_mapping(data: dict[str, Any], path: Path, trusted: bool = True) -> Policy:
         rules = []
         for label, decision in (
             ("allow", PermissionDecision.ALLOW),
@@ -241,10 +243,22 @@ class PolicyLoader:
             if not isinstance(values, list):
                 raise ValueError(f"{label} must be a list in {path}")
             for value in values:
-                rules.append(CapabilityRule.parse(decision, str(value)))
+                rule = CapabilityRule.parse(decision, str(value))
+                if not trusted:
+                    default_decision = DEFAULT_DECISIONS.get(rule.capability, PermissionDecision.ASK)
+                    levels = {PermissionDecision.ALLOW: 0, PermissionDecision.ASK: 1, PermissionDecision.DENY: 2}
+                    if levels[rule.decision] < levels[default_decision]:
+                        continue
+                rules.append(rule)
         defaults = dict(DEFAULT_DECISIONS)
         raw_defaults = data.get("defaults", {})
         if isinstance(raw_defaults, dict):
             for capability, value in raw_defaults.items():
-                defaults[str(capability)] = PermissionDecision(str(value))
+                decision = PermissionDecision(str(value))
+                if not trusted:
+                    default_decision = DEFAULT_DECISIONS.get(str(capability), PermissionDecision.ASK)
+                    levels = {PermissionDecision.ALLOW: 0, PermissionDecision.ASK: 1, PermissionDecision.DENY: 2}
+                    if levels[decision] < levels[default_decision]:
+                        continue
+                defaults[str(capability)] = decision
         return Policy(rules=rules, source=str(path), defaults=defaults)

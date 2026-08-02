@@ -549,10 +549,11 @@ class SandboxRunner:
         return ""
 
     def _filtered_env(self, additions: Mapping[str, str]) -> dict[str, str]:
+        blocked_substrings = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH", "COOKIE", "SESSION")
         env = {
             key: value
             for key, value in os.environ.items()
-            if key in self.SAFE_ENV_KEYS or (key.startswith("NEXUS_") and "KEY" not in key and "TOKEN" not in key and "SECRET" not in key)
+            if key in self.SAFE_ENV_KEYS or (key.startswith("NEXUS_") and not any(sub in key for sub in blocked_substrings))
         }
         for key, value in additions.items():
             normalized = str(key)

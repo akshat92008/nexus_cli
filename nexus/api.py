@@ -104,6 +104,9 @@ def _load_env_file():
                         if line and not line.startswith("#") and "=" in line:
                             k, v = line.split("=", 1)
                             k, v = k.strip(), v.strip().strip("'\"")
+                            if p == os.path.join(cwd, ".env"):
+                                if k.startswith(("NEXUS_", "OPENAI_", "ANTHROPIC_", "GROQ_", "NVIDIA_", "OPENROUTER_")) or k in {"HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE"}:
+                                    continue
                             # Explicit process environment wins over repository .env.
                             # This is required for CLI flags, CI, and isolated tests.
                             os.environ.setdefault(k, v)

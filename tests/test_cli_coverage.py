@@ -271,7 +271,7 @@ def test_handle_benchmark_valid():
         with patch("nexus.benchmark.BenchmarkSuite.load") as MockLoad:
             with patch("nexus.benchmark.BenchmarkRunner") as MockRunner:
                 from types import SimpleNamespace
-                MockRunner.return_value.run.return_value = SimpleNamespace(to_dict=lambda: {"summary": {"failed": 0}})
+                MockRunner.return_value.run.return_value = SimpleNamespace(to_dict=lambda: {"summary": {"failed": 0, "tasks": 1}})
                 assert _handle_benchmark() is True
 
 def test_handle_benchmark_error():
@@ -443,6 +443,21 @@ def test_handle_slash_commands_all():
         agent.project_mem.load_rules.return_value = SimpleNamespace(build_command="b", test_command="t", lint_command="l", format_command="f", conventions=["c"])
         assert handle_slash_command("/rules", agent) is True
         
+        assert handle_slash_command("/login", agent) is True
+        assert handle_slash_command("/logout", agent) is True
+        assert handle_slash_command("/bug", agent) is True
+        assert handle_slash_command("/terminal", agent) is True
+        
+        with patch("nexus.github.GitHubIntegration.view_pr") as mock_view_pr:
+            mock_view_pr.return_value = None
+            assert handle_slash_command("/pr_comments", agent) is True
+            mock_view_pr.return_value = {"number": 1, "title": "test", "comments": []}
+            assert handle_slash_command("/pr_comments 1", agent) is True
+            mock_view_pr.return_value = {"number": 1, "title": "test", "comments": [{"author": {"login": "testuser"}, "body": "test comment"}]}
+            assert handle_slash_command("/pr_comments 1", agent) is True
+            mock_view_pr.side_effect = Exception("Test error")
+            assert handle_slash_command("/pr_comments 1", agent) is True
+
         assert handle_slash_command("/unknowncmd", agent) is True
         
         with pytest.raises(SystemExit):
