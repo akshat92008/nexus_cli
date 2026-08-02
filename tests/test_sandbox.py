@@ -1,14 +1,8 @@
 """Tests for Sandbox functionality."""
 
-import os
-import sys
-from pathlib import Path
-from unittest.mock import patch
 
-import pytest
 
 from nexus.sandbox import (
-    CommandResult,
     CommandSpec,
     SandboxBackend,
     SandboxRunner,

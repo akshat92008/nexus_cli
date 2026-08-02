@@ -221,7 +221,7 @@ class BrowserVerifier:
                 final_url = page.url
                 title = page.title()
                 browser.close()
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             return ProbeResult(
                 "browser",
                 ProbeStatus.FAILED,

@@ -125,7 +125,7 @@ class HookRunner:
                 if result.blocked:
                     break
 
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 logger.warning(
                     "Hook %s failed with error: %s (event=%s)",
                     hook.name,

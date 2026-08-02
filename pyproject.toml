@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nexusai-cli"
-version = "3.2.1"
+dynamic = ["version"]
 description = "NexusAI — a model-agnostic, verification-driven software-engineering runtime"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "MIT"
+license = {text = "MIT"}
 authors = [{name = "Akshat"}]
 keywords = ["ai", "coding-agent", "cli", "verification", "ollama"]
 classifiers = [
@@ -64,6 +64,9 @@ Issues = "https://github.com/akshat92008/nexus_cli/issues"
 
 [tool.setuptools.packages.find]
 include = ["nexus*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "nexus.__version__"}
 
 [tool.setuptools.package-data]
 "nexus.webapp" = ["static/**/*"]

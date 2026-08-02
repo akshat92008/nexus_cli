@@ -176,8 +176,12 @@ class MCPConnection:
         if self._process:
             try:
                 self._process.terminate()
-                self._process.wait(timeout=5)
-            except Exception:
+                try:
+                    self._process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self._process.kill()
+                    self._process.wait(timeout=2)
+            except (OSError, ValueError):
                 pass
             self._process = None
             self.connected = False

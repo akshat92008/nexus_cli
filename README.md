@@ -1,10 +1,6 @@
 # NexusAI CLI
 
-NexusAI is an open-source, model-agnostic software-engineering runtime for the
-terminal, browser, and headless CI. A hosted model plans and reviews difficult
-work; local Nova V11 executes suitable atomic changes through Ollama. Nexus
-owns repository understanding, permissions, workspaces, tools, tests, repair,
-evidence, budgets, rollback, and recovery.
+NexusAI is an open-source, multi-provider coding CLI focused on verification, worktree safety, and extensibility. A hosted model plans and reviews difficult work; local Nova V11 executes suitable atomic changes through Ollama. Nexus owns repository understanding, permissions, workspaces, tools, tests, repair, evidence, budgets, rollback, and recovery.
 
 Version 3.2.0 is the launch-hardening runtime described by the product
 specification:

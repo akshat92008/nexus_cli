@@ -17,9 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from nexus.budget import BudgetController, BudgetedClient, BudgetExceeded, BudgetLimits
-from nexus.sandbox import CommandSpec, CommandResult, SandboxBackend, SandboxRunner
-
+from nexus.budget import BudgetController, BudgetExceeded, BudgetLimits
+from nexus.sandbox import CommandSpec, SandboxBackend, SandboxRunner
 
 # ─── Sandbox runner stress tests ─────────────────────────────────────────────
 

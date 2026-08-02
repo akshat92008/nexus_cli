@@ -181,7 +181,7 @@ class SubagentOrchestrator:
             try:
                 result = self._execute_subagent(subagent)
                 results.append(result)
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 results.append(
                     SubagentResult(
                         subagent_name=subagent.name,
@@ -211,7 +211,7 @@ class SubagentOrchestrator:
                     subagent = future_to_subagent[future]
                     try:
                         by_agent[id(subagent)] = future.result()
-                    except Exception as exc:
+                    except LookupError as exc:
                         by_agent[id(subagent)] = self._failed_result(subagent, exc)
             except FuturesTimeoutError:
                 for future, subagent in future_to_subagent.items():
@@ -335,7 +335,7 @@ class SubagentOrchestrator:
             subagent.status = result.status
             return result
 
-        except Exception as e:
+        except (ImportError, LookupError, OSError, RuntimeError, TypeError, ValueError) as e:
             duration = int((time.monotonic() - start_time) * 1000)
             subagent.status = SubagentStatus.FAILED
 

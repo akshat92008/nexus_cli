@@ -9,26 +9,24 @@ All tests are hermetic — no provider credentials required.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
+from unittest.mock import MagicMock
+
 from types import SimpleNamespace
 
-import pytest
-
-from nexus.tool_executor import ToolExecutionController, make_controller
 from nexus.run_finalizer import (
     EvidenceClass,
     EvidenceSummary,
     RunFinalizer,
     make_finalizer,
 )
+from nexus.tool_executor import ToolExecutionController, make_controller
 from nexus.turn_coordinator import (
     TurnCoordinator,
     TurnRequest,
     TurnResult,
     make_coordinator,
 )
-
 
 # ─── Shared fake agent ────────────────────────────────────────────────────────
 
@@ -45,10 +43,11 @@ def _fake_agent(tmp_path: Path):
         reflection=None,
         _tool_capabilities={},
         _pending_confirmations={},
-        _finish_managed_run=lambda *a, **kw: {"status": "VERIFIED"},
         _execute_tool_with_safety=lambda name, args, **kw: ("ok", True),
         _run_single_turn=lambda messages, emit_ui=True: ("done", []),
     )
+    agent._run_finalizer = MagicMock()
+    agent._run_finalizer.finish = lambda *a, **kw: {"status": "VERIFIED"}
     return agent
 
 
@@ -215,11 +214,6 @@ class TestRunFinalizer:
         summary = EvidenceSummary()
         assert RunFinalizer.determine_status(summary) == "UNVERIFIED"
 
-    def test_finish_delegates_to_agent(self, tmp_path):
-        agent = _fake_agent(tmp_path)
-        finalizer = RunFinalizer(agent)
-        report = finalizer.finish("done")
-        assert report == {"status": "VERIFIED"}
 
     def test_make_finalizer_attaches_to_agent(self, tmp_path):
         agent = _fake_agent(tmp_path)

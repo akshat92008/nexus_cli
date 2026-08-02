@@ -100,7 +100,7 @@ class ExtensionRegistry:
                     if isinstance(instance, type):
                         instance = instance()
                     self._validate(label, instance)
-                except Exception as exc:
+                except (OSError, ValueError) as exc:
                     self.records.append(
                         ExtensionRecord(item.name, group, item.value, False, str(exc))
                     )

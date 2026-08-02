@@ -173,7 +173,7 @@ class ExecutionKernel:
         for handler in self._event_handlers:
             try:
                 handler(event)
-            except Exception as exc:  # pragma: no cover
+            except (OSError, ValueError) as exc:# pragma: no cover
                 logger.warning("Event handler raised: %s", exc)
 
     def _create_and_emit(self, event: BaseEvent) -> BaseEvent:
@@ -263,7 +263,7 @@ class ExecutionKernel:
                 full_content, tool_calls, usage, request_id = yield from self._process_stream(
                     stream
                 )
-            except Exception as exc:
+            except (OSError, ValueError) as exc:
                 if self.ledger and self.ledger.turn_dir:
                     completed = datetime.now(timezone.utc)
                     self.ledger.append_model_call(
@@ -352,7 +352,7 @@ class ExecutionKernel:
                 if self.before_tool_hook:
                     try:
                         self.before_tool_hook(tool_name, safe_args)
-                    except Exception as hook_exc:
+                    except (OSError, ValueError) as hook_exc:
                         logger.warning("before_tool_hook raised: %s", hook_exc)
 
                 if self.tool_executor:
@@ -366,7 +366,7 @@ class ExecutionKernel:
                 if self.after_tool_hook:
                     try:
                         self.after_tool_hook(tool_name, safe_args, success, result_text)
-                    except Exception as hook_exc:
+                    except (OSError, ValueError) as hook_exc:
                         logger.warning("after_tool_hook raised: %s", hook_exc)
 
                 yield self._create_and_emit(

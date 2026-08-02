@@ -21,6 +21,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from nexus.planner import TaskStatus
@@ -183,7 +184,7 @@ class ExecutionPipeline:
             result.events = exec_result.get("events", [])
             result.model_turns = exec_result.get("model_turns", 0)
             result.total_duration_ms = int((time.monotonic() - pipeline_start) * 1000)
-            report = self._agent._finish_managed_run(
+            report = self._agent._run_finalizer.finish(
                 result.response,
                 result.events,
                 status_override=RunStatus.FAILED,
@@ -225,7 +226,7 @@ class ExecutionPipeline:
         # ── Stage 9: Evidence ─────────────────────────────────────────────────
         stage_results.append(self._stage_evidence())
 
-        report = self._agent._finish_managed_run(response, events)
+        report = self._agent._run_finalizer.finish(response, events)
 
         # ── Stage 10: Completion ──────────────────────────────────────────────
         result.response = response
@@ -251,7 +252,7 @@ class ExecutionPipeline:
         """Refresh the repository graph index if stale."""
         t = time.monotonic()
         try:
-            if not (self._agent.working_dir / ".git").exists():
+            if not (Path(self._agent.working_dir) / ".git").exists():
                 return StageResult(
                     stage=PipelineStage.REPO_UNDERSTANDING,
                     success=True,
@@ -270,7 +271,7 @@ class ExecutionPipeline:
                     else True
                 },
             )
-        except Exception as exc:
+        except (OSError, TypeError, ValueError) as exc:
             # Non-fatal: missing graph degrades context quality, not correctness
             self._logger.debug("Repo understanding stage skipped: %s", exc)
             return StageResult(
@@ -369,7 +370,7 @@ class ExecutionPipeline:
                 success=True,
                 duration_ms=int((time.monotonic() - t) * 1000),
             )
-        except Exception as exc:
+        except (TypeError, ValueError) as exc:
             self._logger.debug("Context selection error (non-fatal): %s", exc)
             return StageResult(
                 stage=PipelineStage.CONTEXT_SELECTION,
@@ -625,7 +626,7 @@ class ExecutionPipeline:
                 duration_ms=int((time.monotonic() - t) * 1000),
                 metadata={"skipped": True},
             )
-        except Exception as exc:
+        except (TypeError, ValueError) as exc:
             self._logger.warning("Repair stage error: %s", exc)
             return StageResult(
                 stage=PipelineStage.REPAIR,
@@ -696,7 +697,7 @@ class ExecutionPipeline:
                 metadata={"summary": summary[:1000]},
                 error="" if approved else summary[:2000],
             )
-        except Exception as exc:
+        except (LookupError, TypeError, ValueError) as exc:
             return StageResult(
                 stage=PipelineStage.REVIEW,
                 success=False,
@@ -715,7 +716,7 @@ class ExecutionPipeline:
                 duration_ms=int((time.monotonic() - t) * 1000),
                 metadata={"evidence_records": count},
             )
-        except Exception as exc:
+        except (TypeError, ValueError) as exc:
             return StageResult(
                 stage=PipelineStage.EVIDENCE,
                 success=False,

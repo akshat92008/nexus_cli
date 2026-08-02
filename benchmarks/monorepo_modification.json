@@ -1,0 +1,25 @@
+{
+  "schema_version": "nexus.benchmark.v1",
+  "name": "monorepo-modification",
+  "tasks": [
+    {
+      "id": "update-shared-lib",
+      "category": "multi-file-refactor",
+      "repository": "fixtures/monorepo",
+      "prompt": "Update the shared logging library and ensure all apps use the new interface.",
+      "expected_changed_files": [
+        "packages/shared/logger.ts",
+        "apps/api/src/index.ts",
+        "apps/web/src/index.ts"
+      ],
+      "verification": [
+        [
+          "npm",
+          "run",
+          "test"
+        ]
+      ],
+      "timeout_seconds": 600
+    }
+  ]
+}

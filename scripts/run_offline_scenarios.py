@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+
 def run_nexus(cmd: str, env: dict = None) -> tuple[int, dict]:
     full_env = os.environ.copy()
     if env:

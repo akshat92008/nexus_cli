@@ -24,7 +24,7 @@ class FileHistory:
         self.session_dir = nexus_home() / "history" / self.session_id
         try:
             self.session_dir.mkdir(parents=True, exist_ok=True)
-        except Exception:
+        except OSError:
             pass
         self.changes: list[dict] = []
         self._load_changes()

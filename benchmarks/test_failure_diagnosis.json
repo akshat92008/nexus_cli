@@ -1,0 +1,22 @@
+{
+  "schema_version": "nexus.benchmark.v1",
+  "name": "test-failure-diagnosis",
+  "tasks": [
+    {
+      "id": "fix-flaky-test",
+      "category": "bug-repair",
+      "repository": "fixtures/flaky_tests",
+      "prompt": "Fix the race condition in the async worker test.",
+      "expected_changed_files": [
+        "tests/test_worker.py"
+      ],
+      "verification": [
+        [
+          "pytest",
+          "tests/test_worker.py"
+        ]
+      ],
+      "timeout_seconds": 600
+    }
+  ]
+}

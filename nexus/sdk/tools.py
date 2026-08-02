@@ -140,5 +140,5 @@ class ToolRegistry:
             result = tool.execute(**args_dict)
             rendered = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False)
             return True, rendered
-        except Exception as exc:  # extension boundary must return a diagnostic
+        except (TypeError, ValueError) as exc:# extension boundary must return a diagnostic
             return False, f"❌ Tool '{name}' failed: {exc}"

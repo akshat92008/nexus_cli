@@ -1,0 +1,24 @@
+{
+  "schema_version": "nexus.benchmark.v1",
+  "name": "react-nextjs",
+  "tasks": [
+    {
+      "id": "nextjs-dashboard",
+      "category": "ui-implementation",
+      "repository": "fixtures/nextjs_app",
+      "prompt": "Create a dashboard page with a chart component.",
+      "expected_changed_files": [
+        "pages/dashboard.tsx",
+        "components/Chart.tsx"
+      ],
+      "verification": [
+        [
+          "npm",
+          "run",
+          "build"
+        ]
+      ],
+      "timeout_seconds": 600
+    }
+  ]
+}

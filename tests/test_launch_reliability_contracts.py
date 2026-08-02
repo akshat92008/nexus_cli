@@ -311,7 +311,7 @@ def test_build_evidence_cannot_satisfy_lint_and_type_contract(tmp_path, monkeypa
         metadata={"check_type": "build"},
     )
 
-    report = agent._finish_managed_run("done", [])
+    report = agent._run_finalizer.finish("done", [])
     assert report["acceptance_criteria"][0]["status"] == "UNVERIFIED"
     assert report["status"] != "VERIFIED"
 

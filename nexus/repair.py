@@ -218,7 +218,7 @@ class RepairLoop:
                     interactive=False,
                     emit_ui=False,
                 )
-            except Exception as exc:
+            except (OSError, ValueError) as exc:
                 logger.warning("Repair iteration %d raised exception: %s", iteration, exc)
                 response = str(exc)
                 events = []

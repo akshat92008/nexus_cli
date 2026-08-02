@@ -4,8 +4,7 @@ Updated: 2026-07-29
 
 ## North star
 
-Nexus CLI is an open-source, model-agnostic software-engineering runtime that
-turns natural-language goals into tested, reviewable changes.
+Nexus CLI is an open-source, multi-provider coding CLI focused on verification, worktree safety, and extensibility.
 
 The long-term product promise is:
 

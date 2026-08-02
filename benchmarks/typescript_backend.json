@@ -1,0 +1,24 @@
+{
+  "schema_version": "nexus.benchmark.v1",
+  "name": "typescript-backend",
+  "tasks": [
+    {
+      "id": "express-auth-middleware",
+      "category": "api-development",
+      "repository": "fixtures/ts_backend",
+      "prompt": "Add a JWT authentication middleware to the express backend.",
+      "expected_changed_files": [
+        "src/middleware/auth.ts",
+        "src/app.ts"
+      ],
+      "verification": [
+        [
+          "npm",
+          "run",
+          "test"
+        ]
+      ],
+      "timeout_seconds": 600
+    }
+  ]
+}

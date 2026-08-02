@@ -107,7 +107,7 @@ def _load_env_file():
                             # Explicit process environment wins over repository .env.
                             # This is required for CLI flags, CI, and isolated tests.
                             os.environ.setdefault(k, v)
-            except Exception:
+            except (OSError, TypeError, ValueError):
                 pass
 
 
@@ -213,28 +213,28 @@ class NvidiaClient:
                 base_url=self.custom_base_url,
                 api_key=self.custom_api_key,
                 timeout=self.timeout,
-                max_retries=0,
+                max_retries=2,
             )
         elif self.nvidia_keys:
             self.client = OpenAI(
                 base_url=NVIDIA_BASE_URL,
                 api_key=self.nvidia_keys[0],
                 timeout=self.timeout,
-                max_retries=0,
+                max_retries=2,
             )
         elif self.groq_keys:
             self.client = OpenAI(
                 base_url=GROQ_BASE_URL,
                 api_key=self.groq_keys[0],
                 timeout=DEFAULT_GROQ_TIMEOUT,
-                max_retries=0,
+                max_retries=2,
             )
         elif os.environ.get("OPENROUTER_API_KEY"):
             self.client = OpenAI(
                 base_url=OPENROUTER_BASE_URL,
                 api_key=os.environ["OPENROUTER_API_KEY"],
                 timeout=DEFAULT_GROQ_TIMEOUT,
-                max_retries=0,
+                max_retries=2,
             )
         else:
             raise ValueError(
@@ -288,7 +288,7 @@ class NvidiaClient:
 
         try:
             response = request()
-        except Exception as exc:
+        except (OSError, ValueError) as exc:
             finish("failed", {"error": str(exc)})
             raise
         if streaming:
@@ -333,7 +333,7 @@ class NvidiaClient:
             base_url=GROQ_BASE_URL,
             api_key=api_key,
             timeout=DEFAULT_GROQ_TIMEOUT,
-            max_retries=0,
+            max_retries=2,
         )
 
     def _get_nvidia_client(self, key: str) -> OpenAI:
@@ -342,7 +342,7 @@ class NvidiaClient:
             base_url=NVIDIA_BASE_URL,
             api_key=key,
             timeout=self.timeout,
-            max_retries=0,
+            max_retries=2,
         )
 
     def resolve_groq_model(self, model_id: str) -> str:
@@ -406,7 +406,7 @@ class NvidiaClient:
                     base_url=self.custom_base_url,
                     api_key=self.custom_api_key,
                     timeout=self.timeout,
-                    max_retries=0,
+                    max_retries=2,
                 )
                 effective_model = self.custom_model or model_id
                 return self._provider_request(
@@ -419,7 +419,7 @@ class NvidiaClient:
                         **kwargs,
                     ),
                 )
-            except Exception as exc:
+            except (OSError, ValueError) as exc:
                 errors.append(f"Custom OpenAI-compatible endpoint: {exc}")
 
         # ── Step 1: Try NVIDIA keys with requested model (max 3 key attempts for fast failover)
@@ -564,7 +564,7 @@ class NvidiaClient:
                     base_url=OPENROUTER_BASE_URL,
                     api_key=openrouter_key,
                     timeout=DEFAULT_GROQ_TIMEOUT,
-                    max_retries=0,
+                    max_retries=2,
                 )
                 or_kwargs = dict(kwargs)
                 if or_kwargs.get("max_tokens", 16384) > 8192:

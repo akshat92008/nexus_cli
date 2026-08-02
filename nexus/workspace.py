@@ -528,7 +528,7 @@ class WorkspaceManager:
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
                 results.append(WorktreeInfo(**data))
-            except Exception:
+            except (TypeError, ValueError):
                 pass
 
         # Sort by creation time descending
@@ -553,5 +553,5 @@ class WorkspaceManager:
             session.info = info
             session.path = Path(info.path)
             return session
-        except Exception:
+        except (TypeError, ValueError):
             return None

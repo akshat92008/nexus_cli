@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import statistics
 
 from nexus import __version__
 from nexus.sandbox import CommandSpec, SandboxRunner
@@ -238,6 +239,35 @@ class BenchmarkReport:
                 )
                 if self.results
                 else 0.0,
+                "completion_rate": (round(passed / len(executed), 4) if executed else 0.0),
+                "verification_rate": (
+                    round(verified_passed / len(executed), 4)
+                    if executed
+                    else 0.0
+                ),
+                "human_intervention_rate": (
+                    round(sum(1 for item in executed if item.human_intervention) / len(executed), 4)
+                    if executed
+                    else 0.0
+                ),
+                "false_success_rate": (
+                    round(sum(1 for item in executed if item.agent_status == "VERIFIED" and not item.passed) / sum(1 for item in executed if item.agent_status == "VERIFIED"), 4)
+                    if sum(1 for item in executed if item.agent_status == "VERIFIED") > 0
+                    else 0.0
+                ),
+                "median_tool_calls": (
+                    statistics.median([item.tool_calls for item in executed]) if executed else 0.0
+                ),
+                "median_cost_usd": (
+                    round(statistics.median([(item.estimated_cost_usd or 0.0) for item in executed]), 4) if executed else 0.0
+                ),
+                "median_duration_ms": (
+                    statistics.median([item.duration_ms for item in executed]) if executed else 0.0
+                ),
+                "failure_categories": {
+                    cat: sum(1 for item in executed if item.failure_type == cat)
+                    for cat in set(item.failure_type for item in executed if item.failure_type)
+                },
             },
             "results": [asdict(item) for item in self.results],
         }

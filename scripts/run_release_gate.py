@@ -295,6 +295,8 @@ def main() -> int:
         doctor_env["NVIDIA_API_KEY"] = "nvapi-release-smoke"
         doctor_env.pop("GROQ_API_KEY", None)
         doctor_env.pop("OPENROUTER_API_KEY", None)
+        workspace_dir = root / "workspace"
+        workspace_dir.mkdir(parents=True, exist_ok=True)
         run(
             [
                 python,
@@ -302,7 +304,7 @@ def main() -> int:
                 "nexus",
                 "--doctor",
                 "--working-dir",
-                str(root / "workspace"),
+                str(workspace_dir),
             ],
             cwd=root,
             env=doctor_env,

@@ -9,15 +9,12 @@ correctness, profile generation (macOS), and bubblewrap command construction
 from __future__ import annotations
 
 import platform
-import subprocess
 import sys
-import threading
 from pathlib import Path
 
 import pytest
 
-from nexus.sandbox import CommandSpec, CommandResult, SandboxBackend, SandboxRunner
-
+from nexus.sandbox import CommandResult, CommandSpec, SandboxBackend, SandboxRunner
 
 _SYSTEM = platform.system().lower()
 

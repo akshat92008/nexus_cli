@@ -300,7 +300,7 @@ def test_agent_run_ledger_tracks_verified_tools_and_complete_rollback(
         "run_process",
         {"argv": [sys.executable, "-m", "pytest", "-q"], "cwd": str(tmp_path)},
     )
-    report = agent._finish_managed_run(
+    report = agent._run_finalizer.finish(
         "Implemented calculator with regression coverage.",
         [],
     )

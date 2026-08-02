@@ -1,0 +1,24 @@
+{
+  "schema_version": "nexus.benchmark.v1",
+  "name": "full-stack-generation",
+  "tasks": [
+    {
+      "id": "generate-todo-app",
+      "category": "feature-implementation",
+      "repository": "fixtures/empty_project",
+      "prompt": "Generate a full-stack TODO application using Express and React.",
+      "expected_changed_files": [
+        "package.json",
+        "server.js",
+        "client/src/App.js"
+      ],
+      "verification": [
+        [
+          "npm",
+          "install"
+        ]
+      ],
+      "timeout_seconds": 1200
+    }
+  ]
+}

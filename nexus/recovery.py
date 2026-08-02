@@ -21,7 +21,7 @@ class RollbackManager:
         catalog = RunCatalog()
         try:
             turn_dir = catalog.resolve(run_id)
-        except Exception as e:
+        except (OSError, ValueError) as e:
             return False, f"Could not resolve run '{run_id}': {e}"
 
         session_id = turn_dir.parent.name

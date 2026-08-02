@@ -22,5 +22,5 @@ try:
     print("Type something and press Enter:")
     result = session.prompt(HTML("<ansicyan> ❯ </ansicyan>"), key_bindings=kb)
     print("Result:", repr(result))
-except Exception as e:
+except (OSError, ValueError) as e:
     print("Error:", e)

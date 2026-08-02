@@ -331,7 +331,7 @@ class NvidiaCeilingNode:
             tasks = self._parser_node._parse_tasks(text)
             if tasks:
                 return tasks, text
-        except Exception as exc:
+        except (LookupError, TypeError, ValueError) as exc:
             decomposition_error = str(exc)
         else:
             decomposition_error = "provider returned no valid typed tasks"
@@ -368,7 +368,7 @@ class NvidiaCeilingNode:
             )
             self.tokens_used += getattr(response.usage, "total_tokens", 0)
             return response.choices[0].message.content or ""
-        except Exception as e:
+        except LookupError as e:
             return f"<<THINKING>>\nCeiling remote call failed ({e}). Proceeding with local resolution.\n\n<<FILES>>\n"
 
     def review(self, request: str, context: str) -> tuple[bool, str, list[str]]:
@@ -406,7 +406,7 @@ class NvidiaCeilingNode:
             approved = value.get("approved") is True
             findings = [str(item)[:1000] for item in value.get("findings", []) if str(item).strip()]
             return approved, str(value.get("summary", ""))[:2000], findings[:20]
-        except Exception as exc:
+        except (LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
             return False, f"Independent reviewer unavailable: {exc}", []
 
 
@@ -454,7 +454,7 @@ class TwoNodeBackend:
                     request,
                     planner_context=planner_context,
                 )
-            except Exception as err:
+            except (OSError, ValueError) as err:
                 tasks = [AtomicTask(id=1, description=request)]
                 raw_decomposition = f"Single-task fallback due to decomposition error: {err}"
             execution_plan = self._execution_plan(request, tasks, planner_analysis)
@@ -866,7 +866,7 @@ class TwoNodeBackend:
         for ceiling_attempt in range(1, 3):
             try:
                 raw = self.ceiling.execute_direct(task, context=context, failure_reason=error)
-            except Exception as exc:
+            except (OSError, ValueError) as exc:
                 error = f"Ceiling execution error: {exc}"
                 logs.append(f"ESCALATION attempt={ceiling_attempt}: {error}")
                 continue
@@ -1013,7 +1013,7 @@ class TwoNodeBackend:
                 target = verification_dir / clean_name
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
-            except Exception:
+            except OSError:
                 pass
 
     def _task_context(self, task: AtomicTask, workspace_dir: str, context_accumulator: str) -> str:
@@ -1077,7 +1077,7 @@ class TwoNodeBackend:
             self.escalation_log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.escalation_log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(record, ensure_ascii=False) + "\n")
-        except Exception:
+        except (OSError, TypeError, ValueError):
             pass
 
     @staticmethod

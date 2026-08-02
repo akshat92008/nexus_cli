@@ -31,10 +31,10 @@ PURPLE = "#8b5cf6"  # Electric Violet
 def print_banner():
     """Print the gorgeous animated startup banner."""
     import time
-    from rich.live import Live
+
     from rich.align import Align
+    from rich.live import Live
     from rich.text import Text
-    from rich.panel import Panel
 
     frames = [
         # Frame 1 (eyes open)
@@ -351,14 +351,14 @@ class LiveStatus:
                 self._status = self.console.status(f"[{DIM}]{message}[/]", spinner="bouncingBar")
                 self._status.start()
                 self._is_active = True
-            except Exception:
+            except LookupError:
                 pass
 
     def update(self, message: str):
         if self._is_active and self._status:
             try:
                 self._status.update(f"[{DIM}]{message}[/]")
-            except Exception:
+            except LookupError:
                 pass
         else:
             self.start(message)
@@ -367,7 +367,7 @@ class LiveStatus:
         if self._is_active and self._status:
             try:
                 self._status.stop()
-            except Exception:
+            except (OSError, ValueError):
                 pass
             self._status = None
             self._is_active = False

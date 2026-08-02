@@ -529,7 +529,6 @@ wheels = [
 
 [[package]]
 name = "nexusai-cli"
-version = "3.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "httpx", extra = ["socks"] },

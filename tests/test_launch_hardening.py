@@ -168,7 +168,7 @@ def test_web_app_propagates_runtime_options(tmp_path):
     assert agent.local_intern_mode == "off"
     assert agent.local_intern_enabled is False
     assert agent.model_cfg["supports_tools"] is False
-    assert "launch-test" in server._agent_locks
+    assert "launch-test" in server._agent_busy
 
 
 def test_custom_endpoint_preflight_rejects_unsafe_scheme(monkeypatch):
@@ -360,6 +360,7 @@ def test_sandbox_blocks_common_credential_exfiltration_paths_before_spawn(
 
 def test_macos_profile_has_no_global_file_read_grant(tmp_path):
     import platform
+
     from nexus.sandbox import CommandSpec, SandboxRunner
 
     runner = SandboxRunner(tmp_path)

@@ -166,8 +166,6 @@ class SandboxRunner:
         "PATHEXT",
         "VIRTUAL_ENV",
         "CONDA_PREFIX",
-        "PYTHONPATH",
-        "NODE_PATH",
         "JAVA_HOME",
         "GOROOT",
         "GOPATH",
@@ -214,12 +212,7 @@ class SandboxRunner:
             )
 
         env = self._filtered_env(spec.env)
-        command = list(spec.argv)
-        cleanup_path: Path | None = None
-        if backend == SandboxBackend.BUBBLEWRAP:
-            command = self._bubblewrap_command(spec, cwd)
-        elif backend == SandboxBackend.MACOS:
-            command, cleanup_path = self._macos_command(spec, cwd)
+        command, cleanup_path = self.build_command(spec, cwd)
 
         started = time.monotonic()
         try:
@@ -419,7 +412,16 @@ class SandboxRunner:
         profile.write_text("\n".join(rules) + "\n", encoding="utf-8")
         return ["sandbox-exec", "-f", str(profile), *spec.argv], profile
 
-    def _command_path_violation(self, spec: CommandSpec, cwd: Path) -> str:
+    def build_command(self, spec: CommandSpec, cwd: Path) -> tuple[list[str], Path | None]:
+        """Build the raw command list wrapped in the OS sandbox."""
+        backend = self.backend()
+        if backend == SandboxBackend.BUBBLEWRAP:
+            return self._bubblewrap_command(spec, cwd), None
+        if backend == SandboxBackend.MACOS:
+            return self._macos_command(spec, cwd)
+        return list(spec.argv), None
+
+    def _command_path_violation(self, spec: CommandSpec, cwd: Path) -> str | None:
         """Reject command arguments that can address sensitive host paths.
 
         This is defense in depth for the restricted-process backend.  Strong
@@ -550,7 +552,7 @@ class SandboxRunner:
         env = {
             key: value
             for key, value in os.environ.items()
-            if key in self.SAFE_ENV_KEYS or key.startswith("NEXUS_")
+            if key in self.SAFE_ENV_KEYS or (key.startswith("NEXUS_") and "KEY" not in key and "TOKEN" not in key and "SECRET" not in key)
         }
         for key, value in additions.items():
             normalized = str(key)

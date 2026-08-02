@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from nexus.process_io import filtered_subprocess_env, readline_with_timeout
+from nexus.sandbox import CommandSpec, SandboxRunner
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,7 @@ class PluginWorker:
         self.allowed_env = allowed_env or {}
         self.timeout = timeout
         self._process: subprocess.Popen | None = None
+        self._cleanup_path: Path | None = None
 
     def start(self) -> PluginWorkerResult:
         """Start the worker subprocess and initialise the plugin."""
@@ -181,7 +183,7 @@ class PluginWorker:
                 module = importlib.util.module_from_spec(spec)
                 try:
                     spec.loader.exec_module(module)
-                except Exception as e:
+                except (OSError, ValueError) as e:
                     print(json.dumps({"error": f"Plugin load error: {e}"}))
                     sys.exit(1)
 
@@ -203,7 +205,7 @@ class PluginWorker:
                     if not instance.setup():
                         print(json.dumps({"error": "Plugin setup returned False"}))
                         sys.exit(1)
-                except Exception as e:
+                except (TypeError, ValueError) as e:
                     print(json.dumps({"error": f"Plugin setup error: {e}"}))
                     sys.exit(1)
 
@@ -226,7 +228,7 @@ class PluginWorker:
                         if action == "teardown":
                             try:
                                 instance.teardown()
-                            except Exception:
+                            except (OSError, ValueError):
                                 pass
                             print(json.dumps({"done": True}))
                             sys.stdout.flush()
@@ -270,7 +272,7 @@ class PluginWorker:
                     except json.JSONDecodeError:
                         print(json.dumps({"error": "Invalid JSON"}))
                         sys.stdout.flush()
-                    except Exception as e:
+                    except (LookupError, OSError, RuntimeError, TypeError, ValueError) as e:
                         print(json.dumps({"error": str(e)}))
                         sys.stdout.flush()
 
@@ -285,21 +287,35 @@ class PluginWorker:
             if key in self.allowed_env:
                 env[key] = self.allowed_env[key]
 
+        argv = [
+            sys.executable,
+            "-c",
+            worker_script,
+            str(self.plugin_dir),
+            self.manifest.entry_point,
+        ]
+        
+        cwd_path = Path(self.workspace_root or self.plugin_dir).resolve()
+        spec = CommandSpec(
+            argv=argv,
+            cwd=str(cwd_path),
+            network=self.manifest.network_access,
+            env=env,
+            require_os_isolation=True,
+        )
+        
+        runner = SandboxRunner(cwd_path)
+        command, self._cleanup_path = runner.build_command(spec, cwd_path)
+
         try:
             self._process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-c",
-                    worker_script,
-                    str(self.plugin_dir),
-                    self.manifest.entry_point,
-                ],
+                command,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
                 env=env,
-                cwd=str(self.workspace_root or self.plugin_dir),
+                cwd=str(cwd_path),
             )
 
             line = readline_with_timeout(self._process.stdout, self.timeout)
@@ -356,18 +372,26 @@ class PluginWorker:
                 if self._process.poll() is None:
                     self._process.stdin.write(json.dumps({"action": "teardown"}) + "\n")
                     self._process.stdin.flush()
-                    self._process.wait(timeout=5)
+                    self._process.wait(timeout=2)
             except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
                 pass
             try:
-                self._process.terminate()
-                self._process.wait(timeout=2)
+                if self._process.poll() is None:
+                    self._process.terminate()
+                    self._process.wait(timeout=2)
             except (OSError, subprocess.TimeoutExpired):
-                try:
+                pass
+            try:
+                if self._process.poll() is None:
                     self._process.kill()
-                except OSError:
-                    pass
+                    self._process.wait(timeout=2)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
             self._process = None
+
+        if self._cleanup_path:
+            self._cleanup_path.unlink(missing_ok=True)
+            self._cleanup_path = None
 
     def __del__(self):
         self.stop()

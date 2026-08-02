@@ -1035,7 +1035,7 @@ def _run_git(args: list[str], cwd: str | None = None) -> tuple[bool, str]:
         return False, "❌ git is not installed or not in PATH"
     except subprocess.TimeoutExpired:
         return False, "⏰ Git command timed out"
-    except Exception as e:
+    except (LookupError, OSError, RuntimeError, TypeError, ValueError) as e:
         return False, f"❌ Git error: {e}"
 
 
@@ -1125,7 +1125,7 @@ def tool_read_file(path: str, start_line: int | None = None, end_line: int | Non
             header += f"  [showing lines {start}-{end}]"
 
         return header + "\n" + "\n".join(numbered)
-    except Exception as e:
+    except (LookupError, OSError, TypeError, ValueError) as e:
         return f"❌ Error reading file: {e}"
 
 
@@ -1147,7 +1147,7 @@ def tool_write_file(path: str, content: str) -> str:
 
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
         return f"✅ Wrote {line_count} lines to {p}"
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         return f"❌ Error writing file: {e}"
 
 
@@ -1211,7 +1211,7 @@ def tool_edit_file(path: str, old_text: str, new_text: str) -> str:
         old_lc = old_text.count("\n") + 1
         new_lc = new_text.count("\n") + 1
         return f"✅ Edited {p.name}: replaced {old_lc} lines → {new_lc} lines"
-    except Exception as e:
+    except (LookupError, OSError, TypeError, ValueError) as e:
         return f"❌ Error editing file: {e}"
 
 
@@ -1259,7 +1259,7 @@ def tool_patch_file(path: str, start_line: int, end_line: int, new_content: str)
 
         history.record_change(str(p), "patch_file", snapshot)
         return f"✅ Patched {p.name}: lines {start_line}-{end_line} → {len(new_lines)} new lines"
-    except Exception as e:
+    except (LookupError, OSError, TypeError, ValueError) as e:
         return f"❌ Error patching file: {e}"
 
 
@@ -1286,7 +1286,7 @@ def tool_multi_edit(edits: list[dict]) -> str:
             return f"❌ Multi-edit aborted: edit #{i + 1} is missing 'path'. No files changed."
         try:
             p = _resolve_path(path)
-        except Exception as exc:
+        except (OSError, ValueError) as exc:
             return f"❌ Multi-edit aborted: edit #{i + 1} path error — {exc}. No files changed."
         if not p.exists():
             return f"❌ Multi-edit aborted: edit #{i + 1} file not found: {path}. No files changed."
@@ -1319,7 +1319,7 @@ def tool_multi_edit(edits: list[dict]) -> str:
                 if snap and Path(str(snap)).exists():
                     try:
                         _shutil.copy2(str(snap), applied_path)
-                    except Exception:
+                    except (TypeError, ValueError):
                         pass
             return (
                 f"❌ Multi-edit aborted at edit #{i + 1}: {result}. "
@@ -1368,7 +1368,7 @@ def tool_file_info(path: str) -> str:
                 info.append(f"  MD5:       {h}")
 
         return "\n".join(info)
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         return f"❌ Error getting file info: {e}"
 
 
@@ -1400,7 +1400,7 @@ def tool_diff_files(file_a: str, file_b: str) -> str:
         if not result:
             return f"✅ Files are identical: {pa.name} == {pb.name}"
         return f"📝 Diff: {pa.name} vs {pb.name}\n{result}"
-    except Exception as e:
+    except (ImportError, OSError, TypeError, ValueError) as e:
         return f"❌ Error diffing files: {e}"
 
 
@@ -1430,7 +1430,7 @@ def tool_run_command(
             require_os_isolation=require_os_isolation,
         )
         return result.format_tool_output()
-    except Exception as e:
+    except (OSError, RuntimeError, TypeError, ValueError) as e:
         return f"❌ Error running command: {e}"
 
 
@@ -1455,7 +1455,7 @@ def tool_run_process(
             require_os_isolation=require_os_isolation,
         )
         return SandboxRunner(work_dir).run(spec).format_tool_output()
-    except Exception as exc:
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as exc:
         return f"❌ Error running typed process: {exc}"
 
 
@@ -1573,7 +1573,7 @@ def tool_process_run(
             f"  Stdout: {stdout_log}\n"
             f"  Stderr: {stderr_log}"
         )
-    except Exception as e:
+    except (LookupError, OSError, RuntimeError, TypeError, ValueError) as e:
         return f"❌ Error starting background process: {e}"
 
 
@@ -1722,7 +1722,7 @@ def tool_search_code(
         if len(matches) == max_matches:
             header += f" (capped at {max_matches})"
         return header + "\n" + "\n".join(matches)
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         return f"❌ Error searching: {e}"
 
 
@@ -1761,7 +1761,7 @@ def tool_list_directory(
         if not items:
             return f"📁 {dir_path} (empty)"
         return f"📁 {dir_path}\n" + "\n".join(items)
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         return f"❌ Error listing directory: {e}"
 
 
@@ -1786,7 +1786,7 @@ def tool_find_files(pattern: str, directory: str | None = None) -> str:
         if not matches:
             return f"🔍 No files matching '{pattern}' in {search_dir}"
         return f"🔍 Found {len(matches)} matches for '{pattern}':\n" + "\n".join(matches)
-    except Exception as e:
+    except (LookupError, OSError, RuntimeError, TypeError, ValueError) as e:
         return f"❌ Error finding files: {e}"
 
 
@@ -1818,7 +1818,7 @@ def tool_get_project_structure(path: str | None = None, max_depth: int = 4) -> s
 
         _tree(root, "", 0)
         return "\n".join(lines)
-    except Exception as e:
+    except (LookupError, OSError, TypeError, ValueError) as e:
         return f"❌ Error getting structure: {e}"
 
 
@@ -1842,7 +1842,7 @@ def tool_repo_index(force: bool = False) -> str:
             },
             indent=2,
         )
-    except Exception as exc:
+    except (ImportError, LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
         return f"❌ Repository graph indexing failed: {exc}"
 
 
@@ -1867,7 +1867,7 @@ def tool_repo_symbols(
             },
             indent=2,
         )
-    except Exception as exc:
+    except (ImportError, LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
         return f"❌ Repository symbol lookup failed: {exc}"
 
 
@@ -1887,7 +1887,7 @@ def tool_repo_impact(paths: list[str]) -> str:
             },
             indent=2,
         )
-    except Exception as exc:
+    except (ImportError, LookupError, OSError, RuntimeError, TypeError, ValueError) as exc:
         return f"❌ Repository impact analysis failed: {exc}"
 
 
@@ -1912,7 +1912,7 @@ def tool_repo_context(query: str, limit: int = 40) -> str:
             },
             indent=2,
         )
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         return f"❌ Repository context selection failed: {exc}"
 
 
@@ -1920,7 +1920,7 @@ def tool_repo_routes(query: str = "") -> str:
     """Return indexed routes."""
     try:
         return json.dumps(_built_graph().routes(query), indent=2)
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         return f"❌ Repository route discovery failed: {exc}"
 
 
@@ -1928,7 +1928,7 @@ def tool_repo_models(query: str = "") -> str:
     """Return indexed database models."""
     try:
         return json.dumps(_built_graph().models(query), indent=2)
-    except Exception as exc:
+    except (TypeError, ValueError) as exc:
         return f"❌ Repository model discovery failed: {exc}"
 
 
@@ -2562,7 +2562,7 @@ def tool_web_search(query: str, max_results: int = 5) -> str:
             return f"🔍 No results found for: {query}"
 
         return f"🔍 Search results for '{query}':\n\n" + "\n".join(results)
-    except Exception as e:
+    except (LookupError, OSError, RuntimeError, TypeError, ValueError) as e:
         return f"❌ Search error: {e}"
 
 
@@ -2582,7 +2582,7 @@ def tool_github_list_issues(limit: int = 10) -> str:
         for i in issues:
             lines.append(f"#{i.get('number')} [{i.get('state')}] {i.get('title')}")
         return "\n".join(lines)
-    except Exception as e:
+    except (ImportError, LookupError, OSError, RuntimeError, TypeError, ValueError) as e:
         return f"❌ GitHub Error: {e}"
 
 
@@ -2604,7 +2604,7 @@ def tool_github_view_issue(number: str) -> str:
             f"{issue.get('body', '(no body)')}\n\n"
             f"Comments:\n{comments or '(none)'}"
         )
-    except Exception as e:
+    except (ImportError, LookupError, OSError, RuntimeError, TypeError, ValueError) as e:
         return f"❌ GitHub Error: {e}"
 
 
@@ -2614,7 +2614,7 @@ def tool_generate_dashboard(input_path: str, output_path: str) -> str:
 
         RegressionDashboard.generate(input_path, output_path)
         return f"✅ Dashboard successfully generated at {output_path}"
-    except Exception as e:
+    except ImportError as e:
         return f"❌ Failed to generate dashboard: {e}"
 
 
@@ -2624,7 +2624,7 @@ def tool_github_create_pr(title: str, body: str, base: str = "") -> str:
 
         url = GitHubIntegration.create_pull_request(title, body, base)
         return f"✅ Pull request created successfully: {url}"
-    except Exception as e:
+    except ImportError as e:
         return f"❌ GitHub Error: {e}"
 
 
@@ -2745,5 +2745,5 @@ def execute_tool(name: str, arguments: dict) -> str:
         return f"❌ Unknown tool: {name}"
     try:
         return fn(**arguments)
-    except TypeError as e:
-        return f"❌ Invalid arguments for {name}: {e}"
+    except Exception as e:
+        return f"❌ Tool execution failed for {name}: {e}"

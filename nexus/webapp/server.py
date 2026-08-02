@@ -14,7 +14,6 @@ import asyncio
 import json
 import os
 import secrets
-import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
@@ -33,7 +32,7 @@ from nexus.tools import TOOL_DEFINITIONS
 
 # Global state
 _agents: dict[str, Agent] = {}  # session_id -> Agent
-_agent_locks: dict[str, threading.RLock] = {}
+_agent_busy: dict[str, bool] = {}
 _api_key: str = ""
 _default_model: str = DEFAULT_MODEL
 _working_dir: str = ""
@@ -101,7 +100,7 @@ def _get_agent(session_id: str) -> Agent:
         if len(_agents) >= MAX_AGENTS:
             oldest_key = next(iter(_agents))
             _agents.pop(oldest_key).close(discard_workspace=True)
-            _agent_locks.pop(oldest_key, None)
+            _agent_busy.pop(oldest_key, None)
         _agents[session_id] = Agent(
             api_key=_api_key,
             model_key=_default_model,
@@ -113,15 +112,20 @@ def _get_agent(session_id: str) -> Agent:
             plugins_enabled=bool(_agent_options["plugins_enabled"]),
             tools_enabled=bool(_agent_options["tools_enabled"]),
         )
-    _agent_locks.setdefault(session_id, threading.RLock())
+        _agent_busy[session_id] = False
     return _agents[session_id]
 
 
 def _run_agent_locked(session_id: str, agent: Agent, message: str):
-    """Serialize mutations for a web session while allowing other sessions to run."""
-    lock = _agent_locks.setdefault(session_id, threading.RLock())
-    with lock:
+    """Run an agent session, ensuring no overlapping requests for the same session."""
+    if _agent_busy.get(session_id, False):
+        raise RuntimeError("Agent is busy processing another request")
+    
+    _agent_busy[session_id] = True
+    try:
         return agent.run_non_interactive(message)
+    finally:
+        _agent_busy[session_id] = False
 
 
 # ─── HTTP Endpoints ──────────────────────────────────────────────────────────
@@ -143,7 +147,7 @@ def _require_web_token(request) -> Response | None:
     from starlette.responses import JSONResponse as _JR
     token_header = request.headers.get("X-CSRF-Token", "")
     token_query = request.query_params.get("token", "")
-    if token_header == _web_token or token_query == _web_token:
+    if secrets.compare_digest(token_header, _web_token) or secrets.compare_digest(token_query, _web_token):
         return None
     return _JR({"error": "Unauthorized — include the session token"}, status_code=403)
 
@@ -230,7 +234,7 @@ async def api_files(request):
         )
     except PermissionError as e:
         return JSONResponse({"error": str(e)}, status_code=403)
-    except Exception as e:
+    except (LookupError, OSError, TypeError, ValueError) as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
@@ -263,27 +267,33 @@ async def api_file_content(request):
         )
     except PermissionError as e:
         return JSONResponse({"error": str(e)}, status_code=403)
-    except Exception as e:
+    except (OSError, TypeError, ValueError) as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
 async def api_chat(request):
     """Non-streaming chat endpoint."""
-    token = request.headers.get("X-CSRF-Token")
-    if token != _web_token:
+    token = request.headers.get("X-CSRF-Token", "")
+    if not secrets.compare_digest(token, _web_token):
         return JSONResponse({"error": "Unauthorized"}, status_code=403)
 
     try:
         body = await request.json()
-    except Exception:
+        if not isinstance(body, dict):
+            return JSONResponse({"error": "Invalid JSON body"}, status_code=400)
+    except (OSError, ValueError):
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
-    message = body.get("message", "").strip()
+    message = body.get("message")
     session_id = body.get("session_id", "default")
     model = body.get("model")
 
-    if not message:
-        return JSONResponse({"error": "Empty message"}, status_code=400)
+    if not isinstance(message, str) or not message.strip():
+        return JSONResponse({"error": "Empty or invalid message"}, status_code=400)
+    if not isinstance(session_id, str):
+        return JSONResponse({"error": "Invalid session_id"}, status_code=400)
+
+    message = message.strip()
 
     agent = _get_agent(session_id)
 
@@ -291,11 +301,17 @@ async def api_chat(request):
     if model:
         agent.set_model(model)
 
+    if _agent_busy.get(session_id, False):
+        return JSONResponse({"error": "Agent is currently busy processing another request"}, status_code=429)
+
     # Run synchronously in a thread
     loop = asyncio.get_event_loop()
-    content, events = await loop.run_in_executor(
-        None, _run_agent_locked, session_id, agent, message
-    )
+    try:
+        content, events = await loop.run_in_executor(
+            None, _run_agent_locked, session_id, agent, message
+        )
+    except RuntimeError as e:
+        return JSONResponse({"error": str(e)}, status_code=429)
 
     return JSONResponse(
         {
@@ -333,8 +349,8 @@ async def api_pending_edits(request):
 
 
 async def api_edit_decision(request):
-    token = request.headers.get("X-CSRF-Token")
-    if token != _web_token:
+    token = request.headers.get("X-CSRF-Token", "")
+    if not secrets.compare_digest(token, _web_token):
         return JSONResponse({"error": "Unauthorized"}, status_code=403)
 
     session_id = request.path_params["session_id"]
@@ -374,7 +390,8 @@ async def ws_chat(websocket: WebSocket):
             msg_type = data.get("type", "chat")
 
             if msg_type == "authenticate":
-                if data.get("token") == _web_token:
+                token = data.get("token", "")
+                if secrets.compare_digest(token, _web_token):
                     authenticated = True
                 else:
                     await websocket.send_json({"type": "error", "content": "Unauthorized"})
@@ -430,7 +447,7 @@ async def ws_chat(websocket: WebSocket):
                 # Create a fresh session
                 if session_id in _agents:
                     _agents.pop(session_id).close(discard_workspace=True)
-                    _agent_locks.pop(session_id, None)
+                    _agent_busy.pop(session_id, None)
                 import time
 
                 session_id = f"ws_{int(time.time())}"
@@ -438,8 +455,13 @@ async def ws_chat(websocket: WebSocket):
                 continue
 
             if msg_type == "chat":
-                message = data.get("message", "").strip()
-                if not message:
+                message = data.get("message", "")
+                if not isinstance(message, str) or not message.strip():
+                    continue
+                message = message.strip()
+
+                if _agent_busy.get(session_id, False):
+                    await websocket.send_json({"type": "error", "content": "Agent is currently busy"})
                     continue
 
                 agent = _get_agent(session_id)
@@ -449,9 +471,13 @@ async def ws_chat(websocket: WebSocket):
 
                 # Run in executor (blocking agent loop)
                 loop = asyncio.get_event_loop()
-                content, events = await loop.run_in_executor(
-                    None, _run_agent_locked, session_id, agent, message
-                )
+                try:
+                    content, events = await loop.run_in_executor(
+                        None, _run_agent_locked, session_id, agent, message
+                    )
+                except RuntimeError as e:
+                    await websocket.send_json({"type": "error", "content": str(e)})
+                    continue
 
                 # Send tool events
                 for event in events:
@@ -478,11 +504,14 @@ async def ws_chat(websocket: WebSocket):
                 )
 
     except WebSocketDisconnect:
-        pass
-    except Exception as e:
+        # Cancel any running agent tasks for this session
+        agent = _agents.get(session_id)
+        if agent and hasattr(agent, "cancel"):
+            agent.cancel()
+    except (ImportError, LookupError, OSError, RuntimeError, TypeError, ValueError) as e:
         try:
             await websocket.send_json({"type": "error", "content": str(e)})
-        except Exception:
+        except (TypeError, ValueError):
             pass
 
 
@@ -506,7 +535,7 @@ def create_app(
     for existing_agent in _agents.values():
         existing_agent.close(discard_workspace=True)
     _agents.clear()
-    _agent_locks.clear()
+    _agent_busy.clear()
     _web_token = secrets.token_hex(16)
     _api_key = api_key
     _default_model = model
@@ -547,7 +576,7 @@ def create_app(
             for existing_agent in list(_agents.values()):
                 existing_agent.close(discard_workspace=True)
             _agents.clear()
-            _agent_locks.clear()
+            _agent_busy.clear()
 
     app = Starlette(routes=routes, lifespan=lifespan)
 

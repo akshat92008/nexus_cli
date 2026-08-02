@@ -379,7 +379,7 @@ def _handle_workspace_commands() -> bool:
             from nexus.ui import print_success
 
             print_success("Workspace changes applied successfully.")
-        except Exception as e:
+        except ImportError as e:
             from nexus.ui import print_error
 
             print_error(f"Apply failed: {e}")
@@ -453,7 +453,7 @@ def _handle_generate_dashboard() -> bool:
         from nexus.ui import print_success
 
         print_success(f"Dashboard generated successfully at {args.output}")
-    except Exception as e:
+    except ImportError as e:
         from nexus.ui import print_error
 
         print_error(f"Failed to generate dashboard: {e}")
@@ -531,7 +531,7 @@ def _solve_issue_prompt() -> bool:
         from nexus.github import GitHubIntegration
 
         issue = GitHubIntegration.view_issue(issue_number)
-    except Exception as exc:
+    except ImportError as exc:
         raise SystemExit(str(exc)) from exc
 
     if not issue:
@@ -965,7 +965,7 @@ def start_background_web_server(api_key: str, model: str, port: int, working_dir
             app = create_app(api_key=api_key, model=model, working_dir=working_dir)
             # Run uvicorn quietly (log_level="error") to avoid cluttered CLI printouts
             uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
-        except Exception:
+        except (OSError, RuntimeError):
             pass  # Fail silently if port is already bound by another instance
 
     thread = threading.Thread(target=_run, daemon=True)
@@ -976,7 +976,7 @@ def start_background_web_server(api_key: str, model: str, port: int, working_dir
         time.sleep(1.2)
         try:
             webbrowser.open(f"http://localhost:{port}")
-        except Exception:
+        except OSError:
             pass
 
     threading.Thread(target=_open_browser, daemon=True).start()
@@ -1004,7 +1004,7 @@ def non_interactive_exit_code(content: str, events: list[dict]) -> int:
 def _close_and_exit(agent: Agent, exit_code: int) -> None:
     """Release session-owned resources before terminating the CLI process."""
 
-    agent.close()
+    agent.close(discard_workspace=not getattr(agent, "keep_workspace", False))
     raise SystemExit(exit_code)
 
 
@@ -1141,7 +1141,7 @@ def main():
             else:
                 print(result)
             _close_and_exit(agent, 0 if success else 2)
-        except Exception as exc:
+        except (LookupError, TypeError, ValueError) as exc:
             ui.print_error(str(exc))
             sys.exit(2)
 
@@ -1352,7 +1352,7 @@ def main():
 
                     final_report_path = agent.run_ledger._require_turn() / "final_report.json"
                     print(FinalReportGenerator.generate(final_report_path))
-                except Exception:
+                except ImportError:
                     pass
             _close_and_exit(agent, exit_code)
         else:
@@ -1376,7 +1376,7 @@ def main():
                 final_report_path = agent.run_ledger._require_turn() / "final_report.json"
                 print("\\n")
                 print(FinalReportGenerator.generate(final_report_path))
-            except Exception:
+            except ImportError:
                 pass
             _close_and_exit(agent, exit_code)
 
@@ -1384,7 +1384,7 @@ def main():
     try:
         run_interactive(agent)
     finally:
-        agent.close()
+        agent.close(discard_workspace=not getattr(agent, "keep_workspace", False))
 
 
 if __name__ == "__main__":

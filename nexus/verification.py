@@ -229,7 +229,7 @@ class VerificationEngine:
                 output=result.stderr or result.stdout,
                 duration_ms=int((time.time() - start) * 1000),
             )
-        except Exception as e:
+        except (ImportError, LookupError, OSError, RuntimeError, TypeError, ValueError) as e:
             return CheckResult(CheckType.SYNTAX, CheckStatus.ERROR, "", str(e))
 
     def verify_imports(self) -> CheckResult:
@@ -688,7 +688,7 @@ class VerificationEngine:
                 duration_ms=duration,
             )
 
-        except Exception as e:
+        except (OSError, RuntimeError, TypeError, ValueError) as e:
             return CheckResult(
                 check_type=check_type,
                 status=CheckStatus.ERROR,

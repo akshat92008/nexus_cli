@@ -29,7 +29,7 @@ def test_webapp_api_chat_empty(client):
 
     response = client.post("/api/chat", json={}, headers={"X-CSRF-Token": _web_token})
     assert response.status_code == 400
-    assert "Empty message" in response.json()["error"]
+    assert "Empty or invalid message" in response.json()["error"]
 
 
 def test_websocket_unauthorized(client):

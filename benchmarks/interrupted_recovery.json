@@ -1,0 +1,22 @@
+{
+  "schema_version": "nexus.benchmark.v1",
+  "name": "interrupted-recovery",
+  "tasks": [
+    {
+      "id": "recover-from-crash",
+      "category": "repository-debugging",
+      "repository": "fixtures/crash_project",
+      "prompt": "Complete the implementation of the payment gateway after a simulated crash.",
+      "expected_changed_files": [
+        "src/payment.py"
+      ],
+      "verification": [
+        [
+          "pytest",
+          "tests/"
+        ]
+      ],
+      "timeout_seconds": 600
+    }
+  ]
+}

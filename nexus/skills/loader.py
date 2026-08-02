@@ -215,7 +215,7 @@ class SkillLoader:
             try:
                 skill = skill_class()
                 self.registry.register(skill)
-            except Exception:
+            except (OSError, ValueError):
                 pass  # Don't let a bad skill break everything
 
     def load_custom(self):
@@ -248,7 +248,7 @@ class SkillLoader:
                         ):
                             skill = attr()
                             self.registry.register(skill)
-            except Exception:
+            except (ImportError, TypeError, ValueError):
                 pass  # Don't let bad custom skills break anything
 
     def load_project(self):
