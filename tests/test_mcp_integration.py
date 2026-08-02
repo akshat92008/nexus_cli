@@ -56,7 +56,10 @@ for line in sys.stdin:
 """)
 
     config = MCPServerConfig(
-        name="actual_test_server", command=[sys.executable, str(server_script)]
+        name="actual_test_server",
+        command=[sys.executable, str(server_script)],
+        workspace=str(tmp_path),
+        require_os_isolation=False,
     )
     conn = MCPConnection(config)
 

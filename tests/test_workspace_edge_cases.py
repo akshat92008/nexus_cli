@@ -8,21 +8,34 @@ import pytest
 from nexus.workspace import GitWorktreeSession, WorktreeError
 
 
-def test_workspace_rejects_dirty_git(tmp_path: Path):
+def _init_repo(path: Path) -> None:
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "nexus@example.invalid"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Nexus Test"], cwd=path, check=True)
+    (path / "tracked.txt").write_text("base\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-qm", "initial"], cwd=path, check=True)
+
+
+def test_workspace_snapshots_dirty_git(tmp_path: Path):
     ws_path = tmp_path / "dirty_repo"
     ws_path.mkdir()
-    (ws_path / ".git").mkdir()  # Make it look like a git repo
+    _init_repo(ws_path)
+    (ws_path / "tracked.txt").write_text("uncommitted\n", encoding="utf-8")
+    (ws_path / "untracked.txt").write_text("new\n", encoding="utf-8")
 
-    with patch.object(GitWorktreeSession, "_git") as mock_git:
-        mock_git.side_effect = lambda cmd: (
-            ws_path.as_posix() if "rev-parse" in cmd else "M file.txt\n"
-        )
+    session = GitWorktreeSession(ws_path, "session-123", state_root=tmp_path / "state")
+    info = session.create()
 
-        session = GitWorktreeSession(ws_path, "session-123", state_root=tmp_path / "state")
-        with pytest.raises(WorktreeError, match="uncommitted changes"):
-            session.create()
-
-        # Since the class does mostly path manipulation via pathlib, it should not fail on init.
+    isolated = Path(info.path)
+    assert info.source_was_dirty is True
+    assert info.snapshot_commit
+    assert (isolated / "tracked.txt").read_text(encoding="utf-8") == "uncommitted\n"
+    assert (isolated / "untracked.txt").read_text(encoding="utf-8") == "new\n"
+    assert session.diff() == ""
+    session.discard()
 
 
 def test_workspace_merge_conflict_rejection(tmp_path: Path):
@@ -30,11 +43,10 @@ def test_workspace_merge_conflict_rejection(tmp_path: Path):
     ws_path.mkdir()
     (ws_path / ".git").mkdir()
 
-    with patch.object(GitWorktreeSession, "_git") as mock_git:
-        mock_git.side_effect = lambda cmd: (
-            ws_path.as_posix() if "rev-parse" in cmd else "UU conflicting_file.txt\n"
-        )
-
+    with (
+        patch.object(GitWorktreeSession, "_git", return_value=ws_path.as_posix()),
+        patch.object(GitWorktreeSession, "_git_bytes", return_value=b"UU conflict.txt\0"),
+    ):
         session = GitWorktreeSession(ws_path, "session-456", state_root=tmp_path / "state")
-        with pytest.raises(WorktreeError, match="uncommitted changes"):
+        with pytest.raises(WorktreeError, match="unresolved merge conflicts"):
             session.create()

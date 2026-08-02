@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,9 @@ class WorktreeInfo:
     branch: str
     created_at: str
     backend: str = "git-worktree"
+    source_was_dirty: bool = False
+    source_state_hash: str = ""
+    snapshot_commit: str = ""
 
 
 class GitWorktreeSession:
@@ -54,7 +58,12 @@ class GitWorktreeSession:
         self.force_copy = force_copy
 
     def create(self) -> WorktreeInfo:
-        """Create and return an isolated worktree on a dedicated branch."""
+        """Create an isolated worktree, preserving the source's current state.
+
+        Dirty repositories are snapshotted into the new branch instead of being
+        rejected. The source tree is never modified. Unmerged/conflicted states
+        still fail closed because they cannot be represented deterministically.
+        """
         if self.path.exists():
             raise WorktreeError(f"Worktree path already exists: {self.path}")
         if self.force_copy or not (self.repository / ".git").exists():
@@ -64,12 +73,17 @@ class GitWorktreeSession:
             raise WorktreeError(
                 f"Working directory must be the Git repository root: {self.repository}"
             )
-        dirty = self._git(["status", "--porcelain"]).strip()
-        if dirty:
+
+        status_bytes = self._git_bytes(["status", "--porcelain=v1", "-z"])
+        status_entries = [item for item in status_bytes.split(b"\0") if item]
+        if any(self._is_unmerged_status(item) for item in status_entries):
             raise WorktreeError(
-                "Source repository has uncommitted changes. Commit or stash them "
-                "before starting an isolated worktree so no work is silently omitted."
+                "Source repository has unresolved merge conflicts. Resolve them "
+                "before creating an isolated Nexus workspace."
             )
+
+        source_was_dirty = bool(status_entries)
+        source_state_hash = self._source_state_hash() if source_was_dirty else ""
         base_commit = self._git(["rev-parse", "HEAD"]).strip()
         branch_suffix = re.sub(r"[^A-Za-z0-9._-]+", "-", self.session_id).strip("-")
         branch = f"nexus/{branch_suffix}"
@@ -93,18 +107,129 @@ class GitWorktreeSession:
         if result.returncode != 0:
             raise WorktreeError((result.stderr or result.stdout).strip())
 
+        snapshot_commit = ""
+        try:
+            if source_was_dirty:
+                self._materialize_source_snapshot()
+                subprocess.run(["git", "add", "-A"], cwd=self.path, check=True)
+                committed = subprocess.run(
+                    [
+                        "git",
+                        "-c",
+                        "user.name=Nexus",
+                        "-c",
+                        "user.email=nexus@localhost",
+                        "commit",
+                        "-m",
+                        "Nexus source workspace snapshot",
+                    ],
+                    cwd=self.path,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                )
+                if committed.returncode != 0:
+                    raise WorktreeError((committed.stderr or committed.stdout).strip())
+                snapshot_commit = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=self.path,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout.strip()
+        except (OSError, subprocess.SubprocessError, WorktreeError) as exc:
+            subprocess.run(
+                ["git", "worktree", "remove", "--force", str(self.path)],
+                cwd=self.repository,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "branch", "-D", branch],
+                cwd=self.repository,
+                capture_output=True,
+            )
+            if isinstance(exc, WorktreeError):
+                raise
+            raise WorktreeError(f"Could not snapshot dirty repository: {exc}") from exc
+
         self.info = WorktreeInfo(
             source_repository=str(self.repository),
             path=str(self.path),
             base_commit=base_commit,
             branch=branch,
             created_at=datetime.now(timezone.utc).isoformat(),
+            source_was_dirty=source_was_dirty,
+            source_state_hash=source_state_hash,
+            snapshot_commit=snapshot_commit,
         )
         self.info_path.write_text(
-            __import__("json").dumps(asdict(self.info), indent=2) + "\n",
+            json.dumps(asdict(self.info), indent=2) + "\n",
             encoding="utf-8",
         )
         return self.info
+
+    @staticmethod
+    def _is_unmerged_status(entry: bytes) -> bool:
+        code = entry[:2].decode("ascii", errors="ignore")
+        return code in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
+
+    def _git_bytes(self, args: list[str], *, cwd: Path | None = None) -> bytes:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=cwd or self.repository,
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            raise WorktreeError(result.stderr.decode(errors="replace").strip())
+        return result.stdout
+
+    def _untracked_paths(self) -> list[Path]:
+        raw = self._git_bytes(["ls-files", "--others", "--exclude-standard", "-z"])
+        return [Path(os.fsdecode(item)) for item in raw.split(b"\0") if item]
+
+    def _source_state_hash(self) -> str:
+        digest = hashlib.sha256()
+        digest.update(self._git_bytes(["diff", "--binary", "HEAD"]))
+        digest.update(self._git_bytes(["status", "--porcelain=v1", "-z"]))
+        for relative in sorted(self._untracked_paths(), key=lambda item: item.as_posix()):
+            source = (self.repository / relative).resolve()
+            try:
+                source.relative_to(self.repository)
+            except ValueError as exc:
+                raise WorktreeError(f"Untracked path escapes repository: {relative}") from exc
+            digest.update(relative.as_posix().encode("utf-8", errors="surrogateescape"))
+            if source.is_symlink():
+                digest.update(b"SYMLINK\0" + os.readlink(source).encode())
+            elif source.is_file():
+                digest.update(source.read_bytes())
+        return digest.hexdigest()
+
+    def _materialize_source_snapshot(self) -> None:
+        patch = self._git_bytes(["diff", "--binary", "HEAD"])
+        if patch:
+            applied = subprocess.run(
+                ["git", "apply", "--binary", "--whitespace=nowarn", "-"],
+                cwd=self.path,
+                input=patch,
+                capture_output=True,
+                timeout=30,
+            )
+            if applied.returncode != 0:
+                raise WorktreeError(applied.stderr.decode(errors="replace").strip())
+        for relative in self._untracked_paths():
+            source = (self.repository / relative).resolve()
+            target = (self.path / relative).resolve()
+            try:
+                source.relative_to(self.repository)
+                target.relative_to(self.path)
+            except ValueError as exc:
+                raise WorktreeError(f"Untracked path escapes repository: {relative}") from exc
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if source.is_symlink():
+                target.symlink_to(os.readlink(source))
+            elif source.is_file():
+                shutil.copy2(source, target)
 
     def _create_temporary_copy(self) -> WorktreeInfo:
         """Isolate a greenfield/non-Git directory with a persistent temporary copy."""
@@ -189,7 +314,12 @@ class GitWorktreeSession:
             return ""
         if self.info.backend == "git-worktree":
             result = subprocess.run(
-                ["git", "diff", "--binary", self.info.base_commit],
+                [
+                    "git",
+                    "diff",
+                    "--binary",
+                    self.info.snapshot_commit or self.info.base_commit,
+                ],
                 cwd=self.path,
                 capture_output=True,
                 text=True,
@@ -275,26 +405,87 @@ class GitWorktreeSession:
 
             return "".join(lines)
 
+    def _commit_workspace_changes(self) -> None:
+        status = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=self.path,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        if not status.stdout.strip():
+            return
+        subprocess.run(["git", "add", "-A"], cwd=self.path, check=True)
+        committed = subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Nexus",
+                "-c",
+                "user.email=nexus@localhost",
+                "commit",
+                "-m",
+                "Nexus workspace apply",
+            ],
+            cwd=self.path,
+            capture_output=True,
+            text=True,
+        )
+        if committed.returncode != 0:
+            raise WorktreeError((committed.stderr or committed.stdout).strip())
+
+    def _apply_to_dirty_source(self) -> None:
+        if not self.info or not self.info.snapshot_commit:
+            raise WorktreeError("Dirty workspace metadata is incomplete; refusing to apply.")
+        current_hash = self._source_state_hash()
+        if current_hash != self.info.source_state_hash:
+            raise WorktreeError(
+                "Source repository changed after the Nexus snapshot was created. "
+                "Review the workspace diff and apply it manually to avoid overwriting work."
+            )
+
+        delta = self._git_bytes(
+            ["diff", "--binary", self.info.snapshot_commit, "HEAD"],
+            cwd=self.path,
+        )
+        if not delta:
+            return
+
+        recovery_dir = self.info_path.parent / "recovery"
+        recovery_dir.mkdir(parents=True, exist_ok=True)
+        patch_path = recovery_dir / f"{self.session_id}.patch"
+        patch_path.write_bytes(delta)
+        applied = subprocess.run(
+            ["git", "apply", "--binary", "--whitespace=nowarn", "-"],
+            cwd=self.repository,
+            input=delta,
+            capture_output=True,
+            timeout=60,
+        )
+        if applied.returncode != 0:
+            raise WorktreeError(
+                "Could not apply Nexus changes over the preserved dirty source: "
+                f"{applied.stderr.decode(errors='replace').strip()}. "
+                f"Recovery patch: {patch_path}"
+            )
+
     def apply(self) -> None:
-        """Apply changes from the worktree back to the source repository safely.
+        """Apply workspace changes back without losing concurrent user work.
 
-        For Git worktrees:
-          1. Re-checks the source repository for uncommitted changes (so concurrent
-             edits do not silently corrupt the merge).
-          2. Creates an immutable backup ref before merging.
-          3. On merge failure, runs ``git merge --abort`` automatically.
-
-        For temporary copies:
-          Uses Python's shutil (cross-platform) instead of rsync.
-
-        Raises:
-            WorktreeError: On any failure. The source repository is left in a
-                clean, mergeable state.
+        Clean repositories use a normal branch merge with a recovery ref. Dirty
+        repositories use the immutable snapshot commit created at session start:
+        Nexus computes only its delta from that snapshot and applies the delta to
+        the unchanged source working tree. This preserves the user's staged,
+        unstaged, and untracked state instead of forcing a stash or commit.
         """
         if not self.info:
             return
         if self.info.backend == "git-worktree":
-            # ── Pre-apply safety check ────────────────────────────────────
+            self._commit_workspace_changes()
+            if self.info.source_was_dirty:
+                self._apply_to_dirty_source()
+                return
+
             dirty_now = subprocess.run(
                 ["git", "status", "--porcelain"],
                 cwd=self.repository,
@@ -303,51 +494,25 @@ class GitWorktreeSession:
             ).stdout.strip()
             if dirty_now:
                 raise WorktreeError(
-                    "Source repository has uncommitted changes since the workspace was "
-                    "created. Commit or stash them before applying workspace changes."
+                    "Source repository changed after the workspace was created. "
+                    "Refusing to merge so concurrent work is not overwritten."
                 )
 
-            # ── Auto-commit any uncommitted worktree changes ──────────────
-            status = subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=self.path,
-                capture_output=True,
-                text=True,
-            )
-            if status.stdout.strip():
-                subprocess.run(["git", "add", "-A"], cwd=self.path, check=True)
-                subprocess.run(
-                    [
-                        "git",
-                        "-c",
-                        "user.name=Nexus",
-                        "-c",
-                        "user.email=nexus@localhost",
-                        "commit",
-                        "-m",
-                        "Nexus workspace apply",
-                    ],
-                    cwd=self.path,
-                    check=True,
-                    capture_output=True,
-                    text=True,
-                )
-
-            # ── Create backup ref before merge ────────────────────────────
             backup_ref = f"refs/nexus/pre-apply-{self.session_id}"
             head_sha = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=self.repository,
                 capture_output=True,
                 text=True,
+                check=True,
             ).stdout.strip()
             subprocess.run(
                 ["git", "update-ref", backup_ref, head_sha],
                 cwd=self.repository,
+                check=True,
                 capture_output=True,
             )
 
-            # ── Merge with automatic abort on failure ─────────────────────
             result = subprocess.run(
                 ["git", "merge", self.info.branch, "--no-edit"],
                 cwd=self.repository,
@@ -355,7 +520,6 @@ class GitWorktreeSession:
                 text=True,
             )
             if result.returncode != 0:
-                # Auto-abort to leave the source repository clean
                 subprocess.run(
                     ["git", "merge", "--abort"],
                     cwd=self.repository,
@@ -364,7 +528,7 @@ class GitWorktreeSession:
                 raise WorktreeError(
                     f"Failed to merge branch '{self.info.branch}': "
                     f"{result.stderr or result.stdout}\n"
-                    f"The source repository has been automatically restored. "
+                    "The source repository has been automatically restored. "
                     f"Backup ref is available at {backup_ref}."
                 )
         else:

@@ -218,7 +218,7 @@ def test_git_worktree_session_creates_isolated_branch(tmp_path):
     assert session.status()["git_status"].startswith("## nexus/session-123")
 
 
-def test_git_worktree_refuses_to_drop_uncommitted_source_changes(tmp_path):
+def test_git_worktree_preserves_and_applies_over_dirty_source(tmp_path):
     repository = tmp_path / "repo"
     repository.mkdir()
     subprocess.run(["git", "init", "-q"], cwd=repository, check=True)
@@ -237,14 +237,25 @@ def test_git_worktree_refuses_to_drop_uncommitted_source_changes(tmp_path):
     subprocess.run(["git", "add", "tracked.txt"], cwd=repository, check=True)
     subprocess.run(["git", "commit", "-qm", "initial"], cwd=repository, check=True)
     tracked.write_text("uncommitted\n", encoding="utf-8")
+    (repository / "user-note.txt").write_text("preserve me\n", encoding="utf-8")
 
     session = GitWorktreeSession(
         repository,
         "dirty-session",
         state_root=tmp_path / "state",
     )
-    with pytest.raises(WorktreeError, match="uncommitted changes"):
-        session.create()
+    info = session.create()
+    isolated = Path(info.path)
+    assert isolated.joinpath("tracked.txt").read_text(encoding="utf-8") == "uncommitted\n"
+    isolated.joinpath("tracked.txt").write_text("uncommitted plus nexus\n", encoding="utf-8")
+    isolated.joinpath("agent.txt").write_text("created\n", encoding="utf-8")
+
+    session.apply()
+
+    assert tracked.read_text(encoding="utf-8") == "uncommitted plus nexus\n"
+    assert (repository / "user-note.txt").read_text(encoding="utf-8") == "preserve me\n"
+    assert (repository / "agent.txt").read_text(encoding="utf-8") == "created\n"
+    session.discard()
 
 
 def test_run_ledger_json_files_are_valid_after_repeated_updates(tmp_path):

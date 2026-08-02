@@ -5,6 +5,7 @@ Supports multi-key NVIDIA rotation and a compatible Groq fallback.
 
 import os
 import time
+import threading
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -125,35 +126,40 @@ class RoundRobinKeyPool:
         self.cooldown_seconds = cooldown_seconds
         self.current_idx = 0
         self.cooldowns: dict[str, float] = {}
+        self._lock = threading.RLock()
 
     def get_next_key(self) -> str | None:
         """Select and return the next active round-robin key, skipping cooling-down keys."""
-        if not self.keys:
-            return None
-        now = time.time()
-        start_idx = self.current_idx
-        for offset in range(len(self.keys)):
-            idx = (start_idx + offset) % len(self.keys)
-            key = self.keys[idx]
-            if key not in self.cooldowns or now >= self.cooldowns[key]:
-                self.current_idx = (idx + 1) % len(self.keys)
-                return key
-        earliest_key = min(self.keys, key=lambda k: self.cooldowns.get(k, 0))
-        self.current_idx = (self.keys.index(earliest_key) + 1) % len(self.keys)
-        return earliest_key
+        with self._lock:
+            if not self.keys:
+                return None
+            now = time.time()
+            start_idx = self.current_idx
+            for offset in range(len(self.keys)):
+                idx = (start_idx + offset) % len(self.keys)
+                key = self.keys[idx]
+                if key not in self.cooldowns or now >= self.cooldowns[key]:
+                    self.current_idx = (idx + 1) % len(self.keys)
+                    return key
+            earliest_key = min(self.keys, key=lambda k: self.cooldowns.get(k, 0))
+            self.current_idx = (self.keys.index(earliest_key) + 1) % len(self.keys)
+            return earliest_key
 
     def mark_cooldown(self, key: str, duration: float | None = None):
         """Mark a key as temporarily cooling down (e.g. on HTTP 429 rate limit)."""
         sec = duration if duration is not None else self.cooldown_seconds
-        self.cooldowns[key] = time.time() + sec
+        with self._lock:
+            self.cooldowns[key] = time.time() + sec
 
     def is_cooldown(self, key: str) -> bool:
         """Check if a key is currently in cooldown."""
-        return key in self.cooldowns and time.time() < self.cooldowns[key]
+        with self._lock:
+            return key in self.cooldowns and time.time() < self.cooldowns[key]
 
     def reset_cooldowns(self):
         """Reset all rate-limit cooldowns."""
-        self.cooldowns.clear()
+        with self._lock:
+            self.cooldowns.clear()
 
 
 class NvidiaClient:

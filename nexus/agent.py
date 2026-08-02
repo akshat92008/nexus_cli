@@ -422,7 +422,10 @@ class Agent:
         self.safety = SafetyLayer()
         self.project_mem = ProjectMemory(self.working_dir)
         self.user_mem = UserMemory()
-        self.verifier = VerificationEngine(self.working_dir)
+        self.verifier = VerificationEngine(
+            self.working_dir,
+            require_os_isolation=self.mode_policy.require_os_isolation,
+        )
 
         # ── Phase 2: Skills & Subagents ──────────────────────────────────
         self.skills = SkillRegistry()
@@ -629,7 +632,11 @@ class Agent:
             if rules.format_command:
                 custom_cmds["format_command"] = rules.format_command
             if custom_cmds:
-                self.verifier = VerificationEngine(self.working_dir, custom_cmds)
+                self.verifier = VerificationEngine(
+                    self.working_dir,
+                    custom_cmds,
+                    require_os_isolation=self.mode_policy.require_os_isolation,
+                )
         except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
             logging.getLogger(__name__).debug("Failed to load project rules: %s", exc)
         except LookupError as exc:
@@ -1282,6 +1289,25 @@ class Agent:
                 if item
             )
         )
+        graph_query = " ".join(
+            item
+            for item in (
+                self._active_objective,
+                getattr(getattr(self._active_plan, "next_step", None), "title", ""),
+                getattr(getattr(self._active_plan, "next_step", None), "description", ""),
+            )
+            if item
+        )
+        graph_context = ""
+        if graph_query and getattr(self, "repo_graph", None):
+            try:
+                graph_context = self.repo_graph.context_bundle(
+                    graph_query,
+                    max_files=14 if self.mode_policy.context_depth == "deep" else 8,
+                    max_chars=42_000 if self.mode_policy.context_depth == "deep" else 24_000,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                logger.debug("Query-focused graph context unavailable: %s", exc)
 
         system = {
             "role": "system",
@@ -1293,6 +1319,7 @@ class Agent:
                 + plan_context
                 + reflection_context
                 + ("\n" + active_context if active_context else "")
+                + ("\n\n" + graph_context if graph_context else "")
             ),
         }
         return [system] + self.messages
@@ -3419,8 +3446,29 @@ class Agent:
         return output, verified, record.id
 
     def _run_verification_suite(self):
-        """Run verification and discount only identical inherited baseline failures."""
-        report = self.verifier.run_all()
+        """Run dependency-focused checks, then the complete deterministic gate."""
+        evidence = self.evidence.records()[getattr(self, "_turn_evidence_start", 0) :]
+        mutations = self._effective_evidence(evidence, "file_mutation")
+        changed_paths = sorted(
+            {
+                str(artifact.get("path", ""))
+                for item in mutations
+                for artifact in item.get("artifacts", [])
+                if artifact.get("path")
+            }
+        )
+        impacted_tests: list[str] = []
+        if changed_paths and getattr(self, "repo_graph", None):
+            try:
+                self.repo_graph.update_paths(changed_paths)
+                impacted_tests = self.repo_graph.impacted_tests(changed_paths, limit=50)
+            except (OSError, TypeError, ValueError) as exc:
+                logger.debug("Targeted verification selection unavailable: %s", exc)
+
+        report = self.verifier.run_change_aware(
+            changed_paths,
+            impacted_tests=impacted_tests,
+        )
         if self.worktree is not None and Path(self.source_working_dir) != Path(self.working_dir):
             report = self.verifier.reconcile_with_baseline(report, self.source_working_dir)
         return report

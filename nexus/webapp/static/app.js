@@ -39,9 +39,6 @@ function connectWebSocket() {
 
     ws.onopen = () => {
         console.log('WebSocket connected');
-        if (window.CSRF_TOKEN) {
-            ws.send(JSON.stringify({ type: 'authenticate', token: window.CSRF_TOKEN }));
-        }
         ws.send(JSON.stringify({ type: 'set_session', session_id: sessionId }));
     };
 

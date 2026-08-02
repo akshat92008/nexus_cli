@@ -365,10 +365,19 @@ class ExecutionPipeline:
         try:
             if not self._agent._context_gathered:  # noqa: SLF001
                 self._agent._gather_context()  # noqa: SLF001
+            relevant = []
+            if getattr(self._agent, "repo_graph", None):
+                relevant = self._agent.repo_graph.relevant_files(user_input, limit=16)
             return StageResult(
                 stage=PipelineStage.CONTEXT_SELECTION,
                 success=True,
                 duration_ms=int((time.monotonic() - t) * 1000),
+                metadata={
+                    "selected_files": [item["path"] for item in relevant],
+                    "selection_reasons": {
+                        item["path"]: item.get("reasons", []) for item in relevant
+                    },
+                },
             )
         except (TypeError, ValueError) as exc:
             self._logger.debug("Context selection error (non-fatal): %s", exc)
@@ -470,7 +479,9 @@ class ExecutionPipeline:
         all_events: list[dict[str, Any]] = []
         responses: list[str] = []
         turns_used = 0
-        while not plan.is_complete and not plan.has_failures:
+        retry_contexts: dict[int, str] = {}
+        failure_fingerprints: dict[int, set[str]] = {}
+        while not plan.is_complete:
             current = next(
                 (step for step in plan.steps if step.status == TaskStatus.IN_PROGRESS),
                 None,
@@ -491,12 +502,25 @@ class ExecutionPipeline:
                 break
 
             step_budget = min(remaining, max(2, int(current.max_tool_calls) + 1))
+            retry_context = retry_contexts.get(current.id, "")
+            repeated_failure_warning = ""
+            if retry_context:
+                repeated_failure_warning = (
+                    "\nThis is a focused retry. Do not repeat the previous approach. "
+                    "Read the affected files and failure output before editing.\n"
+                    f"Previous failure evidence:\n{retry_context[:6000]}\n"
+                )
             step_prompt = (
                 f"Original objective:\n{user_input}\n\n"
                 f"Autonomous plan step {current.id + 1}/{len(plan.steps)}: "
                 f"{current.title}\n{current.description}\n\n"
+                f"Acceptance criteria: {current.acceptance_criteria}\n"
+                f"Expected checks: {current.checks}\n"
+                f"Permitted files: {current.permitted_files or ['repository-scoped']}\n"
+                f"{repeated_failure_warning}"
                 "Complete this step now. Inspect actual repository state, use tools as needed, "
-                "and do not claim success without tool-backed evidence. Do not commit, push, "
+                "run the narrowest relevant checks, and do not claim success without tool-backed "
+                "evidence. Keep changes minimal and architecture-consistent. Do not commit, push, "
                 "deploy, or expand the task scope."
             )
             agent._enforce_plan_tool_contract = True  # noqa: SLF001
@@ -521,11 +545,46 @@ class ExecutionPipeline:
             agent.run_ledger.record_tasks(plan.steps)
             agent.run_ledger.record_plan(plan)
             if current.status == TaskStatus.COMPLETED:
+                retry_contexts.pop(current.id, None)
                 agent.run_ledger.checkpoint(
                     f"plan-step-{current.id}-completed",
                     plan=plan,
                     metadata={"task_id": current.id, "model_turns_used": turns_used},
                 )
+            elif current.status == TaskStatus.FAILED:
+                failure = (current.error or current.result or response or "Unknown step failure").strip()
+                fingerprint = failure[:1000]
+                seen = failure_fingerprints.setdefault(current.id, set())
+                repeated = fingerprint in seen
+                seen.add(fingerprint)
+                can_retry = current.attempts <= current.retry_limit and turns_used < agent.max_turns
+                if can_retry:
+                    retry_contexts[current.id] = (
+                        failure
+                        + (
+                            "\nThe same failure repeated. Re-evaluate the root-cause assumption and "
+                            "inspect callers, tests, and dependency contracts before another edit."
+                            if repeated
+                            else ""
+                        )
+                    )
+                    agent.run_ledger.append_event(
+                        "plan_step_retry",
+                        status="verified",
+                        detail=f"Retrying failed plan step {current.id}.",
+                        metadata={
+                            "task_id": current.id,
+                            "attempts": current.attempts,
+                            "retry_limit": current.retry_limit,
+                            "repeated_failure": repeated,
+                            "failure": failure[:4000],
+                        },
+                    )
+                    agent.planner.retry_step(current.id, failure)
+                    agent.run_ledger.record_tasks(plan.steps)
+                    agent.run_ledger.record_plan(plan)
+                    continue
+                break
             if (response or "").lstrip().upper().startswith(("ERROR:", "BLOCKED:")):
                 if current.status == TaskStatus.IN_PROGRESS:
                     agent.planner.advance_step(current.id, TaskStatus.FAILED, response[:2000])
@@ -609,7 +668,11 @@ class ExecutionPipeline:
         try:
             from nexus.repair import RepairLoop  # noqa: PLC0415
 
-            loop = RepairLoop(self._agent)
+            loop = RepairLoop(
+                self._agent,
+                max_iterations=max(3, int(getattr(self._agent.mode_policy, "retry_budget", 0)) + 2),
+                budget_seconds=240 if self._agent.mode_policy.model_strategy == "quality" else 150,
+            )
             repaired = loop.attempt(user_input, failure_context=ver_result.error)
             return StageResult(
                 stage=PipelineStage.REPAIR,

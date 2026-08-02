@@ -2,6 +2,7 @@
 
 import pytest
 from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from nexus.webapp.server import create_app
 
@@ -12,11 +13,16 @@ def client():
     return TestClient(app)
 
 
-def test_webapp_index(client):
-    from nexus.webapp.server import _web_token
-    response = client.get(f"/?token={_web_token}")
+def test_webapp_index_requires_launch_token(client):
+    response = client.get("/")
+    assert response.status_code == 403
+
+    token = client.app.state.web_token
+    response = client.get(f"/?token={token}")
     assert response.status_code == 200
-    assert "window.CSRF_TOKEN" in response.text
+    assert "window.CSRF_TOKEN" not in response.text
+    assert token not in response.text
+    assert client.cookies.get("nexus_web_session") == token
 
 
 def test_webapp_api_chat_unauthorized(client):
@@ -25,28 +31,24 @@ def test_webapp_api_chat_unauthorized(client):
 
 
 def test_webapp_api_chat_empty(client):
-    # Need to access the module to get the generated token for the test
-    from nexus.webapp.server import _web_token
-
-    response = client.post("/api/chat", json={}, headers={"X-CSRF-Token": _web_token})
+    token = client.app.state.web_token
+    assert client.get(f"/?token={token}").status_code == 200
+    response = client.post("/api/chat", json={})
     assert response.status_code == 400
     assert "Empty or invalid message" in response.json()["error"]
 
 
 def test_websocket_unauthorized(client):
-    with client.websocket_connect("/ws") as websocket:
-        websocket.send_json({"type": "chat", "message": "hello"})
-        data = websocket.receive_json()
-        assert data["type"] == "error"
-        assert "Unauthorized" in data["content"]
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect("/ws"):
+            pass
 
 
 def test_websocket_authenticate(client):
-    from nexus.webapp.server import _web_token
-
+    token = client.app.state.web_token
+    assert client.get(f"/?token={token}").status_code == 200
     with client.websocket_connect("/ws") as websocket:
-        websocket.send_json({"type": "authenticate", "token": _web_token})
-        # Doesn't return anything on success, so we send a model set
+        websocket.send_json({"type": "authenticate", "token": ""})
         websocket.send_json({"type": "set_model", "model": "invalid-model"})
         data = websocket.receive_json()
         assert data["type"] == "error"

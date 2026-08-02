@@ -36,7 +36,7 @@ def get_mode_policy(mode: str) -> ModePolicy:
             require_review=True,
             context_depth="deep",
             verification_level="full",
-            require_os_isolation=False,
+            require_os_isolation=True,
         )
     elif mode in ("workspace", "default"):
         return ModePolicy(

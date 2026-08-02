@@ -1446,6 +1446,35 @@ class PlanningEngine:
             return True
         return False
 
+    def retry_step(self, step_id: int, failure_context: str = "") -> bool:
+        """Move a failed task back to pending without erasing its audit trail."""
+        if not self.current_plan:
+            return False
+        step = next((item for item in self.current_plan.steps if item.id == step_id), None)
+        if step is None or step.status != TaskStatus.FAILED:
+            return False
+        step.status = TaskStatus.PENDING
+        step.completed_at = ""
+        step.error = failure_context or step.error
+        self.current_plan.status = TaskStatus.IN_PROGRESS
+        self.current_plan.current_step = step.id
+        self.current_plan.revision += 1
+        self.current_plan.failure_replans.append(
+            {
+                "revision": self.current_plan.revision,
+                "step_id": step.id,
+                "subsystem": step.subsystem,
+                "failed_at": datetime.now().isoformat(),
+                "evidence": (failure_context or step.error)[:4000],
+                "required_action": (
+                    "Retry the same bounded step using the failure evidence; inspect current "
+                    "repository state first and choose a materially different repair approach."
+                ),
+            }
+        )
+        self._save_plan(self.current_plan)
+        return True
+
     def get_plan_context(self) -> str:
         """Generate context string for the agent about the current plan."""
         if not self.current_plan:

@@ -14,6 +14,7 @@ import asyncio
 import json
 import os
 import secrets
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
@@ -33,6 +34,8 @@ from nexus.tools import TOOL_DEFINITIONS
 # Global state
 _agents: dict[str, Agent] = {}  # session_id -> Agent
 _agent_busy: dict[str, bool] = {}
+_agent_locks: dict[str, threading.Lock] = {}
+_agents_lock = threading.RLock()
 _api_key: str = ""
 _default_model: str = DEFAULT_MODEL
 _working_dir: str = ""
@@ -56,6 +59,7 @@ SENSITIVE_FILENAMES = {
     "id_rsa",
 }
 SENSITIVE_DIRNAMES = {".aws", ".git", ".nexusai", ".ssh"}
+WEB_TOKEN_COOKIE = "nexus_web_session"
 
 
 def _workspace_path(raw: str) -> Path:
@@ -93,39 +97,52 @@ def _is_allowed_web_origin(origin: str | None) -> bool:
     }
 
 
+def _normalize_session_id(value: object, default: str = "default") -> str:
+    candidate = str(value or default).strip()[:64]
+    if not candidate or not all(ch.isalnum() or ch in "._-" for ch in candidate):
+        raise ValueError("Session id may contain only letters, numbers, dot, dash, and underscore")
+    return candidate
+
+
 def _get_agent(session_id: str) -> Agent:
-    """Get or create an agent for a session."""
-    if session_id not in _agents:
-        # Evict oldest agents if we exceed the limit
-        if len(_agents) >= MAX_AGENTS:
-            oldest_key = next(iter(_agents))
-            _agents.pop(oldest_key).close(discard_workspace=True)
-            _agent_busy.pop(oldest_key, None)
-        _agents[session_id] = Agent(
-            api_key=_api_key,
-            model_key=_default_model,
-            working_dir=_working_dir,
-            workspace_isolation=True,
-            model_id_override=_agent_options["model_id_override"],
-            local_intern_mode=str(_agent_options["local_intern_mode"]),
-            enable_nova_fallback=bool(_agent_options["enable_nova_fallback"]),
-            plugins_enabled=bool(_agent_options["plugins_enabled"]),
-            tools_enabled=bool(_agent_options["tools_enabled"]),
-        )
-        _agent_busy[session_id] = False
-    return _agents[session_id]
+    """Get or create an agent for a normalized session without races."""
+    session_id = _normalize_session_id(session_id)
+    with _agents_lock:
+        if session_id not in _agents:
+            if len(_agents) >= MAX_AGENTS:
+                oldest_key = next(iter(_agents))
+                _agents.pop(oldest_key).close(discard_workspace=True)
+                _agent_busy.pop(oldest_key, None)
+                _agent_locks.pop(oldest_key, None)
+            _agents[session_id] = Agent(
+                api_key=_api_key,
+                model_key=_default_model,
+                working_dir=_working_dir,
+                workspace_isolation=True,
+                model_id_override=_agent_options["model_id_override"],
+                local_intern_mode=str(_agent_options["local_intern_mode"]),
+                enable_nova_fallback=bool(_agent_options["enable_nova_fallback"]),
+                plugins_enabled=bool(_agent_options["plugins_enabled"]),
+                tools_enabled=bool(_agent_options["tools_enabled"]),
+            )
+            _agent_busy[session_id] = False
+            _agent_locks[session_id] = threading.Lock()
+        return _agents[session_id]
 
 
 def _run_agent_locked(session_id: str, agent: Agent, message: str):
-    """Run an agent session, ensuring no overlapping requests for the same session."""
-    if _agent_busy.get(session_id, False):
+    """Run an agent session with an atomic, non-blocking per-session lease."""
+    session_id = _normalize_session_id(session_id)
+    with _agents_lock:
+        lock = _agent_locks.setdefault(session_id, threading.Lock())
+    if not lock.acquire(blocking=False):
         raise RuntimeError("Agent is busy processing another request")
-    
     _agent_busy[session_id] = True
     try:
         return agent.run_non_interactive(message)
     finally:
         _agent_busy[session_id] = False
+        lock.release()
 
 
 # ─── HTTP Endpoints ──────────────────────────────────────────────────────────
@@ -145,9 +162,15 @@ def _require_web_token(request) -> Response | None:
     against other local processes, not an internet exposure.
     """
     from starlette.responses import JSONResponse as _JR
+    if not _is_allowed_web_origin(request.headers.get("origin")):
+        return _JR({"error": "Unauthorized origin"}, status_code=403)
     token_header = request.headers.get("X-CSRF-Token", "")
     token_query = request.query_params.get("token", "")
-    if secrets.compare_digest(token_header, _web_token) or secrets.compare_digest(token_query, _web_token):
+    token_cookie = request.cookies.get(WEB_TOKEN_COOKIE, "")
+    if any(
+        secrets.compare_digest(candidate, _web_token)
+        for candidate in (token_header, token_query, token_cookie)
+    ):
         return None
     return _JR({"error": "Unauthorized — include the session token"}, status_code=403)
 
@@ -158,10 +181,16 @@ async def index(request):
         return err
     static_dir = Path(__file__).parent / "static"
     html = (static_dir / "index.html").read_text(encoding="utf-8")
-    html = html.replace(
-        "<head>", f'<head>\\n    <script>window.CSRF_TOKEN="{_web_token}";</script>'
+    response = HTMLResponse(html)
+    response.set_cookie(
+        WEB_TOKEN_COOKIE,
+        _web_token,
+        httponly=True,
+        samesite="strict",
+        secure=False,
+        path="/",
     )
-    return HTMLResponse(html)
+    return response
 
 
 async def api_models(request):
@@ -275,9 +304,8 @@ async def api_file_content(request):
 
 async def api_chat(request):
     """Non-streaming chat endpoint."""
-    token = request.headers.get("X-CSRF-Token", "")
-    if not secrets.compare_digest(token, _web_token):
-        return JSONResponse({"error": "Unauthorized"}, status_code=403)
+    if (err := _require_web_token(request)) is not None:
+        return err
 
     try:
         body = await request.json()
@@ -343,7 +371,10 @@ async def api_tools(request):
 async def api_pending_edits(request):
     if (err := _require_web_token(request)) is not None:
         return err
-    session_id = request.query_params.get("session_id", "default")
+    try:
+        session_id = _normalize_session_id(request.query_params.get("session_id", "default"))
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     agent = _get_agent(session_id)
     return JSONResponse(
         {"summary": agent.pending_edits_summary(), "ids": list(agent._pending_edits)}
@@ -351,11 +382,13 @@ async def api_pending_edits(request):
 
 
 async def api_edit_decision(request):
-    token = request.headers.get("X-CSRF-Token", "")
-    if not secrets.compare_digest(token, _web_token):
-        return JSONResponse({"error": "Unauthorized"}, status_code=403)
+    if (err := _require_web_token(request)) is not None:
+        return err
 
-    session_id = request.path_params["session_id"]
+    try:
+        session_id = _normalize_session_id(request.path_params["session_id"])
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     edit_id = request.path_params["edit_id"]
     action = request.path_params["action"]
     agent = _get_agent(session_id)
@@ -376,9 +409,13 @@ async def ws_chat(websocket: WebSocket):
     if not _is_allowed_web_origin(websocket.headers.get("origin")):
         await websocket.close(code=1008)
         return
+    cookie_token = websocket.cookies.get(WEB_TOKEN_COOKIE, "")
+    if not secrets.compare_digest(cookie_token, _web_token):
+        await websocket.close(code=1008)
+        return
     await websocket.accept()
     session_id = "ws_default"
-    authenticated = False
+    authenticated = True
 
     try:
         while True:
@@ -393,7 +430,7 @@ async def ws_chat(websocket: WebSocket):
 
             if msg_type == "authenticate":
                 token = data.get("token", "")
-                if secrets.compare_digest(token, _web_token):
+                if not token or secrets.compare_digest(token, _web_token):
                     authenticated = True
                 else:
                     await websocket.send_json({"type": "error", "content": "Unauthorized"})
@@ -405,7 +442,11 @@ async def ws_chat(websocket: WebSocket):
                 continue
 
             if msg_type == "set_session":
-                session_id = data.get("session_id", session_id)
+                try:
+                    session_id = _normalize_session_id(data.get("session_id", session_id))
+                except ValueError as exc:
+                    await websocket.send_json({"type": "error", "content": str(exc)})
+                    continue
                 await websocket.send_json({"type": "session_set", "session_id": session_id})
                 continue
 
@@ -450,6 +491,7 @@ async def ws_chat(websocket: WebSocket):
                 if session_id in _agents:
                     _agents.pop(session_id).close(discard_workspace=True)
                     _agent_busy.pop(session_id, None)
+                    _agent_locks.pop(session_id, None)
                 import time
 
                 session_id = f"ws_{int(time.time())}"
@@ -538,7 +580,8 @@ def create_app(
         existing_agent.close(discard_workspace=True)
     _agents.clear()
     _agent_busy.clear()
-    _web_token = secrets.token_hex(16)
+    _agent_locks.clear()
+    _web_token = secrets.token_hex(32)
     _api_key = api_key
     _default_model = model
     _working_dir = working_dir or os.getcwd()
@@ -579,8 +622,10 @@ def create_app(
                 existing_agent.close(discard_workspace=True)
             _agents.clear()
             _agent_busy.clear()
+            _agent_locks.clear()
 
     app = Starlette(routes=routes, lifespan=lifespan)
+    app.state.web_token = _web_token
 
     # Add CORS middleware for cross-origin access
     app.add_middleware(

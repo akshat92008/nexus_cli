@@ -25,9 +25,12 @@ import signal
 import socket
 import ssl
 import subprocess
+import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime
@@ -532,6 +535,16 @@ TOOL_DEFINITIONS = [
                         "type": "boolean",
                         "description": "Fail closed unless a native OS sandbox is available.",
                         "default": False,
+                    },
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Maximum lifetime in seconds (default 3600, max 86400).",
+                        "default": 3600,
+                    },
+                    "max_output_bytes": {
+                        "type": "integer",
+                        "description": "Maximum retained bytes per output stream.",
+                        "default": 1000000,
                     },
                 },
                 "required": ["command"],
@@ -1348,74 +1361,119 @@ def tool_patch_file(path: str, start_line: int, end_line: int, new_content: str)
 
 
 def tool_multi_edit(edits: list[dict]) -> str:
-    """Apply multiple edits across files atomically. Tracked for undo.
+    """Apply a transaction of exact, unique text replacements.
 
-    All edits are validated before any are applied. If any edit fails
-    validation or application, all previously applied edits are rolled back
-    via the file history, leaving the workspace unchanged.
+    Every final file body is computed in memory before disk is touched. Files
+    are then written to sibling temporary files and committed with atomic
+    ``os.replace`` operations. If any commit fails, all already-replaced files
+    are restored from their captured byte-for-byte originals.
     """
     if not edits:
         return "📝 Multi-edit: no edits provided"
 
     history = get_history()
-    applied_paths: list[str] = []  # track files we've changed for rollback
-    snapshots: dict[str, object] = {}  # pre-edit snapshots keyed by path
-    results: list[str] = []
+    originals: dict[Path, str] = {}
+    final_bodies: dict[Path, str] = {}
+    edit_counts: dict[Path, int] = {}
 
-    # Phase 1 — Pre-validate all edits (read files, check old_text exists)
-    for i, edit in enumerate(edits):
-        path = edit.get("path", "")
-        old_text = edit.get("old_text", "")
-        if not path:
-            return f"❌ Multi-edit aborted: edit #{i + 1} is missing 'path'. No files changed."
-        try:
-            p = _resolve_path(path)
-        except (OSError, ValueError) as exc:
-            return f"❌ Multi-edit aborted: edit #{i + 1} path error — {exc}. No files changed."
-        if not p.exists():
-            return f"❌ Multi-edit aborted: edit #{i + 1} file not found: {path}. No files changed."
-        content = p.read_text(encoding="utf-8")
-        if old_text and old_text not in content:
-            first_line = old_text.splitlines()[0][:60] if old_text.strip() else old_text[:60]
-            return (
-                f"❌ Multi-edit aborted: edit #{i + 1} old_text not found in {p.name} "
-                f"(starts with: {first_line!r}). No files changed."
-            )
-
-    # Phase 2 — Apply edits, rolling back on any failure
-    for i, edit in enumerate(edits):
+    # Build the complete transaction in memory. Multiple edits to one file are
+    # applied sequentially against the result of the previous edit.
+    for index, edit in enumerate(edits, start=1):
         path = edit.get("path", "")
         old_text = edit.get("old_text", "")
         new_text = edit.get("new_text", "")
-        p = _resolve_path(path)
-
-        # Take snapshot for potential rollback
-        if str(p) not in snapshots:
-            snapshots[str(p)] = history.snapshot_before_write(str(p))
-
-        result = tool_edit_file(path, old_text, new_text)
-        if result.startswith("❌"):
-            # Roll back every applied change by restoring from snapshot
-            import shutil as _shutil
-
-            for applied_path in applied_paths:
-                snap = snapshots.get(applied_path)
-                if snap and Path(str(snap)).exists():
-                    try:
-                        _shutil.copy2(str(snap), applied_path)
-                    except (TypeError, ValueError):
-                        pass
+        if not isinstance(path, str) or not path:
+            return f"❌ Multi-edit aborted: edit #{index} is missing 'path'. No files changed."
+        if not isinstance(old_text, str) or not isinstance(new_text, str):
             return (
-                f"❌ Multi-edit aborted at edit #{i + 1}: {result}. "
-                f"All {len(applied_paths)} preceding edits have been rolled back."
+                f"❌ Multi-edit aborted: edit #{index} old_text/new_text must be strings. "
+                "No files changed."
             )
-        applied_paths.append(str(p))
-        history.record_change(str(p), "multi_edit", snapshots.get(str(p)))
-        results.append(f"  {i + 1}. {result}")
+        try:
+            target = _resolve_path(path)
+        except (OSError, ValueError) as exc:
+            return f"❌ Multi-edit aborted: edit #{index} path error — {exc}. No files changed."
+        if not target.is_file():
+            return f"❌ Multi-edit aborted: edit #{index} file not found: {path}. No files changed."
 
-    success_count = sum(1 for r in results if "✅" in r)
-    header = f"📝 Multi-edit: {success_count}/{len(edits)} succeeded"
-    return header + "\n" + "\n".join(results)
+        if target not in originals:
+            try:
+                originals[target] = target.read_text(encoding="utf-8")
+            except (OSError, UnicodeError) as exc:
+                return f"❌ Multi-edit aborted: cannot read {path}: {exc}. No files changed."
+            final_bodies[target] = originals[target]
+
+        current = final_bodies[target]
+        occurrences = current.count(old_text)
+        if occurrences == 0:
+            preview = old_text.splitlines()[0][:80] if old_text else "<empty>"
+            return (
+                f"❌ Multi-edit aborted: edit #{index} old_text not found in {target.name} "
+                f"(starts with {preview!r}). No files changed."
+            )
+        if occurrences > 1:
+            return (
+                f"❌ Multi-edit aborted: edit #{index} matched {occurrences} locations in "
+                f"{target.name}; provide more surrounding context. No files changed."
+            )
+        final_bodies[target] = current.replace(old_text, new_text, 1)
+        edit_counts[target] = edit_counts.get(target, 0) + 1
+
+    snapshots: dict[Path, str | None] = {}
+    temp_paths: dict[Path, Path] = {}
+    committed: list[Path] = []
+    try:
+        for target, body in final_bodies.items():
+            snapshots[target] = history.snapshot_before_write(str(target))
+            temp = target.with_name(f".{target.name}.nexus-{uuid.uuid4().hex}.tmp")
+            with temp.open("w", encoding="utf-8", newline="") as handle:
+                handle.write(body)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.chmod(temp, target.stat().st_mode)
+            except OSError:
+                pass
+            temp_paths[target] = temp
+
+        for target, temp in temp_paths.items():
+            os.replace(temp, target)
+            committed.append(target)
+
+    except (OSError, UnicodeError) as exc:
+        rollback_errors: list[str] = []
+        for target in reversed(committed):
+            try:
+                restore = target.with_name(f".{target.name}.nexus-rollback-{uuid.uuid4().hex}.tmp")
+                with restore.open("w", encoding="utf-8", newline="") as handle:
+                    handle.write(originals[target])
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(restore, target)
+            except OSError as rollback_exc:
+                rollback_errors.append(f"{target}: {rollback_exc}")
+        detail = f" Rollback errors: {'; '.join(rollback_errors)}" if rollback_errors else ""
+        return f"❌ Multi-edit transaction failed: {exc}.{detail}"
+    finally:
+        for temp in temp_paths.values():
+            temp.unlink(missing_ok=True)
+
+    for target in final_bodies:
+        history.record_change(
+            str(target),
+            "multi_edit",
+            snapshots[target],
+            description=f"transactional multi-edit ({edit_counts[target]} replacement(s))",
+        )
+
+    details = [
+        f"  {path.name}: {edit_counts[path]} replacement(s)"
+        for path in sorted(final_bodies, key=lambda item: str(item))
+    ]
+    return (
+        f"✅ 📝 Multi-edit committed atomically: {len(edits)} edit(s) across "
+        f"{len(final_bodies)} file(s)\n" + "\n".join(details)
+    )
 
 
 def tool_file_info(path: str) -> str:
@@ -1543,8 +1601,10 @@ def tool_run_process(
         return f"❌ Error running typed process: {exc}"
 
 
-# Background processes tracking
+# Background processes tracking. Access must be synchronized because the web
+# server can run several agent sessions concurrently.
 _bg_processes: dict[int, dict] = {}
+_bg_processes_lock = threading.RLock()
 
 
 def tool_process_run(
@@ -1552,24 +1612,27 @@ def tool_process_run(
     cwd: str | None = None,
     network: bool = False,
     require_os_isolation: bool = False,
+    timeout: float | int | str = 3600,
+    max_output_bytes: int = 1_000_000,
 ) -> str:
-    """Start a shell-free background process with a filtered environment."""
+    """Start a sandboxed background process with bounded lifetime and logs."""
     try:
-        work_dir = cwd or _tool_working_dir.get() or os.getcwd()
+        work_dir = str(_resolve_path(cwd) if cwd else _resolve_path(""))
         argv = shlex.split(command, posix=True)
         if not argv:
             return "❌ Background command is empty"
+        timeout_seconds = float(timeout)
+        if timeout_seconds <= 0 or timeout_seconds > 86_400:
+            return "❌ Background timeout must be between 0 and 86400 seconds"
+        max_output_bytes = max(1_024, min(int(max_output_bytes), 20_000_000))
         log_dir = nexus_home() / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        stdout_log = log_dir / f"bg_{ts}_stdout.log"
-        stderr_log = log_dir / f"bg_{ts}_stderr.log"
+        run_id = uuid.uuid4().hex
+        stdout_log = log_dir / f"bg_{run_id}_stdout.log"
+        stderr_log = log_dir / f"bg_{run_id}_stderr.log"
 
-        stdout_f = open(stdout_log, "w")
-        stderr_f = open(stderr_log, "w")
-
-        from nexus.sandbox import CommandSpec, SandboxBackend, SandboxRunner
+        from nexus.sandbox import CommandSpec, SandboxRunner
 
         sandbox = SandboxRunner(Path(work_dir))
         safe_env = sandbox._filtered_env({})
@@ -1577,58 +1640,66 @@ def tool_process_run(
         spec = CommandSpec.create(
             argv,
             work_dir,
-            timeout_seconds=86_400,
+            timeout_seconds=timeout_seconds,
             network=network,
             require_os_isolation=require_os_isolation,
+            max_output_bytes=max_output_bytes,
         )
-        backend = sandbox.backend()
-        if require_os_isolation and backend == SandboxBackend.RESTRICTED:
-            stdout_f.close()
-            stderr_f.close()
-            return (
-                "❌ BLOCKED: No supported OS sandbox is available for this "
-                "background process. Install bubblewrap on Linux or use "
-                "sandbox-exec on macOS."
-            )
-        if backend == SandboxBackend.BUBBLEWRAP:
-            argv = sandbox._bubblewrap_command(spec, Path(work_dir))
-        elif backend == SandboxBackend.MACOS:
-            argv, _ = sandbox._macos_command(spec, Path(work_dir))
-
         try:
+            prepared = sandbox.prepare(spec)
+        except PermissionError as exc:
+            return f"❌ BLOCKED: {exc}"
+
+        with stdout_log.open("wb") as stdout_f, stderr_log.open("wb") as stderr_f:
             proc = subprocess.Popen(
-                argv,
+                list(prepared.argv),
                 shell=False,
                 stdout=stdout_f,
                 stderr=stderr_f,
-                cwd=work_dir,
-                env=safe_env,
+                cwd=prepared.cwd,
+                env=dict(prepared.env),
                 start_new_session=os.name != "nt",
                 creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0),
+                preexec_fn=SandboxRunner._resource_limits if os.name == "posix" else None,
             )
-        finally:
-            # Close file handles in the parent — the child process
-            # has its own copies of the file descriptors
-            stdout_f.close()
-            stderr_f.close()
 
-        _bg_processes[proc.pid] = {
+        record = {
             "command": command,
-            "argv": argv,
+            "argv": list(prepared.argv),
             "pid": proc.pid,
             "stdout_log": str(stdout_log),
             "stderr_log": str(stderr_log),
             "started": datetime.now().isoformat(),
+            "started_monotonic": time.monotonic(),
+            "timeout_seconds": timeout_seconds,
+            "max_output_bytes": max_output_bytes,
             "process": proc,
             "process_group": proc.pid,
             "owner": _tool_owner.get(),
+            "backend": prepared.backend.value,
+            "network_allowed": prepared.network_allowed,
+            "network_enforced": prepared.network_enforced,
+            "cleanup_path": prepared.cleanup_path,
+            "timed_out": False,
+            "output_truncated": False,
         }
+        with _bg_processes_lock:
+            _bg_processes[proc.pid] = record
+        threading.Thread(
+            target=_watch_background_process,
+            args=(proc.pid,),
+            name=f"nexus-bg-{proc.pid}",
+            daemon=True,
+        ).start()
 
         return (
             f"✅ Background process started\n"
             f"  PID:    {proc.pid}\n"
             f"  CMD:    {command}\n"
-            f"  Network isolation: policy-only ({'allowed' if network else 'undeclared'})\n"
+            f"  Sandbox: {prepared.backend.value}\n"
+            f"  Network: {'on' if network else 'off'} "
+            f"({'enforced' if prepared.network_enforced else 'policy-only'})\n"
+            f"  Timeout: {timeout_seconds:.1f}s\n"
             f"  Stdout: {stdout_log}\n"
             f"  Stderr: {stderr_log}"
         )
@@ -1642,18 +1713,30 @@ def tool_process_status(pid: int) -> str:
         pid = int(pid)
     except (TypeError, ValueError):
         return "❌ PID must be an integer"
-    record = _bg_processes.get(pid)
+    with _bg_processes_lock:
+        record = _bg_processes.get(pid)
     if not record:
         return f"❌ PID {pid} is not a Nexus-managed background process"
     proc = record["process"]
     exit_code = proc.poll()
-    stdout = Path(record["stdout_log"]).read_text(encoding="utf-8", errors="replace")
-    stderr = Path(record["stderr_log"]).read_text(encoding="utf-8", errors="replace")
-    state = "running" if exit_code is None else f"exited ({exit_code})"
+    stdout, stdout_cut = _read_bounded_log(Path(record["stdout_log"]), record["max_output_bytes"])
+    stderr, stderr_cut = _read_bounded_log(Path(record["stderr_log"]), record["max_output_bytes"])
+    truncated = bool(record.get("output_truncated") or stdout_cut or stderr_cut)
+    if record.get("timed_out"):
+        state = f"timed out after {record['timeout_seconds']:.1f}s"
+        marker = "⏰"
+    elif exit_code is None:
+        state = "running"
+        marker = "✅"
+    else:
+        state = f"exited ({exit_code})"
+        marker = "✅" if exit_code == 0 else "❌"
     return (
-        f"✅ PID {pid} {state}\n"
+        f"{marker} PID {pid} {state}\n"
         f"Command: {record['command']}\n"
+        f"Sandbox: {record['backend']}\n"
         f"[stdout]\n{stdout}\n[stderr]\n{stderr}"
+        + ("\n[output truncated by Nexus policy]" if truncated else "")
     )
 
 
@@ -1663,12 +1746,15 @@ def tool_process_stop(pid: int) -> str:
         pid = int(pid)
     except (TypeError, ValueError):
         return "❌ PID must be an integer"
-    record = _bg_processes.get(pid)
+    with _bg_processes_lock:
+        record = _bg_processes.get(pid)
     if not record:
         return f"❌ PID {pid} is not a Nexus-managed background process"
     try:
         _terminate_background_record(record)
-        _bg_processes.pop(pid, None)
+        _cleanup_background_record(record)
+        with _bg_processes_lock:
+            _bg_processes.pop(pid, None)
         return f"✅ Terminated Nexus-managed PID {pid}"
     except (OSError, subprocess.TimeoutExpired) as exc:
         return f"❌ PID {pid} could not be terminated: {exc}"
@@ -1700,18 +1786,75 @@ def _terminate_background_record(record: dict) -> None:
         process.wait(timeout=5)
 
 
+def _read_bounded_log(path: Path, limit: int) -> tuple[str, bool]:
+    try:
+        with path.open("rb") as handle:
+            data = handle.read(limit + 1)
+    except OSError as exc:
+        return f"<log unavailable: {exc}>", False
+    truncated = len(data) > limit
+    return data[:limit].decode("utf-8", errors="replace").rstrip(), truncated
+
+
+def _cleanup_background_record(record: dict) -> None:
+    cleanup = record.get("cleanup_path")
+    if cleanup:
+        Path(cleanup).unlink(missing_ok=True)
+
+
+def _truncate_log(path: Path, limit: int) -> bool:
+    try:
+        size = path.stat().st_size
+        if size <= limit:
+            return False
+        with path.open("rb") as handle:
+            data = handle.read(limit)
+        with path.open("wb") as handle:
+            handle.write(data)
+            handle.write(b"\n[output truncated by Nexus policy]\n")
+        return True
+    except OSError:
+        return False
+
+
+def _watch_background_process(pid: int) -> None:
+    with _bg_processes_lock:
+        record = _bg_processes.get(pid)
+    if not record:
+        return
+    process = record["process"]
+    try:
+        process.wait(timeout=float(record["timeout_seconds"]))
+    except subprocess.TimeoutExpired:
+        record["timed_out"] = True
+        try:
+            _terminate_background_record(record)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    finally:
+        record["output_truncated"] = bool(
+            _truncate_log(Path(record["stdout_log"]), int(record["max_output_bytes"]))
+            or _truncate_log(Path(record["stderr_log"]), int(record["max_output_bytes"]))
+        )
+        _cleanup_background_record(record)
+
+
 def stop_owned_processes(owner: str) -> dict[str, object]:
     """Terminate background processes created by one agent session."""
 
     stopped: list[int] = []
     errors: list[str] = []
-    for pid, record in list(_bg_processes.items()):
+    with _bg_processes_lock:
+        records = list(_bg_processes.items())
+    for pid, record in records:
         if record.get("owner") != owner:
             continue
         try:
             _terminate_background_record(record)
             stopped.append(pid)
-            _bg_processes.pop(pid, None)
+            _cleanup_background_record(record)
+            with _bg_processes_lock:
+                _bg_processes.pop(pid, None)
         except (OSError, subprocess.TimeoutExpired) as exc:
             errors.append(f"PID {pid}: {exc}")
     return {"stopped": stopped, "errors": errors}
@@ -1721,11 +1864,15 @@ def stop_all_background_processes() -> dict[str, object]:
     """Best-effort shutdown for every child still owned by this Nexus process."""
     stopped: list[int] = []
     errors: list[str] = []
-    for pid, record in list(_bg_processes.items()):
+    with _bg_processes_lock:
+        records = list(_bg_processes.items())
+    for pid, record in records:
         try:
             _terminate_background_record(record)
             stopped.append(pid)
-            _bg_processes.pop(pid, None)
+            _cleanup_background_record(record)
+            with _bg_processes_lock:
+                _bg_processes.pop(pid, None)
         except (OSError, subprocess.TimeoutExpired) as exc:
             errors.append(f"PID {pid}: {exc}")
     return {"stopped": stopped, "errors": errors}

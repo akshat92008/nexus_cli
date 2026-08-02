@@ -62,6 +62,7 @@ class CommandSpec:
     env: Mapping[str, str] = field(default_factory=dict)
     max_output_bytes: int = 1_000_000
     require_os_isolation: bool = False
+    allowed_sensitive_env_keys: tuple[str, ...] = ()
 
     @classmethod
     def create(
@@ -74,6 +75,7 @@ class CommandSpec:
         env: Mapping[str, str] | None = None,
         max_output_bytes: int = 1_000_000,
         require_os_isolation: bool = False,
+        allowed_sensitive_env_keys: Sequence[str] = (),
     ) -> "CommandSpec":
         normalized = tuple(str(item) for item in argv)
         if not normalized or not normalized[0].strip():
@@ -89,6 +91,7 @@ class CommandSpec:
             env=dict(env or {}),
             max_output_bytes=max(1_024, int(max_output_bytes)),
             require_os_isolation=bool(require_os_isolation),
+            allowed_sensitive_env_keys=tuple(str(key) for key in allowed_sensitive_env_keys),
         )
 
 
@@ -147,6 +150,19 @@ class CommandResult:
         return "\n".join(chunks)
 
 
+@dataclass(frozen=True)
+class PreparedCommand:
+    """Validated command ready for synchronous or background execution."""
+
+    argv: tuple[str, ...]
+    cwd: str
+    env: Mapping[str, str]
+    backend: SandboxBackend
+    cleanup_path: str = ""
+    network_allowed: bool = False
+    network_enforced: bool = False
+
+
 class SandboxRunner:
     """Execute typed commands inside the strongest available host sandbox."""
 
@@ -172,6 +188,18 @@ class SandboxRunner:
         "CARGO_HOME",
         "RUSTUP_HOME",
     }
+    SENSITIVE_ENV_MARKERS = (
+        "KEY",
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "CREDENTIAL",
+        "AUTH",
+        "COOKIE",
+        "SESSION",
+        "PRIVATE",
+    )
 
     def __init__(self, workspace: str | Path):
         self.workspace = Path(workspace).expanduser().resolve()
@@ -191,28 +219,15 @@ class SandboxRunner:
         return selected
 
     def run(self, spec: CommandSpec) -> CommandResult:
-        cwd = Path(spec.cwd).expanduser().resolve()
         try:
-            cwd.relative_to(self.workspace)
-        except ValueError:
-            return self._blocked(spec, "Command cwd is outside the authorized workspace")
-        if not cwd.is_dir():
-            return self._blocked(spec, f"Command cwd does not exist: {cwd}")
-
-        path_violation = self._command_path_violation(spec, cwd)
-        if path_violation:
-            return self._blocked(spec, path_violation)
-
-        backend = self.backend()
-        if spec.require_os_isolation and backend == SandboxBackend.RESTRICTED:
-            return self._blocked(
-                spec,
-                "No supported OS sandbox is available; install bubblewrap on Linux "
-                "or use sandbox-exec on macOS",
-            )
-
-        env = self._filtered_env(spec.env)
-        command, cleanup_path = self.build_command(spec, cwd)
+            prepared = self.prepare(spec)
+        except PermissionError as exc:
+            return self._blocked(spec, str(exc))
+        cwd = Path(prepared.cwd)
+        env = dict(prepared.env)
+        command = list(prepared.argv)
+        cleanup_path = Path(prepared.cleanup_path) if prepared.cleanup_path else None
+        backend = prepared.backend
 
         started = time.monotonic()
         try:
@@ -283,6 +298,47 @@ class SandboxRunner:
         finally:
             if cleanup_path is not None:
                 cleanup_path.unlink(missing_ok=True)
+
+    def prepare(self, spec: CommandSpec) -> PreparedCommand:
+        """Validate and wrap a command without starting it.
+
+        Background-process support uses this method so it cannot bypass the
+        same workspace, path, environment, and native-isolation policy applied
+        by :meth:`run`.
+        """
+
+        cwd = Path(spec.cwd).expanduser().resolve()
+        try:
+            cwd.relative_to(self.workspace)
+        except ValueError as exc:
+            raise PermissionError("Command cwd is outside the authorized workspace") from exc
+        if not cwd.is_dir():
+            raise PermissionError(f"Command cwd does not exist: {cwd}")
+
+        path_violation = self._command_path_violation(spec, cwd)
+        if path_violation:
+            raise PermissionError(path_violation)
+
+        backend = self.backend()
+        if spec.require_os_isolation and backend == SandboxBackend.RESTRICTED:
+            raise PermissionError(
+                "No supported OS sandbox is available; install bubblewrap on Linux "
+                "or use sandbox-exec on macOS"
+            )
+
+        env = self._filtered_env(
+            spec.env, allowed_sensitive_keys=spec.allowed_sensitive_env_keys
+        )
+        command, cleanup_path = self.build_command(spec, cwd)
+        return PreparedCommand(
+            argv=tuple(command),
+            cwd=str(cwd),
+            env=env,
+            backend=backend,
+            cleanup_path=str(cleanup_path) if cleanup_path else "",
+            network_allowed=spec.network,
+            network_enforced=backend != SandboxBackend.RESTRICTED,
+        )
 
     def run_shell(
         self,
@@ -548,17 +604,27 @@ class SandboxRunner:
                 return violation
         return ""
 
-    def _filtered_env(self, additions: Mapping[str, str]) -> dict[str, str]:
-        blocked_substrings = ("KEY", "TOKEN", "SECRET", "PASSWORD", "CREDENTIAL", "AUTH", "COOKIE", "SESSION")
+    def _filtered_env(
+        self,
+        additions: Mapping[str, str],
+        *,
+        allowed_sensitive_keys: Sequence[str] = (),
+    ) -> dict[str, str]:
         env = {
             key: value
             for key, value in os.environ.items()
-            if key in self.SAFE_ENV_KEYS or (key.startswith("NEXUS_") and not any(sub in key for sub in blocked_substrings))
+            if key in self.SAFE_ENV_KEYS
+            or (key.startswith("NEXUS_") and not self._is_sensitive_env_key(key))
         }
+        allowed = {str(key).upper() for key in allowed_sensitive_keys}
         for key, value in additions.items():
             normalized = str(key)
             if not normalized or "=" in normalized or "\x00" in normalized:
                 raise ValueError(f"Invalid environment key: {key!r}")
+            if self._is_sensitive_env_key(normalized) and normalized.upper() not in allowed:
+                raise ValueError(
+                    f"Sensitive environment variables cannot be forwarded to tools: {normalized}"
+                )
             env[normalized] = str(value)
         env.update(
             {
@@ -572,6 +638,11 @@ class SandboxRunner:
             }
         )
         return env
+
+    @classmethod
+    def _is_sensitive_env_key(cls, key: str) -> bool:
+        normalized = str(key).upper()
+        return any(marker in normalized for marker in cls.SENSITIVE_ENV_MARKERS)
 
     @staticmethod
     def _probe_bubblewrap() -> bool:

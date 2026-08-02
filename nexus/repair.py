@@ -187,6 +187,7 @@ class RepairLoop:
         deadline = time.monotonic() + self._budget_seconds
 
         current_failure = failure_context
+        failure_history: list[str] = []
         for iteration in range(1, self._max_iterations + 1):
             if time.monotonic() >= deadline:
                 logger.info("Repair budget exhausted at iteration %d.", iteration)
@@ -194,11 +195,15 @@ class RepairLoop:
 
             t_start = time.monotonic()
             failure_kind = classify_failure(current_failure)
+            fingerprint = current_failure.strip()[:1000]
+            repeated_failure = fingerprint in failure_history
+            failure_history.append(fingerprint)
             repair_prompt = self._build_repair_prompt(
                 original_prompt=original_prompt,
                 failure_context=current_failure,
                 failure_kind=failure_kind,
                 iteration=iteration,
+                repeated_failure=repeated_failure,
             )
 
             logger.info(
@@ -253,6 +258,22 @@ class RepairLoop:
                 output=(response + "\n\n" + verification_output)[:2000],
             )
             report.attempts.append(attempt)
+            if getattr(getattr(self._agent, "run_ledger", None), "turn_dir", None):
+                self._agent.run_ledger.append_event(
+                    "repair_iteration",
+                    status="verified" if succeeded else "failed",
+                    detail=(
+                        f"Repair iteration {iteration} {'succeeded' if succeeded else 'failed'} "
+                        f"for {failure_kind.value}."
+                    ),
+                    metadata={
+                        "iteration": iteration,
+                        "failure_kind": failure_kind.value,
+                        "repeated_failure": repeated_failure,
+                        "mutations": len(mutations),
+                        "checks": len(checks),
+                    },
+                )
 
             if succeeded:
                 report.succeeded = True
@@ -260,7 +281,11 @@ class RepairLoop:
                 break
 
             # Collect the new failure context for the next iteration
-            current_failure = self._extract_failure_from_response(response, events)
+            current_failure = (
+                verification_output
+                or self._extract_failure_from_response(response, events)
+                or "Repair attempt made no verified progress."
+            )[:8000]
 
         report.total_duration_ms = sum(a.duration_ms for a in report.attempts)
         if not report.succeeded:
@@ -274,6 +299,7 @@ class RepairLoop:
         failure_context: str,
         failure_kind: FailureKind,
         iteration: int,
+        repeated_failure: bool = False,
     ) -> str:
         """Construct a targeted repair prompt for the given failure class."""
         template = self._TEMPLATES.get(failure_kind, self._TEMPLATES[FailureKind.UNKNOWN])
@@ -282,10 +308,38 @@ class RepairLoop:
             failure_context=failure_context,
             iteration=iteration,
         )
+        graph_context = ""
+        repo_graph = getattr(self._agent, "repo_graph", None)
+        if repo_graph is not None:
+            try:
+                graph_context = repo_graph.context_bundle(
+                    f"{original_prompt}\n{failure_context}",
+                    max_files=10,
+                    max_chars=28_000,
+                    lines_per_file=90,
+                )
+            except (OSError, TypeError, ValueError):
+                graph_context = ""
+        strategy_guard = ""
+        if repeated_failure:
+            strategy_guard = (
+                "\nThe same failure signature has already occurred. Do not repeat the prior "
+                "patch. Re-check the root-cause assumption, inspect callers and tests, and use a "
+                "different minimal repair strategy.\n"
+            )
         return (
             f"[REPAIR ITERATION {iteration}/{self._max_iterations}]\n\n"
             f"Original task: {original_prompt[:300]}\n\n"
-            f"{body}"
+            f"{body}\n"
+            f"{strategy_guard}\n"
+            "Repair protocol:\n"
+            "1. Reproduce or inspect the exact failure.\n"
+            "2. Identify the smallest responsible code path.\n"
+            "3. Read callers, contracts, and the nearest tests before editing.\n"
+            "4. Apply a minimal coherent patch.\n"
+            "5. Run the narrow failing check first, then the applicable project checks.\n"
+            "6. Do not claim success while any check is failing.\n\n"
+            f"{graph_context}"
         )
 
     @staticmethod

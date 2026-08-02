@@ -191,6 +191,9 @@ class VerificationEngine:
         self,
         working_dir: str,
         custom_commands: dict[str, str] | None = None,
+        *,
+        require_os_isolation: bool = False,
+        timeout_seconds: float | None = None,
     ):
         self.root = Path(working_dir).expanduser().resolve()
         if not self.root.is_dir():
@@ -198,6 +201,9 @@ class VerificationEngine:
         self.working_dir = str(self.root)
         self.project_type = self._detect_project_type()
         self.commands = self._resolve_commands(custom_commands or {})
+        self.require_os_isolation = bool(require_os_isolation)
+        configured_timeout = timeout_seconds or float(os.getenv("NEXUS_VERIFY_TIMEOUT", "300"))
+        self.timeout_seconds = min(1800.0, max(30.0, float(configured_timeout)))
 
     def verify_syntax(self) -> CheckResult:
         """Compile Python sources without importing or executing project code."""
@@ -377,6 +383,45 @@ class VerificationEngine:
 
         return report
 
+    def run_change_aware(
+        self,
+        changed_paths: list[str] | tuple[str, ...],
+        *,
+        impacted_tests: list[str] | tuple[str, ...] = (),
+    ) -> VerificationReport:
+        """Run fast, dependency-focused checks before the complete gate.
+
+        A failing targeted test immediately returns high-signal evidence to the
+        repair loop. When focused checks pass, Nexus still runs the complete
+        project verification suite so optimization never weakens the release bar.
+        """
+        normalized = [
+            str(Path(path))
+            for path in changed_paths
+            if str(path).strip()
+        ]
+        focused: list[CheckResult] = []
+        if self.project_type == "python" and impacted_tests:
+            interpreter = _shell_executable(os.environ.get("PYTHON") or sys.executable)
+            tests = " ".join(shlex.quote(str(path)) for path in impacted_tests[:50])
+            command = f"{interpreter} -m pytest -q -x {tests}"
+            targeted = self._execute_check(CheckType.TEST, command, timeout_seconds=180)
+            targeted.command = f"{command}  # targeted from {len(normalized)} changed files"
+            focused.append(targeted)
+            if not targeted.passed:
+                report = VerificationReport(
+                    project_type=self.project_type,
+                    checks=focused,
+                    all_passed=False,
+                )
+                return report
+
+        report = self.run_all()
+        if focused:
+            report.checks = focused + report.checks
+            report.all_passed = all(item.passed for item in report.checks)
+        return report
+
     @staticmethod
     def _normalize_failure_output(output: str, roots: tuple[Path, ...] = ()) -> str:
         """Normalize nondeterministic details before baseline comparison.
@@ -450,6 +495,8 @@ class VerificationEngine:
         baseline_engine = VerificationEngine(
             str(baseline_path),
             custom_commands=dict(self.commands),
+            require_os_isolation=self.require_os_isolation,
+            timeout_seconds=self.timeout_seconds,
         )
         reconciled: list[CheckResult] = []
         for current in report.checks:
@@ -642,7 +689,13 @@ class VerificationEngine:
         """Check if a command is available."""
         return shutil.which(cmd) is not None
 
-    def _execute_check(self, check_type: CheckType, command: str) -> CheckResult:
+    def _execute_check(
+        self,
+        check_type: CheckType,
+        command: str,
+        *,
+        timeout_seconds: float | None = None,
+    ) -> CheckResult:
         """Execute a verification command and parse the result."""
         import time
 
@@ -663,8 +716,9 @@ class VerificationEngine:
             result = SandboxRunner(self.working_dir).run_shell(
                 command,
                 cwd=self.working_dir,
-                timeout_seconds=120,
+                timeout_seconds=timeout_seconds or self.timeout_seconds,
                 network=False,
+                require_os_isolation=self.require_os_isolation,
             )
 
             duration = int((time.monotonic() - start) * 1000)

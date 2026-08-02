@@ -51,6 +51,7 @@ def _workspace_check(working_dir: Path) -> Diagnostic:
 _ISOLATION_REQUIRED_MODES = frozenset(
     {"workspace", "autonomous", "quality", "budget", "local-only", "ci"}
 )
+_ISOLATION_GATED_COMMAND_MODES = frozenset({"review"})
 
 _SANDBOX_INSTALL_HINT: dict[str, str] = {
     "linux": (
@@ -97,13 +98,20 @@ def _sandbox_check(root: Path, mode: str = "review") -> Diagnostic:
             ),
         )
 
-    # plan / direct-command modes do not require OS isolation.
+    # Review mode can start for hosted reasoning and file inspection, but its
+    # command execution remains fail-closed until native containment exists.
+    gated_detail = (
+        " Review mode remains available, but command execution and project "
+        "verification are blocked until native isolation is installed."
+        if mode in _ISOLATION_GATED_COMMAND_MODES
+        else ""
+    )
     return Diagnostic(
         "Sandbox",
         "WARN",
         (
-            "restricted-process fallback; filesystem/network isolation is policy-only.\n"
-            f"  To enable full isolation: {install_hint}"
+            "restricted-process fallback; filesystem/network isolation is policy-only."
+            f"{gated_detail}\n  To enable full isolation: {install_hint}"
         ),
     )
 
@@ -117,6 +125,7 @@ def run_doctor(
     root = Path(working_dir or os.getcwd()).expanduser().resolve()
     local = probe_ollama(nova_model, use_cache=False)
     hosted = probe_hosted()
+    workspace_diag = _workspace_check(root)
     sandbox_diag = _sandbox_check(root, mode=mode)
     diagnostics = [
         Diagnostic(
@@ -124,7 +133,7 @@ def run_doctor(
             "PASS",
             f"version {__version__} on Python {sys.version_info.major}.{sys.version_info.minor}",
         ),
-        _workspace_check(root),
+        workspace_diag,
         Diagnostic(
             "Git",
             "PASS" if shutil.which("git") else "WARN",

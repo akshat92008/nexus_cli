@@ -16,10 +16,12 @@ import logging
 import subprocess
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Optional
 
 from nexus.paths import nexus_home
-from nexus.process_io import filtered_subprocess_env, readline_with_timeout
+from nexus.process_io import readline_with_timeout
+from nexus.sandbox import CommandSpec, SandboxRunner
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,9 @@ class MCPServerConfig:
     env: dict[str, str] = field(default_factory=dict)
     description: str = ""
     enabled: bool = True
+    workspace: str = ""
+    network: bool = False
+    require_os_isolation: bool = True
 
 
 class MCPConnection:
@@ -74,21 +79,36 @@ class MCPConnection:
         self._request_id = 0
         self.tools: list[MCPTool] = []
         self.connected = False
+        self._cleanup_path = ""
 
     def connect(self) -> bool:
         """Start the MCP server process and initialize the connection."""
         try:
-            # SECURITY: Minimal environment. PYTHONPATH is deliberately excluded
-            # to prevent code injection into the MCP server process. Platform
-            # bootstrap variables are retained so Windows children can start.
-            env = filtered_subprocess_env(overrides=self.config.env)
-            self._process = subprocess.Popen(
+            workspace = Path(self.config.workspace or Path.cwd()).expanduser().resolve()
+            runner = SandboxRunner(workspace)
+            spec = CommandSpec.create(
                 self.config.command,
+                workspace,
+                timeout_seconds=_MCP_TOOL_CALL_TIMEOUT,
+                network=self.config.network,
+                env=self.config.env,
+                max_output_bytes=_MAX_MCP_OUTPUT_BYTES,
+                require_os_isolation=self.config.require_os_isolation,
+                # MCP credentials are explicit, trusted configuration. Only the
+                # exact configured names may cross the process boundary.
+                allowed_sensitive_env_keys=tuple(self.config.env),
+            )
+            prepared = runner.prepare(spec)
+            self._cleanup_path = prepared.cleanup_path
+            self._process = subprocess.Popen(
+                list(prepared.argv),
+                cwd=prepared.cwd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
-                env=env,
+                env=dict(prepared.env),
+                start_new_session=True,
             )
 
             # Initialize
@@ -123,7 +143,8 @@ class MCPConnection:
             self.connected = True
             return True
 
-        except (FileNotFoundError, OSError, json.JSONDecodeError):
+        except (FileNotFoundError, OSError, ValueError, PermissionError, json.JSONDecodeError):
+            self.disconnect()
             return False
 
     def call_tool(self, tool_name: str, arguments: dict) -> dict:
@@ -185,6 +206,12 @@ class MCPConnection:
                 pass
             self._process = None
             self.connected = False
+            if self._cleanup_path:
+                try:
+                    Path(self._cleanup_path).unlink(missing_ok=True)
+                except OSError:
+                    pass
+                self._cleanup_path = ""
 
     def _send_request(self, method: str, params: dict) -> Optional[dict]:
         """Send a JSON-RPC request and wait for the response."""
@@ -259,17 +286,20 @@ class MCPClient:
             name="filesystem",
             command=["npx", "-y", "@modelcontextprotocol/server-filesystem"],
             description="Enhanced file system operations",
+            network=True,
         ),
         "sqlite": MCPServerConfig(
             name="sqlite",
             command=["npx", "-y", "@modelcontextprotocol/server-sqlite"],
             description="SQLite database operations",
+            network=True,
         ),
         "github": MCPServerConfig(
             name="github",
             command=["npx", "-y", "@modelcontextprotocol/server-github"],
             env={"GITHUB_PERSONAL_ACCESS_TOKEN": ""},
             description="GitHub repository operations",
+            network=True,
         ),
     }
 
@@ -292,6 +322,12 @@ class MCPClient:
                     command=server_data.get("command", []),
                     env=server_data.get("env", {}),
                     description=server_data.get("description", ""),
+                    enabled=bool(server_data.get("enabled", True)),
+                    workspace=str(server_data.get("workspace", "")),
+                    network=bool(server_data.get("network", False)),
+                    require_os_isolation=bool(
+                        server_data.get("requireOsIsolation", True)
+                    ),
                 )
                 self.add_server(config)
         except (FileNotFoundError, json.JSONDecodeError, OSError):

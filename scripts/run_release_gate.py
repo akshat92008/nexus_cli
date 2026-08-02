@@ -147,6 +147,106 @@ def wheel_install_command(python: str, target: Path, wheel: Path) -> list[str]:
     return [*installer, "--no-deps", "--target", str(target), str(wheel)]
 
 
+def run_pytest_shards(
+    python: str,
+    *,
+    env: dict[str, str],
+    repo: Path = REPO,
+    shard_count: int | None = None,
+) -> tuple[int, int]:
+    """Run test files in isolated processes and combine branch coverage.
+
+    Nexus intentionally exercises subprocesses, web servers, and background
+    workers. Process-level sharding prevents one test's global runtime state
+    from contaminating later tests while still enforcing aggregate coverage.
+    """
+    import re
+
+    test_files = sorted((repo / "tests").glob("test_*.py"))
+    if not test_files:
+        raise RuntimeError("release gate found no test files")
+    requested = (
+        int(shard_count)
+        if shard_count is not None
+        else int(os.environ.get("NEXUS_TEST_SHARDS", "0"))
+    )
+    # Default to one test module per process. Nexus tests deliberately create
+    # subprocesses, web servers, and global agent state; module isolation makes
+    # release results deterministic instead of order-dependent.
+    count = len(test_files) if requested <= 0 else min(len(test_files), max(1, requested))
+    shards = [test_files[index::count] for index in range(count)]
+    timeout_seconds = int(os.environ.get("NEXUS_TEST_SHARD_TIMEOUT", "300"))
+
+    for stale in repo.glob(".coverage.shard-*"):
+        stale.unlink(missing_ok=True)
+    subprocess.run(
+        [python, "-m", "coverage", "erase"],
+        cwd=repo,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    total_passed = 0
+    total_skipped = 0
+    for index, shard in enumerate(shards, start=1):
+        command = [
+            python,
+            "-m",
+            "coverage",
+            "run",
+            "--branch",
+            "--source=nexus",
+        ]
+        command.extend(
+            [
+                "-m",
+                "pytest",
+                "-q",
+                "--disable-warnings",
+                *(str(path.relative_to(repo)) for path in shard),
+            ]
+        )
+        print(
+            f"\n==> pytest shard {index}/{len(shards)} ({len(shard)} files)",
+            flush=True,
+        )
+        shard_env = dict(env)
+        shard_env["COVERAGE_FILE"] = str(repo / f".coverage.shard-{index:03d}")
+        try:
+            result = subprocess.run(
+                command,
+                cwd=repo,
+                env=shard_env,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(
+                f"pytest shard {index} exceeded {timeout_seconds}s"
+            ) from exc
+        print(result.stdout, end="")
+        if result.returncode != 0:
+            print(result.stderr, file=sys.stderr)
+            raise RuntimeError(f"pytest shard {index} failed with exit code {result.returncode}")
+        passed = re.search(r"(\d+) passed", result.stdout)
+        skipped = re.search(r"(\d+) skipped", result.stdout)
+        if not passed:
+            raise RuntimeError(f"pytest shard {index} reported no passing tests")
+        total_passed += int(passed.group(1))
+        total_skipped += int(skipped.group(1)) if skipped else 0
+
+    run([python, "-m", "coverage", "combine"], cwd=repo, env=env)
+    run(
+        [python, "-m", "coverage", "report", "--show-missing", "--fail-under=60"],
+        cwd=repo,
+        env=env,
+    )
+    run([python, "-m", "coverage", "xml"], cwd=repo, env=env)
+    return total_passed, total_skipped
+
+
 def main() -> int:
     python = sys.executable
     revision = source_revision()
@@ -154,18 +254,16 @@ def main() -> int:
     assert_dependency_mirror()
     run([python, "-m", "ruff", "check", "nexus", "tests", "scripts"], env=offline_env)
     
-    # Run pytest and capture output to count tests
-    pytest_proc = subprocess.run([python, "-m", "pytest", "-q"], env=offline_env, capture_output=True, text=True)
-    if pytest_proc.returncode not in (0, 5):
-        print(pytest_proc.stdout, file=sys.stderr)
-        print(pytest_proc.stderr, file=sys.stderr)
-        sys.exit(pytest_proc.returncode)
-    
-    test_count = 0
-    import re
-    match = re.search(r"(\d+) passed", pytest_proc.stdout)
-    if match:
-        test_count = int(match.group(1))
+    test_count, skipped_count = run_pytest_shards(
+        python,
+        env=offline_env,
+        repo=REPO,
+    )
+    minimum_tests = int(os.environ.get("NEXUS_RELEASE_MIN_TESTS", "400"))
+    if test_count < minimum_tests:
+        raise RuntimeError(
+            f"release gate collected only {test_count} passing tests; expected at least {minimum_tests}"
+        )
     run([python, "-m", "compileall", "-q", "nexus", "tests"], env=offline_env)
 
     with tempfile.TemporaryDirectory(prefix="nexus-release-gate-") as temp:
@@ -316,11 +414,14 @@ def main() -> int:
         )
         print(f"\nRelease provenance: {provenance_str}", flush=True)
 
-        readiness_file = REPO / "LAUNCH_READINESS_3.2.0.md"
-        readiness_content = f"""# Nexus 3.2.0 Launch Readiness
+        from nexus import __version__
+
+        readiness_file = REPO / f"LAUNCH_READINESS_{__version__}.md"
+        readiness_content = f"""# Nexus {__version__} Launch Readiness
 
 ## Automated Release Gates
 - **Tests Passed**: {test_count}
+- **Tests Skipped**: {skipped_count}
 - **Provenance**: {provenance_str}
 
 ## Status

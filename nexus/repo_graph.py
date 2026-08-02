@@ -357,6 +357,121 @@ class RepoGraph:
             for score, path, reasons in ranked[: max(1, limit)]
         ]
 
+    def context_bundle(
+        self,
+        query: str,
+        *,
+        max_files: int = 12,
+        max_chars: int = 36_000,
+        lines_per_file: int = 120,
+    ) -> str:
+        """Return a compact, query-focused repository context bundle.
+
+        The bundle combines ranked files, declaration windows, direct import
+        relationships, likely impacted tests, and ownership metadata. It avoids
+        dumping whole large files into the model context and gives every excerpt
+        stable line numbers so follow-up reads and edits can be surgical.
+        """
+
+        if not self.files:
+            self.build(force=False)
+        ranked = self.relevant_files(query, limit=max(1, max_files * 2))
+        selected = [item["path"] for item in ranked[:max_files]]
+        if selected:
+            for test_path in self.impacted_tests(selected, limit=max(2, max_files // 3)):
+                if test_path not in selected:
+                    selected.append(test_path)
+                if len(selected) >= max_files:
+                    break
+        if not selected:
+            return ""
+
+        terms = {
+            token.lower()
+            for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", query)
+        }
+        sections = ["[QUERY-FOCUSED REPOSITORY CONTEXT]"]
+        consumed = len(sections[0])
+        for relative in selected:
+            record = self.files.get(relative)
+            path = self.root / relative
+            if not record or not path.is_file() or record.size > 2_000_000:
+                continue
+            dependencies = self.dependencies(relative)
+            symbol_names = [item.name for item in record.symbols[:20]]
+            header = (
+                f"\n--- {relative} [{record.language}] "
+                f"test={record.is_test} owners={record.owners or ['unassigned']} ---\n"
+                f"symbols={symbol_names}\n"
+                f"imports={dependencies['imports'][:16]}\n"
+                f"imported_by={dependencies['imported_by'][:16]}\n"
+            )
+            if consumed + len(header) >= max_chars:
+                break
+            try:
+                lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            excerpt = self._focused_excerpt(
+                lines,
+                record,
+                terms,
+                max_lines=max(20, lines_per_file),
+            )
+            section = header + excerpt
+            remaining = max_chars - consumed
+            if len(section) > remaining:
+                section = section[:remaining] + "\n...[context budget reached]"
+            sections.append(section)
+            consumed += len(section)
+            if consumed >= max_chars:
+                break
+        return "\n".join(sections)
+
+    @staticmethod
+    def _focused_excerpt(
+        lines: list[str],
+        record: FileRecord,
+        terms: set[str],
+        *,
+        max_lines: int,
+    ) -> str:
+        if not lines:
+            return "(empty file)"
+        anchors: set[int] = {0}
+        for symbol in record.symbols:
+            if not terms or any(term in symbol.name.lower() for term in terms):
+                anchors.add(max(0, symbol.line - 1))
+        if terms:
+            for index, line in enumerate(lines):
+                lowered = line.lower()
+                if any(term in lowered for term in terms):
+                    anchors.add(index)
+                    if len(anchors) >= 24:
+                        break
+
+        chosen: set[int] = set()
+        radius = 5
+        for anchor in sorted(anchors):
+            for index in range(max(0, anchor - radius), min(len(lines), anchor + radius + 1)):
+                chosen.add(index)
+                if len(chosen) >= max_lines:
+                    break
+            if len(chosen) >= max_lines:
+                break
+        if len(chosen) < min(max_lines, 30):
+            for index in range(min(len(lines), max_lines - len(chosen))):
+                chosen.add(index)
+
+        rendered: list[str] = []
+        previous = -2
+        for index in sorted(chosen)[:max_lines]:
+            if index > previous + 1:
+                rendered.append("    ...")
+            rendered.append(f"{index + 1:5}: {lines[index]}")
+            previous = index
+        return "\n".join(rendered)
+
     def routes(self, query: str = "") -> list[dict[str, Any]]:
         """Return discovered API/UI routes."""
         needle = query.lower().strip()

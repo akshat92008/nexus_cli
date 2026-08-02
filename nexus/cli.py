@@ -193,7 +193,7 @@ Environment:
             "Operational policy preset (default: review). "
             "Modes and isolation requirements: "
             "plan — read-only, no OS sandbox needed; "
-            "review — edits require confirmation, no OS sandbox needed; "
+            "review — edits require confirmation, native sandbox required for commands; "
             "workspace — Git-isolated worktree, native sandbox required; "
             "autonomous — hands-free, native sandbox required (bubblewrap on Linux); "
             "local-only — Nova only, native sandbox required; "
@@ -227,6 +227,11 @@ Environment:
         "--workspace",
         action="store_true",
         help="Run in a dedicated Git branch/worktree instead of the source checkout",
+    )
+    parser.add_argument(
+        "--keep-workspace",
+        action="store_true",
+        help="Retain the isolated workspace after Nexus exits for inspection or manual apply",
     )
     parser.add_argument(
         "--no-workspace",
@@ -957,6 +962,7 @@ def run_web(
 
         from nexus.webapp.server import create_app
 
+        ui.print_banner()
         app = create_app(
             api_key=api_key,
             model=model,
@@ -968,14 +974,13 @@ def run_web(
             tools_enabled=tools_enabled,
         )
 
-        import nexus.webapp.server
-        
-        ui.print_banner()
+        launch_url = f"http://localhost:{port}/?token={app.state.web_token}"
         ui.console.print(
-            f"  [bold {ui.GREEN}]🌐 Web Interface[/] starting on [bold {ui.CYAN}]http://localhost:{port}/?token={nexus.webapp.server._web_token}[/]\n"
-            f"  [{ui.DIM}]Press Ctrl+C to stop[/]\n"
+            f"  [bold {ui.GREEN}]🌐 Web Interface[/] starting on "
+            f"[bold {ui.CYAN}]{launch_url}[/]\n"
+            f"  [{ui.DIM}]The launch token is required and is not embedded in the page. "
+            f"Press Ctrl+C to stop.[/]\n"
         )
-
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="warning")
 
     except ImportError as e:
@@ -994,9 +999,11 @@ def start_background_web_server(api_key: str, model: str, port: int, working_dir
 
     from nexus.webapp.server import create_app
 
+    app = create_app(api_key=api_key, model=model, working_dir=working_dir)
+    launch_url = f"http://localhost:{port}/?token={app.state.web_token}"
+
     def _run():
         try:
-            app = create_app(api_key=api_key, model=model, working_dir=working_dir)
             # Run uvicorn quietly (log_level="error") to avoid cluttered CLI printouts
             uvicorn.run(app, host="127.0.0.1", port=port, log_level="error")
         except (OSError, RuntimeError):
@@ -1009,8 +1016,7 @@ def start_background_web_server(api_key: str, model: str, port: int, working_dir
     def _open_browser():
         time.sleep(1.2)
         try:
-            import nexus.webapp.server
-            webbrowser.open(f"http://localhost:{port}/?token={nexus.webapp.server._web_token}")
+            webbrowser.open(launch_url)
         except OSError:
             pass
 
@@ -1284,6 +1290,7 @@ def main():
             plugins_enabled=args.enable_plugins,
             tools_enabled=not args.no_tools,
         )
+        agent.keep_workspace = bool(args.keep_workspace)
     except ValueError as e:
         ui.print_error(str(e))
         sys.exit(1)
