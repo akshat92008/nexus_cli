@@ -15,6 +15,7 @@ import json
 import os
 import shlex
 import sys
+from dataclasses import asdict
 from pathlib import Path
 
 from nexus import __version__, ui
@@ -854,6 +855,386 @@ def _handle_mcp() -> bool:
     return True
 
 
+def _state_dir_from_working_dir(working_dir: str, name: str) -> Path | None:
+    if not working_dir:
+        return None
+    path = Path(working_dir).expanduser().resolve() / ".nexus" / name
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _handle_enterprise() -> bool:
+    """Resolve enterprise governance commands before model initialization."""
+    if len(sys.argv) < 2 or sys.argv[1] not in {
+        "org",
+        "members",
+        "roles",
+        "policy",
+        "approvals",
+        "secrets",
+        "audit",
+        "budgets",
+        "compliance",
+        "admin",
+    }:
+        return False
+
+    parser = argparse.ArgumentParser(prog=f"nexus {sys.argv[1]}")
+    parser.add_argument("--working-dir", "-d", default="")
+    parser.add_argument("--json", action="store_true")
+    sub = parser.add_subparsers(dest="command", required=True)
+    top = sys.argv[1]
+
+    if top == "org":
+        create = sub.add_parser("create")
+        create.add_argument("name")
+        sub.add_parser("list")
+    elif top == "members":
+        add = sub.add_parser("add")
+        add.add_argument("identity_id")
+        add.add_argument("display_name")
+        add.add_argument("--org", default="")
+        add.add_argument("--role", action="append", default=["viewer"])
+        add.add_argument("--kind", default="local_user")
+    elif top == "roles":
+        sub.add_parser("list")
+        check = sub.add_parser("check")
+        check.add_argument("identity_id")
+        check.add_argument("permission")
+        check.add_argument("--project", default="")
+    elif top == "policy":
+        validate = sub.add_parser("validate")
+        validate.add_argument("path")
+        activate = sub.add_parser("activate")
+        activate.add_argument("path")
+        evaluate = sub.add_parser("evaluate")
+        evaluate.add_argument("context")
+    elif top == "approvals":
+        request = sub.add_parser("request")
+        request.add_argument("requester_id")
+        request.add_argument("scope")
+        request.add_argument("--risk", default="medium")
+        decide = sub.add_parser("decide")
+        decide.add_argument("request_id")
+        decide.add_argument("approver_id")
+        decide.add_argument("decision", choices=("approved", "rejected"))
+        sub.add_parser("list")
+    elif top == "secrets":
+        put = sub.add_parser("put")
+        put.add_argument("name")
+        put.add_argument("value")
+        put.add_argument("--project", required=True)
+        put.add_argument("--provider", default="")
+        put.add_argument("--purpose", default="")
+        get = sub.add_parser("get")
+        get.add_argument("name")
+        get.add_argument("identity_id")
+        get.add_argument("--project", required=True)
+        get.add_argument("--provider", default="")
+        get.add_argument("--purpose", default="")
+        list_cmd = sub.add_parser("list")
+        list_cmd.add_argument("--project", default="")
+    elif top == "audit":
+        sub.add_parser("verify")
+        sub.add_parser("list")
+    elif top == "budgets":
+        set_cmd = sub.add_parser("set")
+        set_cmd.add_argument("subject_type")
+        set_cmd.add_argument("subject_id")
+        set_cmd.add_argument("limit_usd", type=float)
+        set_cmd.add_argument("--threshold", type=float, default=0.0)
+        charge = sub.add_parser("charge")
+        charge.add_argument("subject_type")
+        charge.add_argument("subject_id")
+        charge.add_argument("amount_usd", type=float)
+    elif top == "compliance":
+        export = sub.add_parser("export")
+        export.add_argument("--output", default="")
+    elif top == "admin":
+        doctor = sub.add_parser("doctor")
+        doctor.set_defaults(command="doctor")
+
+    args = parser.parse_args(sys.argv[2:])
+
+    from nexus.enterprise import (
+        ApprovalWorkflowService,
+        AuthorizationService,
+        BudgetGovernanceService,
+        BudgetLimit,
+        ComplianceExportService,
+        EnterpriseAuditService,
+        EnterpriseStore,
+        IdentityService,
+        OrganizationService,
+        PolicyEngine,
+        PolicyRule,
+        Role,
+        SecretBroker,
+    )
+
+    store = EnterpriseStore(_state_dir_from_working_dir(args.working_dir, "enterprise"))
+    audit = EnterpriseAuditService(store)
+
+    def emit(payload):
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2, default=str))
+        else:
+            if isinstance(payload, str):
+                print(payload)
+            else:
+                print(json.dumps(payload, indent=2, default=str))
+
+    if top == "org":
+        service = OrganizationService(store)
+        if args.command == "create":
+            org = service.create(args.name)
+            audit.append("org.create", "cli", organization_id=org.organization_id)
+            emit(asdict(org))
+        else:
+            emit([asdict(org) for org in service.list()])
+        return True
+
+    if top == "members":
+        roles = tuple(Role(role) for role in args.role)
+        identity = IdentityService(store).create(
+            args.identity_id,
+            args.display_name,
+            kind=args.kind,
+            organization_id=args.org,
+            roles=roles,
+        )
+        audit.append("identity.create", "cli", organization_id=args.org, details=identity.to_dict())
+        emit(identity.to_dict())
+        return True
+
+    if top == "roles":
+        if args.command == "list":
+            from nexus.enterprise.governance import ROLE_PERMISSIONS
+
+            emit({role.value: sorted(perms) for role, perms in ROLE_PERMISSIONS.items()})
+        else:
+            allowed = AuthorizationService(IdentityService(store)).is_allowed(
+                args.identity_id, args.permission, project_id=args.project
+            )
+            emit({"allowed": allowed})
+        return True
+
+    if top == "policy":
+        engine = PolicyEngine(store, audit)
+        if args.command in {"validate", "activate"}:
+            data = json.loads(Path(args.path).read_text(encoding="utf-8"))
+            raw_rules = data if isinstance(data, list) else data.get("rules", [])
+            rules = [PolicyRule.from_dict(item) for item in raw_rules]
+            if args.command == "activate":
+                engine.activate_rules(rules, actor_id="cli")
+            emit({"valid": True, "rule_count": len(rules)})
+        else:
+            context = json.loads(args.context)
+            emit(asdict(engine.evaluate(context)))
+        return True
+
+    if top == "approvals":
+        service = ApprovalWorkflowService(store, AuthorizationService(IdentityService(store)))
+        if args.command == "request":
+            emit(asdict(service.request(args.requester_id, args.scope, args.risk)))
+        elif args.command == "decide":
+            emit(asdict(service.decide(args.request_id, args.approver_id, args.decision)))
+        else:
+            emit([asdict(item) for item in service.list_requests()])
+        return True
+
+    if top == "secrets":
+        broker = SecretBroker(store, AuthorizationService(IdentityService(store)))
+        if args.command == "put":
+            broker.put(args.name, args.value, project_id=args.project, provider=args.provider, purpose=args.purpose)
+            audit.append("secret.put", "cli", project_id=args.project, details={"name": args.name})
+            emit({"stored": True, "name": args.name})
+        elif args.command == "get":
+            value = broker.request(
+                args.name,
+                identity_id=args.identity_id,
+                project_id=args.project,
+                provider=args.provider,
+                purpose=args.purpose,
+            )
+            audit.append("secret.get", args.identity_id, project_id=args.project, details={"name": args.name})
+            emit({"name": args.name, "value": value})
+        else:
+            emit(broker.list_redacted(args.project))
+        return True
+
+    if top == "audit":
+        if args.command == "verify":
+            emit({"valid": audit.verify_chain()})
+        else:
+            emit([asdict(item) for item in audit.list_records()])
+        return True
+
+    if top == "budgets":
+        service = BudgetGovernanceService(store)
+        if args.command == "set":
+            service.set_limit(BudgetLimit(args.subject_type, args.subject_id, args.limit_usd, approval_threshold_usd=args.threshold))
+            emit({"stored": True})
+        else:
+            emit(asdict(service.charge(args.subject_type, args.subject_id, args.amount_usd)))
+        return True
+
+    if top == "compliance":
+        payload = ComplianceExportService(store).export()
+        if args.output:
+            Path(args.output).write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        emit(payload)
+        return True
+
+    if top == "admin":
+        emit({"enterprise_state": str(store.state_dir), "audit_chain_valid": audit.verify_chain()})
+        return True
+
+    return True
+
+
+def _handle_autonomy_project() -> bool:
+    """Resolve ``nexus project ...`` long-horizon project commands."""
+    if len(sys.argv) < 2 or sys.argv[1] != "project":
+        return False
+
+    parser = argparse.ArgumentParser(prog="nexus project")
+    parser.add_argument("--working-dir", "-d", default="")
+    parser.add_argument("--json", action="store_true")
+    sub = parser.add_subparsers(dest="command", required=True)
+    create = sub.add_parser("create")
+    create.add_argument("objective")
+    create.add_argument("--requirement", action="append", default=[])
+    create.add_argument("--acceptance", action="append", default=[])
+    for name in ("plan", "approve", "run", "status", "pause", "resume", "milestones", "evidence", "risks", "cancel", "archive"):
+        cmd = sub.add_parser(name)
+        cmd.add_argument("project_id")
+
+    args = parser.parse_args(sys.argv[2:])
+
+    from nexus.autonomy import ProjectService, ProjectState
+
+    service = ProjectService()
+    if args.working_dir:
+        from nexus.autonomy.projects import AutonomyStore
+
+        service = ProjectService(AutonomyStore(_state_dir_from_working_dir(args.working_dir, "autonomy")))
+
+    def emit(payload):
+        print(json.dumps(payload, indent=2, default=str) if args.json or not isinstance(payload, str) else payload)
+
+    if args.command == "create":
+        project = service.create(
+            args.objective,
+            requirements=tuple(args.requirement),
+            acceptance_criteria=tuple(args.acceptance),
+        )
+        emit(project.to_dict())
+        return True
+    if args.command == "plan":
+        emit(service.plan(args.project_id))
+        return True
+    if args.command == "approve":
+        emit(service.transition(args.project_id, ProjectState.APPROVED).to_dict())
+        return True
+    if args.command == "run":
+        emit(service.transition(args.project_id, ProjectState.RUNNING).to_dict())
+        return True
+    if args.command == "status":
+        emit(service.progress(args.project_id))
+        return True
+    if args.command == "pause":
+        emit(service.transition(args.project_id, ProjectState.PAUSED).to_dict())
+        return True
+    if args.command == "resume":
+        emit(service.transition(args.project_id, ProjectState.RUNNING).to_dict())
+        return True
+    if args.command == "milestones":
+        project = service.get(args.project_id)
+        emit([item.to_dict() for item in project.milestones] if project else [])
+        return True
+    if args.command == "evidence":
+        project = service.get(args.project_id)
+        emit({"evidence": list(project.verification_evidence) if project else []})
+        return True
+    if args.command == "risks":
+        project = service.get(args.project_id)
+        emit({"risks": list(project.active_risks) if project else []})
+        return True
+    if args.command == "cancel":
+        emit(service.transition(args.project_id, ProjectState.CANCELLED).to_dict())
+        return True
+    if args.command == "archive":
+        emit(service.transition(args.project_id, ProjectState.ARCHIVED).to_dict())
+        return True
+    return True
+
+
+def _handle_performance_and_release() -> bool:
+    if len(sys.argv) < 2 or sys.argv[1] not in {"performance", "release"}:
+        return False
+    top = sys.argv[1]
+    parser = argparse.ArgumentParser(prog=f"nexus {top}")
+    parser.add_argument("--json", action="store_true")
+    sub = parser.add_subparsers(dest="command", required=True)
+    if top == "performance":
+        sub.add_parser("profile")
+        low = sub.add_parser("low-resource")
+        low.set_defaults(command="low-resource")
+    else:
+        scope = sub.add_parser("scope")
+        scope.add_argument("capability", nargs="?")
+        qualify = sub.add_parser("qualify")
+        qualify.add_argument("--version", required=True)
+        qualify.add_argument("--output", default="")
+    args = parser.parse_args(sys.argv[2:])
+
+    if top == "performance":
+        from nexus.performance import (
+            LowResourceProfile,
+            PerformanceBudget,
+            PerformanceProfiler,
+            RegressionGate,
+        )
+
+        if args.command == "low-resource":
+            print(json.dumps(LowResourceProfile().to_dict(), indent=2))
+            return True
+        profiler = PerformanceProfiler()
+        profiler.measure("noop", lambda: {"ok": True})
+        report = profiler.report()
+        failures = RegressionGate((PerformanceBudget("noop", 100),)).evaluate(report)
+        print(json.dumps(report.to_dict() | {"regressions": failures}, indent=2))
+        return True
+
+    from nexus.release.qualification import (
+        DEFAULT_RELEASE_SCOPE,
+        ReleaseQualification,
+        RollbackPlan,
+        build_supply_chain_evidence,
+    )
+
+    if args.command == "scope":
+        if args.capability:
+            print(DEFAULT_RELEASE_SCOPE.classify(args.capability))
+        else:
+            print(json.dumps(asdict(DEFAULT_RELEASE_SCOPE), indent=2))
+        return True
+    requirements = Path("requirements.txt")
+    dependency_lines = tuple(requirements.read_text(encoding="utf-8").splitlines()) if requirements.is_file() else ()
+    qualification = ReleaseQualification(
+        version=args.version,
+        scope=DEFAULT_RELEASE_SCOPE,
+        supply_chain=build_supply_chain_evidence(dependency_lines=dependency_lines),
+        rollback_plan=RollbackPlan(safe_version=args.version, downgrade_tested=True),
+    )
+    payload = asdict(qualification) | {"evaluation": qualification.evaluate()}
+    if args.output:
+        Path(args.output).write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return True
+
+
 def _solve_issue_prompt() -> bool:
     """Resolve ``nexus solve-issue <number>`` through the authenticated gh CLI."""
     if len(sys.argv) < 2 or sys.argv[1] != "solve-issue":
@@ -1410,6 +1791,12 @@ def main():
     if _handle_extensions():
         return
     if _handle_mcp():
+        return
+    if _handle_enterprise():
+        return
+    if _handle_autonomy_project():
+        return
+    if _handle_performance_and_release():
         return
     if _handle_run_management():
         return
