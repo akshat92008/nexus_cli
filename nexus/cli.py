@@ -524,6 +524,336 @@ def _handle_benchmark() -> bool:
     return True
 
 
+def _extension_state_dir(working_dir: str = "") -> Path | None:
+    """Return an optional command-local extension state directory."""
+    if not working_dir:
+        return None
+    path = Path(working_dir).expanduser().resolve() / ".nexus" / "extensions"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _extension_registry(working_dir: str = ""):
+    from nexus.platform.registry import PlatformExtensionRegistry
+
+    state_dir = _extension_state_dir(working_dir)
+    return PlatformExtensionRegistry(
+        working_dir=working_dir,
+        extensions_dir=(state_dir / "installed") if state_dir else None,
+    )
+
+
+def _handle_extensions() -> bool:
+    """Resolve ``nexus extensions ...`` developer and lifecycle commands."""
+    if len(sys.argv) < 2 or sys.argv[1] != "extensions":
+        return False
+
+    parser = argparse.ArgumentParser(prog="nexus extensions")
+    parser.add_argument("--working-dir", "-d", default="")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    install = sub.add_parser("install")
+    install.add_argument("source")
+    install.add_argument("--enable", action="store_true")
+    install.add_argument("--force", action="store_true")
+    install.add_argument("--json", action="store_true")
+
+    remove = sub.add_parser("remove")
+    remove.add_argument("name")
+    enable = sub.add_parser("enable")
+    enable.add_argument("name")
+    disable = sub.add_parser("disable")
+    disable.add_argument("name")
+    update = sub.add_parser("update")
+    update.add_argument("name")
+    update.add_argument("source")
+
+    list_cmd = sub.add_parser("list")
+    list_cmd.add_argument("--enabled", action="store_true")
+    list_cmd.add_argument("--json", action="store_true")
+
+    inspect = sub.add_parser("inspect")
+    inspect.add_argument("name")
+    inspect.add_argument("--json", action="store_true")
+
+    sub.add_parser("doctor")
+    audit = sub.add_parser("audit")
+    audit.add_argument("--name", default="")
+    audit.add_argument("--limit", type=int, default=100)
+    audit.add_argument("--json", action="store_true")
+
+    permissions = sub.add_parser("permissions")
+    permissions.add_argument("action", choices=("list", "grant", "revoke"))
+    permissions.add_argument("name", nargs="?")
+    permissions.add_argument("capability", nargs="?")
+    permissions.add_argument("--scope", choices=("once", "run", "repository", "global"), default="once")
+    permissions.add_argument("--repository", default="")
+    permissions.add_argument("--json", action="store_true")
+
+    create = sub.add_parser("create")
+    create.add_argument("name")
+    create.add_argument("--type", default=None)
+    create.add_argument("--extension-type", default="tool")
+    create.add_argument("--output", default=".")
+    create.add_argument("--description", default="")
+    create.add_argument("--author", default="")
+
+    validate = sub.add_parser("validate")
+    validate.add_argument("path")
+    package = sub.add_parser("package")
+    package.add_argument("path")
+    package.add_argument("--output", required=True)
+    test = sub.add_parser("test")
+    test.add_argument("path")
+
+    args = parser.parse_args(sys.argv[2:])
+
+    from nexus.platform.audit import AuditAction, AuditLogger
+    from nexus.platform.health import ExtensionHealthMonitor
+    from nexus.platform.lifecycle import ExtensionLifecycleManager
+    from nexus.platform.permissions import PermissionScope, PermissionStore
+    from nexus.platform.sdk import ExtensionSDK
+
+    registry = _extension_registry(args.working_dir)
+    manager = ExtensionLifecycleManager(registry, working_dir=args.working_dir)
+    state_dir = _extension_state_dir(args.working_dir)
+    audit_logger = AuditLogger(state_dir)
+
+    if args.command == "install":
+        ok, message, record = manager.install(Path(args.source), enable=args.enable, force=args.force)
+        audit_logger.log(
+            AuditAction.INSTALL,
+            record.manifest.name if record else Path(args.source).name,
+            success=ok,
+            error="" if ok else message,
+        )
+        if args.json:
+            print(json.dumps({"success": ok, "message": message, "extension": record.to_dict() if record else None}, indent=2))
+        else:
+            print(message)
+        raise SystemExit(0 if ok else 2)
+
+    if args.command == "remove":
+        ok, message = manager.remove(args.name)
+        audit_logger.log(AuditAction.UNINSTALL, args.name, success=ok, error="" if ok else message)
+        print(message)
+        raise SystemExit(0 if ok else 2)
+
+    if args.command in {"enable", "disable"}:
+        if args.command == "enable":
+            ok, message = manager.enable(args.name)
+            action = AuditAction.ENABLE
+        else:
+            ok, message = manager.disable(args.name)
+            action = AuditAction.DISABLE
+        audit_logger.log(action, args.name, success=ok, error="" if ok else message)
+        print(message)
+        raise SystemExit(0 if ok else 2)
+
+    if args.command == "update":
+        ok, message = manager.update(args.name, Path(args.source))
+        audit_logger.log(AuditAction.UPDATE, args.name, success=ok, error="" if ok else message)
+        print(message)
+        raise SystemExit(0 if ok else 2)
+
+    if args.command == "list":
+        records = registry.list_extensions(enabled_only=args.enabled)
+        if args.json:
+            print(json.dumps([r.to_dict() for r in records], indent=2))
+        elif not records:
+            print("No extensions installed.")
+        else:
+            for record in records:
+                enabled = "enabled" if record.enabled else "disabled"
+                print(f"{record.manifest.name} {record.manifest.version} {record.manifest.extension_type} {enabled}")
+        return True
+
+    if args.command == "inspect":
+        record = registry.get(args.name)
+        if not record:
+            raise SystemExit(f"Extension '{args.name}' not found")
+        if args.json:
+            print(json.dumps(record.to_dict() | {"manifest": record.manifest.to_dict()}, indent=2))
+        else:
+            print(record.manifest.display_summary())
+            print(f"  Installed: {record.install_path}")
+            print(f"  Enabled: {record.enabled}")
+            print(f"  Health: {record.health_status}")
+        return True
+
+    if args.command == "doctor":
+        monitor = ExtensionHealthMonitor(registry)
+        records = registry.list_extensions()
+        if not records:
+            print("No extensions installed.")
+        for record in records:
+            report = monitor.check(record.manifest.name)
+            print(f"{record.manifest.name}: {report.status.value}")
+        return True
+
+    if args.command == "audit":
+        records = audit_logger.query(extension_name=args.name, limit=args.limit)
+        if args.json:
+            print(json.dumps([r.to_dict() for r in records], indent=2))
+        else:
+            for record in records:
+                status = "ok" if record.success else "failed"
+                print(f"{record.timestamp:.0f} {record.action.value} {record.extension_name} {status}")
+        return True
+
+    if args.command == "permissions":
+        store = PermissionStore(state_dir)
+        if args.action == "list":
+            grants = store.list_grants(args.name or "")
+            if args.json:
+                print(json.dumps([g.to_dict() for g in grants], indent=2))
+            else:
+                for grant in grants:
+                    print(f"{grant.extension_name} {grant.capability} {grant.scope.value}")
+            return True
+        if not args.name:
+            raise SystemExit("Extension name is required")
+        if args.action == "grant":
+            if not args.capability:
+                raise SystemExit("Capability is required")
+            grant = store.grant(
+                args.name,
+                args.capability,
+                PermissionScope(args.scope),
+                repository=args.repository or os.getcwd(),
+            )
+            audit_logger.log(AuditAction.PERMISSION_GRANT, args.name, details=grant.to_dict())
+            print(f"Granted {grant.capability} to {grant.extension_name} ({grant.scope.value})")
+            return True
+        revoked = store.revoke(args.name, args.capability or "")
+        audit_logger.log(AuditAction.PERMISSION_REVOKE, args.name, details={"revoked": revoked})
+        print(f"Revoked {revoked} grant(s)")
+        return True
+
+    if args.command == "create":
+        extension_type = args.type or args.extension_type
+        output_path = ExtensionSDK.generate_extension(
+            Path(args.output),
+            args.name,
+            extension_type,
+            description=args.description,
+            author=args.author,
+        )
+        print(f"Created extension template at {output_path}")
+        return True
+
+    if args.command in {"validate", "test"}:
+        ok, messages = ExtensionSDK.validate_extension(Path(args.path))
+        if messages:
+            print("\n".join(messages))
+        else:
+            print("Extension is valid.")
+        raise SystemExit(0 if ok else 2)
+
+    if args.command == "package":
+        ok, message = ExtensionSDK.package_extension(Path(args.path), Path(args.output))
+        audit_logger.log(AuditAction.PACKAGE, Path(args.path).name, success=ok, error="" if ok else message)
+        print(message)
+        raise SystemExit(0 if ok else 2)
+
+    return True
+
+
+def _handle_mcp() -> bool:
+    """Resolve ``nexus mcp ...`` gateway commands."""
+    if len(sys.argv) < 2 or sys.argv[1] != "mcp":
+        return False
+
+    parser = argparse.ArgumentParser(prog="nexus mcp")
+    parser.add_argument("--working-dir", "-d", default="")
+    sub = parser.add_subparsers(dest="command", required=True)
+    add = sub.add_parser("add")
+    add.add_argument("name")
+    add.add_argument("server_command", nargs=argparse.REMAINDER)
+    add.add_argument("--description", default="")
+    add.add_argument("--enable", action="store_true")
+    add.add_argument("--approve", action="store_true")
+    add.add_argument("--network", action="store_true")
+    remove = sub.add_parser("remove")
+    remove.add_argument("name")
+    enable = sub.add_parser("enable")
+    enable.add_argument("name")
+    enable.add_argument("--approve", action="store_true")
+    disable = sub.add_parser("disable")
+    disable.add_argument("name")
+    list_cmd = sub.add_parser("list")
+    list_cmd.add_argument("--json", action="store_true")
+    sub.add_parser("doctor")
+
+    args = parser.parse_args(sys.argv[2:])
+
+    from nexus.platform.mcp_gateway import MCPGateway
+
+    state_dir = Path(args.working_dir).expanduser().resolve() / ".nexus" / "mcp" if args.working_dir else None
+    gateway = MCPGateway(working_dir=args.working_dir, state_dir=state_dir)
+
+    if args.command == "add":
+        if not args.server_command:
+            raise SystemExit("Command is required after server name")
+        command = args.server_command
+        if command and command[0] == "--":
+            command = command[1:]
+        if not command:
+            raise SystemExit("Command is required after server name")
+        record = gateway.add_server(
+            args.name,
+            command,
+            description=args.description,
+            network=args.network,
+            enable=False,
+        )
+        if args.approve:
+            gateway.permissions.approve_server(args.name, all_tools=True)
+        if args.enable:
+            ok, message = gateway.enable_server(args.name)
+            if not ok:
+                raise SystemExit(message)
+            print(message)
+        else:
+            print(f"Added MCP server '{record.name}' (disabled)")
+        return True
+
+    if args.command == "remove":
+        ok = gateway.remove_server(args.name)
+        print(f"Removed MCP server '{args.name}'" if ok else f"MCP server '{args.name}' not found")
+        raise SystemExit(0 if ok else 2)
+
+    if args.command == "enable":
+        if args.approve:
+            gateway.permissions.approve_server(args.name, all_tools=True)
+        ok, message = gateway.enable_server(args.name)
+        print(message)
+        raise SystemExit(0 if ok else 2)
+
+    if args.command == "disable":
+        ok, message = gateway.disable_server(args.name)
+        print(message)
+        raise SystemExit(0 if ok else 2)
+
+    if args.command == "list":
+        records = gateway.list_servers()
+        if args.json:
+            print(json.dumps([record.__dict__ for record in records], indent=2))
+        elif not records:
+            print("No MCP servers configured.")
+        else:
+            for record in records:
+                enabled = "enabled" if record.enabled else "disabled"
+                print(f"{record.name} {enabled} {' '.join(record.command)}")
+        return True
+
+    if args.command == "doctor":
+        print(json.dumps(gateway.doctor(), indent=2))
+        return True
+
+    return True
+
+
 def _solve_issue_prompt() -> bool:
     """Resolve ``nexus solve-issue <number>`` through the authenticated gh CLI."""
     if len(sys.argv) < 2 or sys.argv[1] != "solve-issue":
@@ -806,7 +1136,7 @@ def handle_slash_command(cmd: str, agent: Agent) -> bool:
             target_path = Path(trust_parts[1]).expanduser().resolve()
             expected_digest = None
             if target_path.name == "plugin.json" or (target_path.is_dir() and (target_path / "plugin.json").is_file()):
-                from nexus.plugins.manifest import PluginManifest, PluginLoadError
+                from nexus.plugins.manifest import PluginManifest
                 from nexus.plugins.worker import compute_plugin_hash
                 manifest_file = target_path if target_path.name == "plugin.json" else target_path / "plugin.json"
                 try:
@@ -1077,6 +1407,10 @@ def _configure_output_streams(streams=None) -> None:
 
 def main():
     _configure_output_streams()
+    if _handle_extensions():
+        return
+    if _handle_mcp():
+        return
     if _handle_run_management():
         return
     if _handle_workspace_commands():
