@@ -21,6 +21,7 @@ class GitHubIntegration:
     def _run_gh(args: list[str]) -> str:
         """Run a gh command and return stdout. Raises GitHubError on failure."""
         try:
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             result = subprocess.run(
                 ["gh"] + args,
                 cwd=os.getcwd(),

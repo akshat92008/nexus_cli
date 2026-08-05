@@ -856,16 +856,16 @@ def _aggregate_attempt_usage(
         except FileNotFoundError:
             continue
         report = inspected.get("final_report", {})
-        costs = report.get("costs") or inspected.get("costs", {})
-        usage = costs.get("usage", costs) if isinstance(costs, dict) else {}
+        provider_metrics = report.get("provider_metrics", {})
         metadata = report.get("metadata", {}) if isinstance(report, dict) else {}
-        totals["model_calls"] += int(metadata.get("model_calls", usage.get("hosted_calls", 0)) or 0)
-        totals["prompt_tokens"] += int(usage.get("prompt_tokens", 0) or 0)
-        totals["completion_tokens"] += int(usage.get("completion_tokens", 0) or 0)
-        if usage.get("estimated_cost_usd") is not None:
+        
+        totals["model_calls"] += int(metadata.get("model_calls", provider_metrics.get("hosted_calls", 0)) or 0)
+        totals["prompt_tokens"] += int(provider_metrics.get("prompt_tokens", 0) or 0)
+        totals["completion_tokens"] += int(provider_metrics.get("completion_tokens", 0) or 0)
+        if provider_metrics.get("cost_usd") is not None:
             cost_seen = True
             totals["estimated_cost_usd"] = float(totals["estimated_cost_usd"] or 0.0) + float(
-                usage["estimated_cost_usd"]
+                provider_metrics["cost_usd"]
             )
         for key in ("retries", "tool_calls", "tests_executed", "rollbacks"):
             totals[key] += int(metadata.get(key, 0) or 0)

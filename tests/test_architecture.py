@@ -33,7 +33,7 @@ def test_controllers_exist():
     assert hasattr(mutator, "write_file")
 
 def test_agent_no_god_object():
-    with open("nexus/agent.py", "r") as f:
+    with open("nexus/agent/core.py", "r") as f:
         content = f.read()
         assert "subprocess.Popen" not in content, "Agent must not contain subprocess logic"
         assert "from nexus.two_node_backend" not in content, "Agent must not contain provider-specific code"

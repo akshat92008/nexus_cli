@@ -94,7 +94,7 @@ def test_safe_urlopen_connects_to_the_validated_address(monkeypatch):
         def close(self):
             return None
 
-    monkeypatch.setattr("nexus.tools._PinnedHTTPSConnection", Connection)
+    monkeypatch.setattr("nexus.tools.tools_impl._PinnedHTTPSConnection", Connection)
     policy = NetworkPolicy(resolver=lambda *_args: _address_info("93.184.216.34"))
     request = urllib.request.Request("https://example.test/health?deep=1")
 

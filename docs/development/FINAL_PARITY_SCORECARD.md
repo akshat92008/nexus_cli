@@ -37,4 +37,4 @@ This scorecard provides an evidence-backed evaluation of Nexus CLI version `3.2.
 
 > **Nexus CLI is a verification-first, model-agnostic coding agent**. Rather than relying on unverified LLM self-assessment, Nexus guarantees fail-closed completion, non-bypassable security policy, and deterministic cost ceilings.
 
-Target Launch Tier Justified: **RELEASE_CANDIDATE / PUBLIC_BETA QUALIFIED**
+Target Launch Tier Justified: **PRIVATE_ALPHA (Downgraded)**

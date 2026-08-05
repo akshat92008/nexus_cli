@@ -3114,9 +3114,30 @@ def normalize_tool_arguments(name: str, args: dict) -> dict:
     return args
 
 
-def execute_tool(name: str, arguments: dict) -> ToolResult:
-    """Execute a tool by name with the given arguments."""
+def execute_tool(name: str, arguments: dict, policy_engine=None) -> ToolResult:
+    """Execute a tool by name with the given arguments.
+
+    Args:
+        name: Tool name.
+        arguments: Tool arguments dictionary.
+        policy_engine: Optional PolicyEngine instance. When provided, the action
+            is evaluated before execution; a denied decision returns a BLOCKED result.
+    """
     arguments = normalize_tool_arguments(name, arguments)
+
+    # PolicyEngine guard (P1-11)
+    if policy_engine is not None:
+        try:
+            decision = policy_engine.evaluate(action=name, target=str(arguments))
+            if not decision.is_allowed():
+                return ToolResult(
+                    status=ToolStatus.BLOCKED,
+                    output=f"❌ Blocked by security policy: {decision.reason}",
+                    error=decision.reason,
+                )
+        except Exception:
+            pass  # Policy engine errors must never block legitimate execution
+
     tool_def = registry.get(name)
     if not tool_def:
         return ToolResult(
@@ -3140,6 +3161,7 @@ def execute_tool(name: str, arguments: dict) -> ToolResult:
             output=f"❌ Tool execution failed for {name}: {e}",
             error=str(e)
         )
+
 
 # Initialize registry with RAW_TOOL_DEFINITIONS
 for raw_tool in RAW_TOOL_DEFINITIONS:

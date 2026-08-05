@@ -97,6 +97,7 @@ class GitWorktreeSession:
             str(self.path),
             base_commit,
         ]
+        # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
         result = subprocess.run(
             command,
             cwd=self.repository,
@@ -111,7 +112,9 @@ class GitWorktreeSession:
         try:
             if source_was_dirty:
                 self._materialize_source_snapshot()
+                # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
                 subprocess.run(["git", "add", "-A"], cwd=self.path, check=True)
+                # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
                 committed = subprocess.run(
                     [
                         "git",
@@ -130,6 +133,7 @@ class GitWorktreeSession:
                 )
                 if committed.returncode != 0:
                     raise WorktreeError((committed.stderr or committed.stdout).strip())
+                # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
                 snapshot_commit = subprocess.run(
                     ["git", "rev-parse", "HEAD"],
                     cwd=self.path,
@@ -138,11 +142,13 @@ class GitWorktreeSession:
                     check=True,
                 ).stdout.strip()
         except (OSError, subprocess.SubprocessError, WorktreeError) as exc:
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             subprocess.run(
                 ["git", "worktree", "remove", "--force", str(self.path)],
                 cwd=self.repository,
                 capture_output=True,
             )
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             subprocess.run(
                 ["git", "branch", "-D", branch],
                 cwd=self.repository,
@@ -174,6 +180,7 @@ class GitWorktreeSession:
         return code in {"DD", "AU", "UD", "UA", "DU", "AA", "UU"}
 
     def _git_bytes(self, args: list[str], *, cwd: Path | None = None) -> bytes:
+        # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
         result = subprocess.run(
             ["git", *args],
             cwd=cwd or self.repository,
@@ -208,6 +215,7 @@ class GitWorktreeSession:
     def _materialize_source_snapshot(self) -> None:
         patch = self._git_bytes(["diff", "--binary", "HEAD"])
         if patch:
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             applied = subprocess.run(
                 ["git", "apply", "--binary", "--whitespace=nowarn", "-"],
                 cwd=self.path,
@@ -284,6 +292,7 @@ class GitWorktreeSession:
                 **asdict(self.info),
                 "git_status": "Non-Git source isolated in a persistent temporary copy.",
             }
+        # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
         result = subprocess.run(
             ["git", "status", "--short", "--branch"],
             cwd=self.path,
@@ -297,6 +306,7 @@ class GitWorktreeSession:
         }
 
     def _git(self, args: list[str]) -> str:
+        # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
         result = subprocess.run(
             ["git", *args],
             cwd=self.repository,
@@ -313,6 +323,7 @@ class GitWorktreeSession:
         if not self.info:
             return ""
         if self.info.backend == "git-worktree":
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             result = subprocess.run(
                 [
                     "git",
@@ -328,6 +339,7 @@ class GitWorktreeSession:
             if result.returncode != 0:
                 raise WorktreeError((result.stderr or result.stdout).strip())
             patches = [result.stdout]
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             untracked = subprocess.run(
                 ["git", "ls-files", "--others", "--exclude-standard", "-z"],
                 cwd=self.path,
@@ -340,6 +352,7 @@ class GitWorktreeSession:
                 if not encoded_path:
                     continue
                 relative = os.fsdecode(encoded_path)
+                # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
                 addition = subprocess.run(
                     ["git", "diff", "--no-index", "--binary", "--", os.devnull, relative],
                     cwd=self.path,
@@ -406,6 +419,7 @@ class GitWorktreeSession:
             return "".join(lines)
 
     def _commit_workspace_changes(self) -> None:
+        # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
         status = subprocess.run(
             ["git", "status", "--porcelain"],
             cwd=self.path,
@@ -415,7 +429,9 @@ class GitWorktreeSession:
         )
         if not status.stdout.strip():
             return
+        # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
         subprocess.run(["git", "add", "-A"], cwd=self.path, check=True)
+        # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
         committed = subprocess.run(
             [
                 "git",
@@ -455,6 +471,7 @@ class GitWorktreeSession:
         recovery_dir.mkdir(parents=True, exist_ok=True)
         patch_path = recovery_dir / f"{self.session_id}.patch"
         patch_path.write_bytes(delta)
+        # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
         applied = subprocess.run(
             ["git", "apply", "--binary", "--whitespace=nowarn", "-"],
             cwd=self.repository,
@@ -486,6 +503,7 @@ class GitWorktreeSession:
                 self._apply_to_dirty_source()
                 return
 
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             dirty_now = subprocess.run(
                 ["git", "status", "--porcelain"],
                 cwd=self.repository,
@@ -499,6 +517,7 @@ class GitWorktreeSession:
                 )
 
             backup_ref = f"refs/nexus/pre-apply-{self.session_id}"
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             head_sha = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=self.repository,
@@ -506,6 +525,7 @@ class GitWorktreeSession:
                 text=True,
                 check=True,
             ).stdout.strip()
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             subprocess.run(
                 ["git", "update-ref", backup_ref, head_sha],
                 cwd=self.repository,
@@ -513,6 +533,7 @@ class GitWorktreeSession:
                 capture_output=True,
             )
 
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             result = subprocess.run(
                 ["git", "merge", self.info.branch, "--no-edit"],
                 cwd=self.repository,
@@ -520,6 +541,7 @@ class GitWorktreeSession:
                 text=True,
             )
             if result.returncode != 0:
+                # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
                 subprocess.run(
                     ["git", "merge", "--abort"],
                     cwd=self.repository,
@@ -635,6 +657,7 @@ class GitWorktreeSession:
         if not self.info:
             return report
         if self.info.backend == "git-worktree":
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             removed = subprocess.run(
                 ["git", "worktree", "remove", "--force", self.path],
                 cwd=self.repository,
@@ -645,6 +668,7 @@ class GitWorktreeSession:
                 report["removed"].append(str(self.path))
             else:
                 report["errors"].append((removed.stderr or removed.stdout).strip())
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             branch = subprocess.run(
                 ["git", "branch", "-D", self.info.branch],
                 cwd=self.repository,

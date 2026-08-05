@@ -29,6 +29,7 @@ from nexus.collaboration.models import (
     IntegrationStatus,
     ReviewDecision,
 )
+from nexus.process_gateway import ProcessExecutionGateway, ProcessRequest
 
 logger = logging.getLogger(__name__)
 
@@ -204,9 +205,18 @@ class IntegrationCoordinator:
                     cdesc = _get_change_desc(change)
 
                     if cdiff:
-                        with open(target_file, "a", encoding="utf-8") as f:
-                            f.write(f"\n# Integrated from assignment {result.assignment_id}\n")
-                            f.write(cdiff)
+                        patch_file = int_workspace_dir / f"{uuid.uuid4().hex[:8]}.patch"
+                        patch_file.write_text(cdiff, encoding="utf-8")
+                        try:
+                            ProcessExecutionGateway.run(
+                                ProcessRequest.create(
+                                    purpose="apply_patch",
+                                    command=["patch", "-p1", "-i", str(patch_file)],
+                                    workspace=int_workspace_dir,
+                                )
+                            )
+                        finally:
+                            patch_file.unlink(missing_ok=True)
                     else:
                         with open(target_file, "a", encoding="utf-8") as f:
                             f.write(f"\n# Integrated change: {cdesc}\n")
@@ -283,5 +293,5 @@ class IntegrationCoordinator:
                     except Exception:
                         pass
             return h.hexdigest()[:20]
-        except Exception:
-            return "tree-hash-000"
+        except Exception as exc:
+            raise RuntimeError(f"Failed to calculate tree hash: {exc}") from exc

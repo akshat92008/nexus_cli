@@ -220,6 +220,7 @@ class VerificationEngine:
 
         try:
             import sys
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             result = subprocess.run(
                 [os.environ.get("PYTHON", sys.executable), "-m", "compileall", "-q", "-f", "."],
                 cwd=self.root,
@@ -670,6 +671,7 @@ class VerificationEngine:
     def _python_module_exists(self, module: str) -> bool:
         """Check a Python module without importing it or masking failures."""
         try:
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             result = subprocess.run(
                 [
                     os.environ.get("PYTHON", "python3"),

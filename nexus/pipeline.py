@@ -27,6 +27,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from nexus.planner import TaskStatus
+from nexus.recovery.controller import RecoveryController
+from nexus.recovery.records import FailureRecord
 from nexus.run_state import RunStatus
 
 if TYPE_CHECKING:
@@ -435,6 +437,24 @@ class ExecutionPipeline:
                 )
         except Exception as exc:
             self._logger.exception("Execution failed")
+            # Route through RecoveryController before giving up
+            failure_record = FailureRecord(raw={"error": str(exc), "phase": "execution"})
+            recovery_ctrl = RecoveryController(
+                run_id=getattr(self._agent, "conversation_id", None),
+                working_dir=getattr(self._agent, "working_dir", "."),
+                budget=getattr(self._agent, "budget", None),
+            )
+            strategy, diagnosis, terminal = recovery_ctrl.handle_failure(
+                failure_record,
+                source_component="pipeline",
+                phase="execution",
+                model_id=getattr(self._agent, "model", None),
+            )
+            self._logger.debug(
+                "Pipeline execution recovery: strategy=%s terminal=%s",
+                getattr(strategy, "name", strategy),
+                terminal,
+            )
             return {
                 "response": "❌ Execution failed.",
                 "events": [],
@@ -443,6 +463,7 @@ class ExecutionPipeline:
                     success=False,
                     duration_ms=int((time.monotonic() - t) * 1000),
                     error=str(exc),
+                    metadata={"recovery_terminal": terminal},
                 ),
             }
 

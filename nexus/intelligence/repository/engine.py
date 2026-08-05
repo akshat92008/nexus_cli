@@ -322,6 +322,7 @@ class RepositoryIntelligence:
 
     def git_changed_files(self) -> list[str]:
         try:
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             res = subprocess.run(
                 ["git", "status", "--porcelain=v1", "--untracked-files=all"],
                 cwd=self.root,

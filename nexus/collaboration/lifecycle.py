@@ -123,6 +123,7 @@ class WorkerLifecycleManager:
             created_worktree = False
             if strategy == WorkspaceStrategy.ISOLATED_WORKTREE and (self._lead_root / ".git").exists():
                 try:
+                    # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
                     subprocess.run(
                         ["git", "worktree", "add", "-b", f"worker-{worker_id[:8]}", str(workspace_dir), "HEAD"],
                         cwd=str(self._lead_root),
@@ -215,6 +216,7 @@ class WorkerLifecycleManager:
                 # If git worktree was used, remove it
                 if workspace.strategy == WorkspaceStrategy.ISOLATED_WORKTREE and (self._lead_root / ".git").exists():
                     try:
+                        # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
                         subprocess.run(
                             ["git", "worktree", "remove", "--force", str(target)],
                             cwd=str(self._lead_root),
@@ -275,6 +277,7 @@ class WorkerLifecycleManager:
 
     def _get_baseline_tree_hash(self) -> str:
         try:
+            # SECURITY CLASSIFICATION: INTERNAL_GIT_OP
             res = subprocess.run(
                 ["git", "write-tree"],
                 cwd=str(self._lead_root),
@@ -283,5 +286,5 @@ class WorkerLifecycleManager:
                 check=True,
             )
             return res.stdout.strip()
-        except Exception:
-            return "tree-hash-baseline-0"
+        except Exception as exc:
+            raise RuntimeError(f"Failed to get baseline tree hash: {exc}") from exc

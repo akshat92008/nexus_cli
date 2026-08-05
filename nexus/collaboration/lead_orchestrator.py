@@ -372,7 +372,7 @@ class LeadOrchestrator:
             collaboration_id=self._state.collaboration_id,
         )
 
-        verification_passed = any("PASS" in v for v in integration_result.verification_results)
+        verification_passed = any(v.startswith("central_verification:PASS") for v in integration_result.verification_results)
         self._blackboard.verification_passed = verification_passed
 
         self._emitter.emit(

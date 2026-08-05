@@ -26,4 +26,4 @@ This document contains the authoritative release gate matrix for Nexus CLI Sprin
 
 ## Gate Execution Summary
 
-All mandatory gates for `PUBLIC_BETA` and `RELEASE_CANDIDATE` have passed validation.
+The system currently operates at the `PRIVATE_ALPHA` tier. Mandatory gates for `PUBLIC_BETA` and `RELEASE_CANDIDATE` are blocked due to disabled synthetic collaboration.

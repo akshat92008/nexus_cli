@@ -829,7 +829,23 @@ class Agent:
                 "error": "No final report generated for this run",
             }
         try:
-            return json.loads(report_path.read_text(encoding="utf-8"))
+            report_data = json.loads(report_path.read_text(encoding="utf-8"))
+            if not isinstance(report_data, dict):
+                return {
+                    "status": "UNVERIFIED",
+                    "error": "final_report.json is not a valid JSON object",
+                }
+            
+            # Inject provider metrics from BudgetController
+            report_data["provider_metrics"] = {
+                "prompt_tokens": self.budget.usage.prompt_tokens,
+                "completion_tokens": self.budget.usage.completion_tokens,
+                "cost_usd": self.budget.usage.estimated_cost_usd,
+                "provider_attempts": self.budget.usage.provider_attempts,
+                "hosted_calls": self.budget.usage.hosted_calls,
+            }
+            
+            return report_data
         except (TypeError, ValueError) as exc:
             return {
                 "status": "UNVERIFIED",

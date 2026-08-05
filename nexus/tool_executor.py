@@ -46,7 +46,10 @@ from nexus.extensions import ToolContext
 from nexus.hooks.base import HookContext, HookEvent
 from nexus.planner import TaskStatus
 from nexus.policy import PermissionDecision
+from nexus.recovery.controller import RecoveryController
+from nexus.recovery.records import FailureRecord
 from nexus.safety import SafetyCheck, SafetyLevel
+from nexus.security.policy_engine import PolicyEngine
 from nexus.tools import execute_tool
 
 if TYPE_CHECKING:
@@ -127,6 +130,12 @@ class ToolExecutionController:
 
     def __init__(self, agent: "Agent") -> None:
         self._agent = agent
+        self._policy_engine: PolicyEngine | None = PolicyEngine()
+        self._recovery_controller: RecoveryController = RecoveryController(
+            run_id=getattr(agent, "conversation_id", None),
+            working_dir=getattr(agent, "working_dir", "."),
+            budget=getattr(agent, "budget", None),
+        )
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public interface
@@ -554,15 +563,18 @@ class ToolExecutionController:
         self,
         name: str,
         args: dict,
-    ) -> str:
+    ) -> ToolResult:
         # Check plugin tool dispatch first
         for plugin in self._agent.plugin_loader.plugins.values():
             dispatch = plugin.get_tool_dispatch()
             if name in dispatch:
                 try:
-                    return dispatch[name](**args)
+                    res = dispatch[name](**args)
+                    if isinstance(res, ToolResult):
+                        return res
+                    return ToolResult(status=ToolStatus.SUCCESS, output=str(res))
                 except LookupError as e:
-                    return f"❌ Plugin tool error: {e}"
+                    return ToolResult(status=ToolStatus.FAILURE, output=f"❌ Plugin tool error: {e}", error=str(e))
 
         for extension_tool in self._agent.extensions.loaded("tools"):
             if extension_tool.name != name:
@@ -581,18 +593,54 @@ class ToolExecutionController:
                         permission_mode=self._agent.permission_mode,
                     ),
                 )
-                return (
+                output = (
                     extension_result
                     if isinstance(extension_result, str)
                     else json.dumps(extension_result, ensure_ascii=False)
                 )
+                return ToolResult(status=ToolStatus.SUCCESS, output=output)
             except (TypeError, ValueError) as exc:
-                return f"❌ Extension tool error: {exc}"
+                return ToolResult(status=ToolStatus.FAILURE, output=f"❌ Extension tool error: {exc}", error=str(exc))
 
         if self._agent.mcp.is_mcp_tool(name):
-            return self._agent.mcp.call_tool(name, args)
+            res = self._agent.mcp.call_tool(name, args)
+            if isinstance(res, dict) and "content" in res:
+                # Basic handling of MCP response structure
+                content = res["content"]
+                if isinstance(content, list) and len(content) > 0 and "text" in content[0]:
+                    output = content[0]["text"]
+                else:
+                    output = str(content)
+                is_error = res.get("isError", False)
+                status = ToolStatus.FAILURE if is_error else ToolStatus.SUCCESS
+                return ToolResult(status=status, output=output, error="MCP Error" if is_error else "")
+            return ToolResult(status=ToolStatus.SUCCESS, output=str(res))
         else:
-            return execute_tool(name, args)
+            tool_result = execute_tool(name, args, policy_engine=self._policy_engine)
+            # Route failures through RecoveryController (P1-10)
+            if tool_result.status.value in ("failure", "blocked") and tool_result.error:
+                raw_failure = {
+                    "tool": name,
+                    "error": tool_result.error,
+                    "output": tool_result.output,
+                    "args": args,
+                }
+                failure_record = FailureRecord(raw=raw_failure)
+                strategy, _diag, terminal = self._recovery_controller.handle_failure(
+                    failure_record,
+                    source_component="tool_executor",
+                    phase="tool_dispatch",
+                )
+                logger.debug(
+                    "RecoveryController outcome for %s: strategy=%s terminal=%s",
+                    name,
+                    getattr(strategy, "name", strategy),
+                    terminal,
+                )
+            # Return the full ToolResult — _execute_impl accesses .output, .status, etc.
+            return tool_result
+
+
     def _snapshot_workspace(self) -> dict[str, float]:
         """Snapshot the actual workspace before execution."""
         snapshot = {}
@@ -902,6 +950,36 @@ class ToolExecutionController:
             before_snapshot = self._snapshot_workspace()
     
         result = self._dispatch_tool_execution(name, args)
+
+        # ── Multi-file mutation: record as EngineeringChangeSet ────────────────
+        if name == "multi_edit" and result.output and not result.output.startswith("❌"):
+            try:
+                from nexus.multifile.contracts import EngineeringChangeSet, PlannedFileChange, TaskType
+                import dataclasses
+                edits = args.get("edits", [])
+                file_changes = [
+                    PlannedFileChange(
+                        path=edit.get("path", ""),
+                        operation="edit",
+                        reason=f"multi_edit via tool_executor",
+                    )
+                    for edit in edits
+                    if edit.get("path")
+                ]
+                run_id = getattr(getattr(self._agent, "run_context", None), "run_id", "") or ""
+                plan_id = getattr(getattr(self._agent, "_active_plan", None), "id", "") or ""
+                cs = EngineeringChangeSet(
+                    run_id=str(run_id),
+                    plan_id=str(plan_id),
+                    objective=f"multi_edit: {len(edits)} file(s)",
+                    task_type=TaskType.FEATURE,
+                    file_changes=file_changes,
+                )
+                cs.applied_file_paths = [fc.path for fc in file_changes]
+                logger.debug("EngineeringChangeSet registered: %s with %d files", cs.change_set_id, len(file_changes))
+            except Exception as cs_exc:
+                logger.debug("EngineeringChangeSet registration failed (non-fatal): %s", cs_exc)
+
 
         success = not result.output.startswith(("❌", "⏰", "⏸️"))
         if name in ("api_check", "database_check", "browser_check", "security_scan"):

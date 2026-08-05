@@ -85,4 +85,4 @@
 
 ## Honest launch boundary
 
-Nexus 3.2.1 is a hardened public-beta launch candidate for verified, reviewable repository engineering. It does not prove unattended Shopify-scale generation or Claude Code model-reasoning parity. The release workflow blocks those claims until repeated live-provider long-horizon trials pass with external verification.
+Nexus 3.2.1 is currently in PRIVATE_ALPHA. Features such as multi-agent collaboration and synthetic Model Doctor routing have been disabled for safety and integrity reasons. The release workflow blocks claims of "public-beta" or "Claude Code-level" until repeated live-provider long-horizon trials pass with external verification.

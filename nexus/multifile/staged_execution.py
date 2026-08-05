@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import subprocess
+import shlex
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -41,6 +42,7 @@ from nexus.multifile.events import (
 )
 from nexus.multifile.graph import build_graph, DependencyCycleError
 from nexus.multifile.consistency import ChangeSetConsistencyValidator
+from nexus.process_gateway import ProcessExecutionGateway, ProcessRequest
 
 logger = logging.getLogger(__name__)
 
@@ -84,20 +86,24 @@ class IntermediateVerifier:
 
         for cmd in commands:
             try:
-                result = subprocess.run(
-                    cmd,
-                    shell=True,
-                    cwd=cwd,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
+                command_parts = shlex.split(cmd)
+                req = ProcessRequest.create(
+                    purpose="verification",
+                    command=command_parts,
+                    workspace=cwd,
+                    timeout_seconds=int(timeout),
                 )
+                result = ProcessExecutionGateway.run(req)
+
                 combined_output.append(
                     f"$ {cmd}\n"
-                    f"exit={result.returncode}\n"
+                    f"exit={result.exit_code}\n"
                     f"{result.stdout[:1000]}"
                 )
-                if result.returncode != 0:
+                if result.exit_code != 0:
+                    combined_output.append(
+                        f"\nStage {stage_id} verification failed at command: {cmd}"
+                    )
                     return False, "\n".join(combined_output)
             except subprocess.TimeoutExpired:
                 return False, f"Verification command timed out after {timeout}s: {cmd}"
