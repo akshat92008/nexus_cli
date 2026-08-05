@@ -11,7 +11,7 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from nexus.tools import TOOL_DEFINITIONS, TOOL_DISPATCH, execute_tool  # noqa: E402
+from nexus.tools import ToolResult, ToolStatus, RAW_TOOL_DEFINITIONS, TOOL_DISPATCH, execute_tool  # noqa: E402
 
 
 class _FakeHTTPResponse:
@@ -33,38 +33,38 @@ class _FakeHTTPResponse:
 def test_all_tools_have_definitions():
     """Every tool in the dispatch table should have a definition."""
     dispatch_names = set(TOOL_DISPATCH.keys())
-    definition_names = {td["function"]["name"] for td in TOOL_DEFINITIONS}
+    definition_names = {td["function"]["name"] for td in RAW_TOOL_DEFINITIONS}
     missing_defs = dispatch_names - definition_names
     missing_dispatch = definition_names - dispatch_names
     assert not missing_defs, f"Tools without definitions: {missing_defs}"
     assert not missing_dispatch, f"Definitions without dispatch: {missing_dispatch}"
-    assert len(TOOL_DEFINITIONS) == 42, f"Expected 42 tools, got {len(TOOL_DEFINITIONS)}"
+    assert len(RAW_TOOL_DEFINITIONS) == 42, f"Expected 42 tools, got {len(RAW_TOOL_DEFINITIONS)}"
 
 
 def test_process_status_rejects_unmanaged_pid():
     result = execute_tool("process_status", {"pid": 99999999})
-    assert result.startswith("❌")
-    assert "not a Nexus-managed" in result
+    assert result.output.startswith("❌")
+    assert "not a Nexus-managed" in result.output
 
 
 def test_process_stop_rejects_unmanaged_pid():
     result = execute_tool("process_stop", {"pid": 99999999})
-    assert result.startswith("❌")
-    assert "not a Nexus-managed" in result
+    assert result.output.startswith("❌")
+    assert "not a Nexus-managed" in result.output
 
 
 def test_read_file():
     """read_file should return file contents with line numbers."""
     result = execute_tool("read_file", {"path": str(PROJECT_ROOT / "run.py")})
-    assert "📄" in result
-    assert "run.py" in result
-    assert "main()" in result
+    assert "📄" in result.output
+    assert "run.py" in result.output
+    assert "main()" in result.output
 
 
 def test_read_file_not_found():
     """read_file should return error for missing file."""
     result = execute_tool("read_file", {"path": "/nonexistent/file.xyz"})
-    assert "❌" in result
+    assert "❌" in result.output
 
 
 def test_write_file():
@@ -73,7 +73,7 @@ def test_write_file():
         tmp_path = f.name
     try:
         result = execute_tool("write_file", {"path": tmp_path, "content": "hello world"})
-        assert "✅" in result
+        assert "✅" in result.output
         assert Path(tmp_path).read_text() == "hello world"
     finally:
         Path(tmp_path).unlink(missing_ok=True)
@@ -93,7 +93,7 @@ def test_edit_file():
                 "new_text": "modified",
             },
         )
-        assert "✅" in result
+        assert "✅" in result.output
         assert "modified content here" in Path(tmp_path).read_text()
     finally:
         Path(tmp_path).unlink(missing_ok=True)
@@ -115,7 +115,7 @@ def test_edit_file_doc_envelope_fallback():
                 "new_text": "<h1>New</h1>",
             },
         )
-        assert "✅" in result
+        assert "✅" in result.output
         assert "New" in Path(tmp_path).read_text()
         assert "Old" not in Path(tmp_path).read_text()
     finally:
@@ -136,7 +136,7 @@ def test_edit_file_not_found():
                 "new_text": "replacement",
             },
         )
-        assert "❌" in result
+        assert "❌" in result.output
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
@@ -144,37 +144,37 @@ def test_edit_file_not_found():
 def test_file_info():
     """file_info should return metadata."""
     result = execute_tool("file_info", {"path": str(PROJECT_ROOT / "run.py")})
-    assert "📋" in result
-    assert "run.py" in result
-    assert "Type:" in result
-    assert "Size:" in result
+    assert "📋" in result.output
+    assert "run.py" in result.output
+    assert "Type:" in result.output
+    assert "Size:" in result.output
 
 
 def test_file_info_not_found():
     """file_info should error for missing path."""
     result = execute_tool("file_info", {"path": "/nonexistent"})
-    assert "❌" in result
+    assert "❌" in result.output
 
 
 def test_get_project_structure():
     """get_project_structure should return a tree."""
     result = execute_tool("get_project_structure", {"path": ".", "max_depth": 2})
-    assert "🌳" in result
-    assert "nexus/" in result
+    assert "🌳" in result.output
+    assert "nexus/" in result.output
 
 
 def test_list_directory():
     """list_directory should list files."""
     result = execute_tool("list_directory", {"path": str(PROJECT_ROOT), "recursive": False})
-    assert "📁" in result
-    assert "run.py" in result
+    assert "📁" in result.output
+    assert "run.py" in result.output
 
 
 def test_find_files():
     """find_files should find files by glob."""
     result = execute_tool("find_files", {"pattern": "*.py", "directory": str(PROJECT_ROOT)})
-    assert "🔍" in result
-    assert "run.py" in result
+    assert "🔍" in result.output
+    assert "run.py" in result.output
 
 
 def test_search_code():
@@ -182,35 +182,35 @@ def test_search_code():
     result = execute_tool(
         "search_code", {"pattern": "def execute_tool", "directory": str(PROJECT_ROOT / "nexus")}
     )
-    assert "🔍" in result
-    assert "execute_tool" in result
+    assert "🔍" in result.output
+    assert "execute_tool" in result.output
 
 
 def test_run_command():
     """run_command should execute a shell command."""
     result = execute_tool("run_command", {"command": "echo hello_test"})
-    assert "✅" in result
-    assert "hello_test" in result
+    assert "✅" in result.output
+    assert "hello_test" in result.output
 
 
 def test_run_command_string_timeout():
     """run_command should handle timeout passed as a string without crashing."""
     result = execute_tool("run_command", {"command": "echo timeout_test", "timeout": "120"})
-    assert "✅" in result
-    assert "timeout_test" in result
+    assert "✅" in result.output
+    assert "timeout_test" in result.output
 
 
 def test_run_command_failure():
     """run_command should show exit code for failed commands."""
     result = execute_tool("run_command", {"command": "exit 1"})
-    assert "❌" in result or "exit code 1" in result
+    assert "❌" in result.output or "exit code 1" in result.output
 
 
 def test_git_status():
     """git_status should handle non-git repos gracefully."""
     result = execute_tool("git_status", {})
     # This project is now a git repo, so it should show branch info
-    assert "🌿" in result or "❌" in result
+    assert "🌿" in result.output or "❌" in result.output
 
 
 def test_web_search(monkeypatch):
@@ -225,8 +225,8 @@ def test_web_search(monkeypatch):
         lambda *_args, **_kwargs: _FakeHTTPResponse(body),
     )
     result = execute_tool("web_search", {"query": "python programming", "max_results": 2})
-    assert "Python Guide" in result
-    assert "https://example.com/python" in result
+    assert "Python Guide" in result.output
+    assert "https://example.com/python" in result.output
 
 
 def test_web_fetch(monkeypatch):
@@ -237,7 +237,7 @@ def test_web_fetch(monkeypatch):
         lambda *_args, **_kwargs: _FakeHTTPResponse("<h1>Example Domain</h1>"),
     )
     result = execute_tool("web_fetch", {"url": "https://example.com", "max_length": 500})
-    assert "Example Domain" in result
+    assert "Example Domain" in result.output
 
 
 def test_multi_edit():
@@ -255,7 +255,7 @@ def test_multi_edit():
                 ]
             },
         )
-        assert "📝" in result
+        assert "📝" in result.output
         content = Path(tmp_path).read_text()
         assert "first" in content
         assert "third" in content
@@ -278,7 +278,7 @@ def test_patch_file():
                 "new_content": "replaced2\nreplaced3",
             },
         )
-        assert "✅" in result
+        assert "✅" in result.output
         content = Path(tmp_path).read_text()
         assert "line1" in content
         assert "replaced2" in content
@@ -298,7 +298,7 @@ def test_diff_files():
         path_b = fb.name
     try:
         result = execute_tool("diff_files", {"file_a": path_a, "file_b": path_b})
-        assert "📝" in result or "✅" in result
+        assert "📝" in result.output or "✅" in result.output
     finally:
         Path(path_a).unlink(missing_ok=True)
         Path(path_b).unlink(missing_ok=True)
@@ -307,8 +307,8 @@ def test_diff_files():
 def test_unknown_tool():
     """execute_tool should return error for unknown tools."""
     result = execute_tool("nonexistent_tool", {})
-    assert "❌" in result
-    assert "Unknown tool" in result
+    assert "❌" in result.output
+    assert "Unknown tool" in result.output
 
 
 def test_all_tools_execute():
@@ -316,7 +316,7 @@ def test_all_tools_execute():
     for name in TOOL_DISPATCH:
         try:
             result = execute_tool(name, {})
-            assert isinstance(result, str)
+            assert isinstance(result, ToolResult)
         except TypeError:
             # Some tools require specific args — that's fine
             pass
@@ -324,7 +324,7 @@ def test_all_tools_execute():
 
 def test_resolve_path():
     """Relative desktop paths stay scoped to the active workspace."""
-    from nexus.tools import _resolve_path
+    from nexus.tools import ToolResult, ToolStatus, _resolve_path
 
     dt_path = _resolve_path("desktop/calculator/index.html")
     expected = Path.cwd() / "desktop" / "calculator" / "index.html"
@@ -333,7 +333,7 @@ def test_resolve_path():
 
 def test_normalize_tool_arguments():
     """normalize_tool_arguments should normalize parameter names."""
-    from nexus.tools import normalize_tool_arguments
+    from nexus.tools import ToolResult, ToolStatus, normalize_tool_arguments
 
     res1 = normalize_tool_arguments("write_file", {"file_path": "a.py", "content": "1"})
     assert res1["path"] == "a.py"
@@ -348,7 +348,7 @@ def test_normalize_tool_arguments():
 def test_tool_repo_index(monkeypatch, tmp_path):
 
     # We must ensure _tool_working_dir returns tmp_path
-    from nexus.tools import _tool_working_dir, tool_repo_index
+    from nexus.tools import ToolResult, ToolStatus, _tool_working_dir, tool_repo_index
 
     _tool_working_dir.set(str(tmp_path))
 
@@ -357,7 +357,7 @@ def test_tool_repo_index(monkeypatch, tmp_path):
 
 
 def test_tool_repo_symbols(monkeypatch, tmp_path):
-    from nexus.tools import _tool_working_dir, tool_repo_symbols
+    from nexus.tools import ToolResult, ToolStatus, _tool_working_dir, tool_repo_symbols
 
     _tool_working_dir.set(str(tmp_path))
 
@@ -370,7 +370,7 @@ def test_tool_repo_symbols(monkeypatch, tmp_path):
 
 
 def test_tool_repo_impact(monkeypatch, tmp_path):
-    from nexus.tools import _tool_working_dir, tool_repo_impact
+    from nexus.tools import ToolResult, ToolStatus, _tool_working_dir, tool_repo_impact
 
     _tool_working_dir.set(str(tmp_path))
 
@@ -382,7 +382,7 @@ def test_tool_repo_impact(monkeypatch, tmp_path):
 
 
 def test_tool_repo_context(monkeypatch, tmp_path):
-    from nexus.tools import _tool_working_dir, tool_repo_context
+    from nexus.tools import ToolResult, ToolStatus, _tool_working_dir, tool_repo_context
 
     _tool_working_dir.set(str(tmp_path))
 
@@ -395,7 +395,7 @@ def test_tool_repo_context(monkeypatch, tmp_path):
 def test_tool_api_check(monkeypatch):
     import httpx
 
-    from nexus.tools import tool_api_check
+    from nexus.tools import ToolResult, ToolStatus, tool_api_check
 
     class MockResponse:
         def __init__(self):
@@ -417,7 +417,7 @@ def test_tool_api_check(monkeypatch):
 
 
 def test_tool_database_check_migration():
-    from nexus.tools import tool_database_check
+    from nexus.tools import ToolResult, ToolStatus, tool_database_check
 
     res = tool_database_check(sql="DROP TABLE users;")
     assert "failed" in res
@@ -425,7 +425,7 @@ def test_tool_database_check_migration():
 
 
 def test_tool_security_scan(tmp_path):
-    from nexus.tools import _tool_working_dir, tool_security_scan
+    from nexus.tools import ToolResult, ToolStatus, _tool_working_dir, tool_security_scan
 
     _tool_working_dir.set(str(tmp_path))
 
@@ -438,7 +438,7 @@ def test_tool_security_scan(tmp_path):
 def test_tool_browser_check(monkeypatch):
     from unittest.mock import MagicMock
 
-    from nexus.tools import tool_browser_check
+    from nexus.tools import ToolResult, ToolStatus, tool_browser_check
 
     sync_api = pytest.importorskip("playwright.sync_api")
 

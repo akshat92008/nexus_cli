@@ -19,7 +19,7 @@ from nexus.planner import (
 )
 from nexus.policy import get_mode_policy
 from nexus.repo_graph import RepoGraph
-from nexus.tools import tool_context, tool_multi_edit
+from nexus.tools import tool_context, tool_multi_edit, ToolResult
 from nexus.verification import CheckStatus, CheckType, VerificationEngine
 
 
@@ -30,8 +30,8 @@ def test_confirmed_command_keeps_required_os_isolation(tmp_path):
         mode_policy=get_mode_policy("review"),
     )
     captured: dict = {}
-    agent._dispatch_tool_execution = (  # type: ignore[method-assign]
-        lambda name, args: captured.update(name=name, args=dict(args)) or "✅ ok"
+    agent._tool_controller._dispatch_tool_execution = (  # type: ignore[method-assign]
+        lambda name, args: captured.update(name=name, args=dict(args)) or ToolResult(output="✅ ok", status=0)
     )
     try:
         output, success = agent._execute_tool_with_safety(

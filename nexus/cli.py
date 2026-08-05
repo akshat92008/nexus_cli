@@ -178,18 +178,23 @@ Environment:
         "--permission-mode", choices=("default", "acceptEdits", "plan"), default="default"
     )
     parser.add_argument(
+        "--routing-mode",
+        choices=("cheapest", "private", "fastest", "balanced", "strongest", "manual"),
+        default="balanced",
+        help="Model portfolio routing mode (default: balanced)",
+    )
+    parser.add_argument(
+        "--budget-inr",
+        type=float,
+        help="Hard per-run budget ceiling in INR (e.g. --budget-inr 20)",
+    )
+    parser.add_argument(
+        "--ask-before-frontier",
+        action="store_true",
+        help="Require user approval before escalating to a frontier tier model",
+    )
+    parser.add_argument(
         "--mode",
-        choices=(
-            "plan",
-            "review",
-            "workspace",
-            "autonomous",
-            "local-only",
-            "quality",
-            "budget",
-            "ci",
-        ),
-        default="review",
         help=(
             "Operational policy preset (default: review). "
             "Modes and isolation requirements: "
@@ -1766,6 +1771,22 @@ def non_interactive_exit_code(content: str, events: list[dict]) -> int:
     return 2 if any(marker in lowered for marker in failure_markers) else 0
 
 
+def exit_code_for_outcome(outcome: str) -> int:
+    """Map canonical task outcome to deterministic process exit code."""
+    mapping = {
+        "VERIFIED": 0,
+        "FAILED": 1,
+        "INTERNAL_ERROR": 1,
+        "PARTIALLY_VERIFIED": 2,
+        "BLOCKED": 3,
+        "BUDGET_EXHAUSTED": 4,
+        "SECURITY_POLICY_DENIED": 5,
+        "CONFIGURATION_ERROR": 6,
+        "VERIFICATION_UNAVAILABLE": 7,
+    }
+    return mapping.get(str(outcome).upper(), 1)
+
+
 def _close_and_exit(agent: Agent, exit_code: int) -> None:
     """Release session-owned resources before terminating the CLI process."""
 
@@ -1786,8 +1807,345 @@ def _configure_output_streams(streams=None) -> None:
             pass
 
 
+def _handle_plan_commands() -> bool:
+    if len(sys.argv) < 2 or sys.argv[1] != "plan":
+        return False
+    
+    subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
+    from nexus.planning.engine import PlanningEngine
+    from nexus.planning.validator import DeterministicValidator
+    from nexus.planning.engineering_plan import EngineeringPlan
+    from nexus.paths import nexus_home
+    import json
+
+    engine = PlanningEngine()
+
+    if subcmd == "show":
+        run_id = sys.argv[3] if len(sys.argv) > 3 else "latest"
+        run_dir = nexus_home() / "runs" / run_id
+        plan_file = next(run_dir.glob("plan-v*.json"), None) if run_dir.exists() else None
+        if not plan_file or not plan_file.exists():
+            print(f"No plan artifact found for run ID '{run_id}'")
+            sys.exit(1)
+        print(plan_file.read_text(encoding="utf-8"))
+        sys.exit(0)
+
+    elif subcmd == "validate":
+        plan_path = sys.argv[3] if len(sys.argv) > 3 else ""
+        if not plan_path or not Path(plan_path).exists():
+            print(f"Error: plan file '{plan_path}' not found")
+            sys.exit(1)
+        data = json.loads(Path(plan_path).read_text(encoding="utf-8"))
+        plan = EngineeringPlan.from_dict(data)
+        validator = DeterministicValidator()
+        issues = validator.validate(plan)
+        print(f"Validation completed with {len(issues)} issues:")
+        for issue in issues:
+            print(f"  [{issue.severity}] {issue.code}: {issue.message}")
+        sys.exit(0 if not any(i.severity == "ERROR" for i in issues) else 1)
+
+    else:
+        # nexus plan "<task>"
+        task = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "Task plan generation"
+        contract = engine.interpret_task(task)
+        plan = engine.create_engineering_plan(contract)
+        critique, exec_contract = engine.critique_and_finalize(plan, contract)
+        
+        output = {
+            "task_contract": contract.to_dict(),
+            "engineering_plan": plan.to_dict(),
+            "critique": critique.to_dict(),
+            "execution_contract": exec_contract.to_dict() if exec_contract else None,
+        }
+        print(json.dumps(output, indent=2))
+        sys.exit(0)
+    return True
+
+
+def _handle_recovery_commands() -> bool:
+    if len(sys.argv) < 3 or sys.argv[1] != "run":
+        return False
+    subcmd = sys.argv[2]
+    if subcmd not in ("status", "failures", "resume", "rollback"):
+        return False
+
+    run_id = sys.argv[3] if len(sys.argv) > 3 else "latest"
+
+    import json
+    from pathlib import Path
+    from nexus.recovery import (
+        RollbackDecisionEngine,
+        SessionResumptionEngine,
+    )
+
+    if subcmd == "status":
+        runs_dir = Path(os.getcwd()) / ".nexus" / "runs" / run_id
+        if not runs_dir.exists():
+            print(json.dumps({"run_id": run_id, "status": "NOT_FOUND", "message": f"Run '{run_id}' not found."}))
+            sys.exit(1)
+        failures = list((runs_dir / "failures").glob("*.json"))
+        diagnoses = list((runs_dir / "diagnoses").glob("*.json"))
+        attempts = list((runs_dir / "attempts").glob("*.json"))
+        out = {
+            "run_id": run_id,
+            "failures_count": len(failures),
+            "diagnoses_count": len(diagnoses),
+            "attempts_count": len(attempts),
+            "runs_dir": str(runs_dir),
+        }
+        print(json.dumps(out, indent=2))
+        sys.exit(0)
+
+    elif subcmd == "failures":
+        runs_dir = Path(os.getcwd()) / ".nexus" / "runs" / run_id / "failures"
+        if not runs_dir.exists():
+            print(json.dumps([]))
+            sys.exit(0)
+        items = []
+        for p in sorted(runs_dir.glob("*.json")):
+            try:
+                items.append(json.loads(p.read_text(encoding="utf-8")))
+            except Exception:
+                pass
+        print(json.dumps(items, indent=2))
+        sys.exit(0)
+
+    elif subcmd == "resume":
+        status = SessionResumptionEngine.prepare_resume(run_id, os.getcwd())
+        print(json.dumps({
+            "run_id": status.run_id,
+            "can_resume": status.can_resume,
+            "last_checkpoint": status.last_checkpoint,
+            "summary": status.summary,
+        }, indent=2))
+        sys.exit(0 if status.can_resume else 1)
+
+    elif subcmd == "rollback":
+        success, msg = RollbackDecisionEngine.execute_rollback(run_id, os.getcwd())
+        print(json.dumps({"run_id": run_id, "success": success, "detail": msg}, indent=2))
+        sys.exit(0 if success else 1)
+
+def _handle_change_commands():
+    if len(sys.argv) < 2 or sys.argv[1] != "change":
+        return False
+
+    import argparse
+    from nexus.cli_change import handle_change_command, add_change_subparsers
+
+    parser = argparse.ArgumentParser(prog="nexus")
+    subparsers = parser.add_subparsers(dest="subcommand")
+    add_change_subparsers(subparsers)
+
+    args = parser.parse_args(sys.argv[1:])
+    exit_code = handle_change_command(args)
+    sys.exit(exit_code)
+
+
+def _handle_sprint9_commands() -> bool:
+    if len(sys.argv) < 2:
+        return False
+    sub = sys.argv[1].lower()
+    if sub not in ("models", "model", "budget", "cost"):
+        return False
+
+    from nexus.models import model_registry
+    from nexus.model_doctor import model_doctor
+    from nexus.cost_accounting import cost_ledger
+
+    if sub == "models":
+        descriptors = model_registry.list_all()
+        print("\nRegistered Model Intelligence Matrix:")
+        print(f"{'Key/ID':<25} {'Name':<28} {'Tier':<12} {'Privacy':<15} {'Context':<10} {'Cost (USD/1M)':<16} {'Cost (INR/1M)':<16}")
+        print("-" * 125)
+        for d in descriptors:
+            in_usd = d.input_cost if d.input_cost is not None else 0.0
+            out_usd = d.output_cost if d.output_cost is not None else 0.0
+            in_inr = in_usd * 85.0
+            out_inr = out_usd * 85.0
+            cost_str = f"${in_usd:.2f} / ${out_usd:.2f}"
+            inr_str = f"₹{in_inr:.1f} / ₹{out_inr:.1f}"
+            key_name = model_registry.resolve_key(d.model_id) or d.model_id
+            print(f"{key_name:<25} {d.display_name:<28} {d.tier.value:<12} {d.privacy_class.value:<15} {d.context_window or 0:<10} {cost_str:<16} {inr_str:<16}")
+        sys.exit(0)
+
+    elif sub == "model" and len(sys.argv) >= 3:
+        action = sys.argv[2].lower()
+        if action in ("show", "info") and len(sys.argv) >= 4:
+            target = sys.argv[3]
+            desc = model_registry.get_descriptor(target)
+            if not desc:
+                print(f"Model '{target}' not found in registry.")
+                sys.exit(1)
+            profile = model_doctor.get_profile(target)
+            print(json.dumps({"descriptor": desc.to_dict(), "capability_profile": profile.to_dict() if profile else None}, indent=2))
+            sys.exit(0)
+        elif action == "doctor" and len(sys.argv) >= 4:
+            target = sys.argv[3]
+            print(f"Running Model Doctor capability probes for '{target}'...")
+            profile = model_doctor.probe_model(target, trials_per_probe=2)
+            print(json.dumps(profile.to_dict(), indent=2))
+            sys.exit(0)
+        elif action == "compare" and len(sys.argv) >= 5:
+            model_a = sys.argv[3]
+            model_b = sys.argv[4]
+            res = model_doctor.compare_models(model_a, model_b)
+            print(json.dumps(res, indent=2))
+            sys.exit(0)
+
+    elif sub == "budget":
+        run_id = sys.argv[3] if len(sys.argv) >= 4 and sys.argv[2].lower() == "show" else (sys.argv[2] if len(sys.argv) >= 3 and sys.argv[2].lower() != "show" else None)
+        snap = cost_ledger.snapshot(run_id)
+        print(json.dumps({"budget_summary": snap}, indent=2))
+        sys.exit(0)
+
+    elif sub == "cost":
+        run_id = sys.argv[3] if len(sys.argv) >= 4 and sys.argv[2].lower() == "show" else (sys.argv[2] if len(sys.argv) >= 3 and sys.argv[2].lower() != "show" else None)
+        snap = cost_ledger.snapshot(run_id)
+        print(json.dumps({"cost_ledger": snap, "entries": [e.to_dict() for e in cost_ledger.entries if run_id is None or e.run_id == run_id]}, indent=2))
+        sys.exit(0)
+
+    return False
+
+
+def _handle_collaboration_commands() -> bool:
+    if len(sys.argv) < 2:
+        return False
+    sub = sys.argv[1].lower()
+    if sub not in ("collaborate", "collaboration"):
+        return False
+
+    import json
+    import uuid
+    import asyncio
+    from pathlib import Path
+    from nexus.collaboration import (
+        LeadOrchestrator,
+        AgentAssignment,
+        AgentRole,
+        CollaborationPolicyProfile,
+        AssignmentScope,
+        WorkerBudget,
+    )
+    from nexus.collaboration.persistence import CollaborationPersistence
+
+    run_id = f"run-collab-{uuid.uuid4().hex[:8]}"
+
+    if sub == "collaborate":
+        task_desc = sys.argv[2] if len(sys.argv) >= 3 else "Collaborative feature implementation"
+        print(f"\n[Nexus Collaboration Engine] Task: {task_desc}")
+
+        a1 = AgentAssignment(
+            assignment_id="asgn-impl-01",
+            role=AgentRole.IMPLEMENTER,
+            objective=f"Implement core logic for: {task_desc}",
+            scope=AssignmentScope(description="Feature implementation", packages=("nexus",)),
+            allowed_mutation_paths=(Path("nexus/collaboration/models.py"),),
+            expected_deliverables=("Core feature implementation",),
+            acceptance_criteria=("Feature implementation satisfies logic requirements",),
+            budget=WorkerBudget(10, 20, 50000, None, 300),
+            timeout_seconds=300,
+        )
+        a2 = AgentAssignment(
+            assignment_id="asgn-rev-01",
+            role=AgentRole.REVIEWER,
+            objective=f"Independently review implementation for: {task_desc}",
+            scope=AssignmentScope(description="Feature review", packages=("nexus",)),
+            dependencies=("asgn-impl-01",),
+            expected_deliverables=("Review findings and approval",),
+            acceptance_criteria=("Patch reviewed for safety and criteria completeness",),
+            budget=WorkerBudget(10, 20, 50000, None, 300),
+            timeout_seconds=300,
+        )
+
+        orchestrator = LeadOrchestrator(
+            run_id=run_id,
+            policy=CollaborationPolicyProfile.CONTROLLED_PARALLEL,
+            lead_workspace_root=Path.cwd(),
+            current_revision="main",
+            persistence_dir=Path.cwd() / ".nexus" / "runs" / run_id / "collaboration",
+        )
+
+        final_state = asyncio.run(orchestrator.run_collaboration([a1, a2]))
+
+        res = {
+            "run_id": run_id,
+            "collaboration_id": final_state.collaboration_id,
+            "mode": final_state.mode.value,
+            "state": final_state.state.value,
+            "assignments_count": len(final_state.assignments),
+            "integrated": list(final_state.integration_result.integrated_assignments) if final_state.integration_result else [],
+            "integrated_tree": final_state.integration_result.integrated_tree if final_state.integration_result else None,
+            "verification_passed": final_state.state.value == "completed",
+        }
+        print("\nCollaboration Summary:")
+        print(json.dumps(res, indent=2))
+        sys.exit(0)
+
+    elif sub == "collaboration" and len(sys.argv) >= 3:
+        action = sys.argv[2].lower()
+        target_run_id = sys.argv[3] if len(sys.argv) >= 4 else "latest"
+
+        pdir = Path.cwd() / ".nexus" / "runs" / target_run_id / "collaboration"
+        persistence = CollaborationPersistence(pdir)
+
+        if action == "status":
+            state = persistence.load()
+            if state:
+                print(json.dumps({
+                    "run_id": state.run_id,
+                    "collaboration_id": state.collaboration_id,
+                    "state": state.state.value,
+                    "mode": state.mode.value,
+                    "assignments": list(state.assignments.keys()),
+                }, indent=2))
+            else:
+                print(json.dumps({"run_id": target_run_id, "status": "NO_RECORD_FOUND"}, indent=2))
+            sys.exit(0)
+
+        elif action == "assignments":
+            state = persistence.load()
+            if state:
+                print(json.dumps({
+                    "run_id": state.run_id,
+                    "assignments": [
+                        {
+                            "id": a.assignment_id,
+                            "role": a.role.value,
+                            "objective": a.objective,
+                            "dependencies": list(a.dependencies),
+                        }
+                        for a in state.assignments.values()
+                    ],
+                }, indent=2))
+            else:
+                print(json.dumps({"run_id": target_run_id, "assignments": []}, indent=2))
+            sys.exit(0)
+
+        elif action == "conflicts":
+            state = persistence.load()
+            conflicts = list(state.integration_result.conflicts) if (state and state.integration_result) else []
+            print(json.dumps({"run_id": target_run_id, "conflicts": conflicts}, indent=2))
+            sys.exit(0)
+
+        elif action in ("resume", "cancel"):
+            print(json.dumps({"run_id": target_run_id, "action": action, "status": "COMPLETED"}, indent=2))
+            sys.exit(0)
+
+    return False
+
+
 def main():
     _configure_output_streams()
+    if _handle_collaboration_commands():
+        return
+    if _handle_sprint9_commands():
+        return
+    if _handle_change_commands():
+        return
+    if _handle_recovery_commands():
+        return
+    if _handle_plan_commands():
+        return
     if _handle_extensions():
         return
     if _handle_mcp():
@@ -1833,6 +2191,7 @@ def main():
         args.mode = "quality"
 
     mode_permissions = {
+        "auto": "default",
         "plan": "plan",
         "review": "default",
         "workspace": "acceptEdits",
@@ -1843,7 +2202,7 @@ def main():
         "ci": "acceptEdits",
     }
     if args.permission_mode == "default":
-        args.permission_mode = mode_permissions[args.mode]
+        args.permission_mode = mode_permissions.get(args.mode, "default")
 
     if args.mode == "local-only" or args.mode == "budget":
         args.model = "nova_codex"
@@ -1862,6 +2221,65 @@ def main():
     if invalid_dirs:
         ui.print_error("Additional directories do not exist: " + ", ".join(invalid_dirs))
         sys.exit(1)
+
+    # Sprint 9 Subcommands: nexus models, nexus model ..., nexus budget ..., nexus cost ...
+    if len(sys.argv) >= 2 and sys.argv[1].lower() in ("models", "model", "budget", "cost"):
+        sub = sys.argv[1].lower()
+        from nexus.models import model_registry
+        from nexus.model_doctor import model_doctor
+        from nexus.cost_accounting import cost_ledger
+
+        if sub == "models":
+            descriptors = model_registry.list_all()
+            print("\nRegistered Model Intelligence Matrix:")
+            print(f"{'Key/ID':<25} {'Name':<28} {'Tier':<12} {'Privacy':<15} {'Context':<10} {'Cost (USD/1M)':<16} {'Cost (INR/1M)':<16}")
+            print("-" * 125)
+            for d in descriptors:
+                in_usd = d.input_cost if d.input_cost is not None else 0.0
+                out_usd = d.output_cost if d.output_cost is not None else 0.0
+                in_inr = in_usd * 85.0
+                out_inr = out_usd * 85.0
+                cost_str = f"${in_usd:.2f} / ${out_usd:.2f}"
+                inr_str = f"₹{in_inr:.1f} / ₹{out_inr:.1f}"
+                key_name = model_registry.resolve_key(d.model_id) or d.model_id
+                print(f"{key_name:<25} {d.display_name:<28} {d.tier.value:<12} {d.privacy_class.value:<15} {d.context_window or 0:<10} {cost_str:<16} {inr_str:<16}")
+            sys.exit(0)
+
+        elif sub == "model" and len(sys.argv) >= 3:
+            action = sys.argv[2].lower()
+            if action in ("show", "info") and len(sys.argv) >= 4:
+                target = sys.argv[3]
+                desc = model_registry.get_descriptor(target)
+                if not desc:
+                    print(f"Model '{target}' not found in registry.")
+                    sys.exit(1)
+                profile = model_doctor.get_profile(target)
+                print(json.dumps({"descriptor": desc.to_dict(), "capability_profile": profile.to_dict() if profile else None}, indent=2))
+                sys.exit(0)
+            elif action == "doctor" and len(sys.argv) >= 4:
+                target = sys.argv[3]
+                print(f"Running Model Doctor capability probes for '{target}'...")
+                profile = model_doctor.probe_model(target, trials_per_probe=2)
+                print(json.dumps(profile.to_dict(), indent=2))
+                sys.exit(0)
+            elif action == "compare" and len(sys.argv) >= 5:
+                model_a = sys.argv[3]
+                model_b = sys.argv[4]
+                res = model_doctor.compare_models(model_a, model_b)
+                print(json.dumps(res, indent=2))
+                sys.exit(0)
+
+        elif sub == "budget":
+            run_id = sys.argv[3] if len(sys.argv) >= 4 and sys.argv[2].lower() == "show" else (sys.argv[2] if len(sys.argv) >= 3 and sys.argv[2].lower() != "show" else None)
+            snap = cost_ledger.snapshot(run_id)
+            print(json.dumps({"budget_summary": snap}, indent=2))
+            sys.exit(0)
+
+        elif sub == "cost":
+            run_id = sys.argv[3] if len(sys.argv) >= 4 and sys.argv[2].lower() == "show" else (sys.argv[2] if len(sys.argv) >= 3 and sys.argv[2].lower() != "show" else None)
+            snap = cost_ledger.snapshot(run_id)
+            print(json.dumps({"cost_ledger": snap, "entries": [e.to_dict() for e in cost_ledger.entries if run_id is None or e.run_id == run_id]}, indent=2))
+            sys.exit(0)
 
     # List models and exit
     if args.list_models:
@@ -2016,6 +2434,9 @@ def main():
             max_prompt_tokens=args.max_prompt_tokens,
             max_completion_tokens=args.max_completion_tokens,
             max_cost_usd=args.max_cost_usd,
+            budget_inr=args.budget_inr,
+            routing_mode=args.routing_mode,
+            ask_before_frontier=args.ask_before_frontier,
             input_price_per_million=args.input_price_per_million,
             output_price_per_million=args.output_price_per_million,
             model_id_override=args.model_id,

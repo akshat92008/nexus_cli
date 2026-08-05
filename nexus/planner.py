@@ -147,6 +147,10 @@ class ExecutionPlan:
     deployment_plan: dict = field(default_factory=dict)
     failure_replans: list[dict] = field(default_factory=list)
     revision: int = 1
+    canonical_contract: dict = field(default_factory=dict)
+    canonical_plan: dict = field(default_factory=dict)
+    canonical_critique: dict = field(default_factory=dict)
+    canonical_execution_contract: dict = field(default_factory=dict)
     retry_policy: dict[str, int] = field(
         default_factory=lambda: {"per_task": 2, "total_repairs": 5}
     )
@@ -707,20 +711,6 @@ class PlanningEngine:
             step.acceptance_criteria = list(
                 dict.fromkeys([*step.acceptance_criteria, *acceptance])
             )
-            if "test" in step.title.lower() or "verify" in step.title.lower():
-                step.checks = list(dict.fromkeys([*step.checks, *verification]))
-            step.risk = self._step_risk(step, intent)
-            if difficulty == Difficulty.MASSIVE:
-                step.retry_limit = 2 if step.risk == "high" else 3
-            else:
-                step.retry_limit = 1 if step.risk == "high" else 2
-            step.max_tool_calls = {
-                Difficulty.SIMPLE: 5,
-                Difficulty.MODERATE: 10,
-                Difficulty.COMPLEX: 20,
-                Difficulty.MASSIVE: 30,
-            }.get(difficulty, 5)
-
         plan = ExecutionPlan(
             id=plan_id,
             goal=goal,
@@ -761,6 +751,21 @@ class PlanningEngine:
                 "max_cost_usd": None,
             },
         )
+
+        try:
+            from nexus.planning.engine import PlanningEngine as CanonicalPlanningEngine
+            canonical_engine = CanonicalPlanningEngine()
+            contract = canonical_engine.interpret_task(goal, repo_summary or {})
+            eng_plan = canonical_engine.create_engineering_plan(contract, repo_summary or {})
+            critique, exec_contract = canonical_engine.critique_and_finalize(eng_plan, contract, repo_summary or {})
+
+            plan.canonical_contract = contract.to_dict()
+            plan.canonical_plan = eng_plan.to_dict()
+            plan.canonical_critique = critique.to_dict()
+            if exec_contract:
+                plan.canonical_execution_contract = exec_contract.to_dict()
+        except Exception:
+            pass
 
         self.current_plan = plan
         self._save_plan(plan)

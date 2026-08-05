@@ -1,7 +1,7 @@
 """
 nexus/collaboration/models.py
 
-Core models for controlled multi-agent collaboration.
+Core models and typed contracts for controlled multi-agent collaboration.
 Every public type used across the collaboration sub-package is defined here
 so that the rest of the package can import from a single, stable location
 without creating circular dependencies.
@@ -10,17 +10,27 @@ without creating circular dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping, Optional, Tuple
+from typing import Any, Mapping, Optional, Sequence, Tuple
+
 
 from nexus.routing.models import ModelTier
 
 # ---------------------------------------------------------------------------
 # Enumerations
 # ---------------------------------------------------------------------------
+
+
+class CollaborationMode(Enum):
+    SINGLE_AGENT = "SINGLE_AGENT"
+    REVIEW_PAIR = "REVIEW_PAIR"
+    SPECIALIST_TEAM = "SPECIALIST_TEAM"
+    PARALLEL_ANALYSIS = "PARALLEL_ANALYSIS"
+    PARALLEL_IMPLEMENTATION = "PARALLEL_IMPLEMENTATION"
+    STAGED_COLLABORATION = "STAGED_COLLABORATION"
 
 
 class CollaborationState(Enum):
@@ -55,16 +65,24 @@ class WorkerState(Enum):
 
 
 class AgentRole(Enum):
-    LEAD_ENGINEER = "LEAD_ENGINEER"
-    REPOSITORY_ANALYST = "REPOSITORY_ANALYST"
-    IMPLEMENTATION_ENGINEER = "IMPLEMENTATION_ENGINEER"
+    INVESTIGATOR = "INVESTIGATOR"
+    PLANNER = "PLANNER"
+    IMPLEMENTER = "IMPLEMENTER"
     TEST_ENGINEER = "TEST_ENGINEER"
-    DEBUGGER = "DEBUGGER"
+    REVIEWER = "REVIEWER"
     SECURITY_REVIEWER = "SECURITY_REVIEWER"
-    ARCHITECTURE_REVIEWER = "ARCHITECTURE_REVIEWER"
-    DEPENDENCY_SPECIALIST = "DEPENDENCY_SPECIALIST"
-    DOCUMENTATION_ENGINEER = "DOCUMENTATION_ENGINEER"
-    INDEPENDENT_VERIFIER = "INDEPENDENT_VERIFIER"
+    INTEGRATION_ENGINEER = "INTEGRATION_ENGINEER"
+    CENTRAL_VERIFIER = "CENTRAL_VERIFIER"
+
+    # Backward compatibility aliases
+    LEAD_ENGINEER = "PLANNER"
+    REPOSITORY_ANALYST = "INVESTIGATOR"
+    IMPLEMENTATION_ENGINEER = "IMPLEMENTER"
+    DEBUGGER = "INVESTIGATOR"
+    ARCHITECTURE_REVIEWER = "REVIEWER"
+    DEPENDENCY_SPECIALIST = "INVESTIGATOR"
+    DOCUMENTATION_ENGINEER = "IMPLEMENTER"
+    INDEPENDENT_VERIFIER = "CENTRAL_VERIFIER"
 
 
 class RiskLevel(Enum):
@@ -86,23 +104,53 @@ class ReservationMode(Enum):
     SHARED_READ = "shared_read"
 
 
-class WorkerResultStatus(Enum):
+class AssignmentStatus(Enum):
     COMPLETED = "COMPLETED"
-    PARTIAL = "PARTIAL"
+    PARTIALLY_COMPLETED = "PARTIALLY_COMPLETED"
+    LOCALLY_VALIDATED = "LOCALLY_VALIDATED"
     BLOCKED = "BLOCKED"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    TIMED_OUT = "TIMED_OUT"
     INVALID = "INVALID"
 
 
+# Alias for backward compatibility
+WorkerResultStatus = AssignmentStatus
+
+
+class ReviewDecision(Enum):
+    APPROVE_FOR_INTEGRATION = "APPROVE_FOR_INTEGRATION"
+    REVISE = "REVISE"
+    REJECT = "REJECT"
+    BLOCKED = "BLOCKED"
+
+
+class IntegrationStatus(Enum):
+    INTEGRATED = "INTEGRATED"
+    PARTIALLY_INTEGRATED = "PARTIALLY_INTEGRATED"
+    CONFLICTED = "CONFLICTED"
+    BLOCKED = "BLOCKED"
+    FAILED = "FAILED"
+
+
 class CoordinationMessageType(Enum):
-    CONTEXT_REQUEST = "CONTEXT_REQUEST"
-    CLARIFICATION_REQUEST = "CLARIFICATION_REQUEST"
+    FINDING = "FINDING"
+    EVIDENCE_REQUEST = "EVIDENCE_REQUEST"
     DEPENDENCY_UPDATE = "DEPENDENCY_UPDATE"
-    BLOCKER_REPORT = "BLOCKER_REPORT"
-    RESULT_SUBMISSION = "RESULT_SUBMISSION"
-    CANCELLATION = "CANCELLATION"
-    REVISION_REQUEST = "REVISION_REQUEST"
+    SCOPE_EXPANSION_REQUEST = "SCOPE_EXPANSION_REQUEST"
+    REVIEW_ISSUE = "REVIEW_ISSUE"
+    INTEGRATION_CONFLICT = "INTEGRATION_CONFLICT"
+    ASSIGNMENT_BLOCKED = "ASSIGNMENT_BLOCKED"
+    ASSIGNMENT_COMPLETED = "ASSIGNMENT_COMPLETED"
+
+    # Backward compatibility aliases
+    CONTEXT_REQUEST = "EVIDENCE_REQUEST"
+    CLARIFICATION_REQUEST = "EVIDENCE_REQUEST"
+    BLOCKER_REPORT = "ASSIGNMENT_BLOCKED"
+    RESULT_SUBMISSION = "ASSIGNMENT_COMPLETED"
+    CANCELLATION = "ASSIGNMENT_BLOCKED"
+    REVISION_REQUEST = "REVIEW_ISSUE"
 
 
 class ReviewFindingCategory(Enum):
@@ -151,7 +199,7 @@ class WorkerRecoveryAction(Enum):
 
 
 # ---------------------------------------------------------------------------
-# Dataclasses
+# Dataclasses & Contracts
 # ---------------------------------------------------------------------------
 
 
@@ -189,9 +237,8 @@ class WorkerBudget:
 
 @dataclass(frozen=True)
 class RoutingConstraints:
-    """Lightweight routing constraints for worker assignments (not the full engine type)."""
     local_only: bool = False
-    max_tier: Optional[ModelTier] = None
+    max_tier: Optional[Any] = None
     preferred_model_ids: Tuple[str, ...] = ()
 
 
@@ -205,22 +252,50 @@ class AssignmentScope:
 @dataclass(frozen=True)
 class AgentAssignment:
     assignment_id: str
-    parent_run_id: str
     role: AgentRole
     objective: str
-    scope: AssignmentScope
-    allowed_paths: Tuple[Path, ...]
-    prohibited_paths: Tuple[Path, ...]
-    relevant_symbols: Tuple[str, ...]
-    requirements: Tuple[str, ...]
-    expected_outputs: Tuple[str, ...]
-    verification_requirements: Tuple[str, ...]
-    dependencies: Tuple[str, ...]
-    mutation_policy: MutationPolicy
-    model_constraints: RoutingConstraints
-    budget: WorkerBudget
-    deadline_seconds: int
+    parent_plan_step_ids: Tuple[str, ...] = ()
+    repository_snapshot_id: str = "main"
+    context_bundle_id: str = "bundle-0"
+    allowed_read_paths: Tuple[Path, ...] = ()
+    allowed_mutation_paths: Tuple[Path, ...] = ()
+    protected_paths: Tuple[Path, ...] = ()
+    dependencies: Tuple[str, ...] = ()
+    acceptance_criteria: Tuple[str, ...] = ()
+    expected_deliverables: Tuple[str, ...] = ()
+    allowed_tools: Tuple[str, ...] = ()
+    model_requirements: Dict[str, Any] = field(default_factory=dict)
+    model_id: Optional[str] = None
+    budget: WorkerBudget = field(default_factory=lambda: WorkerBudget(10, 20, 50000, Decimal("1.00"), 300))
+    timeout_seconds: int = 300
+    retry_limit: int = 2
     is_optional: bool = False
+
+    # Backwards compatibility attributes
+    parent_run_id: str = ""
+    scope: AssignmentScope = field(default_factory=lambda: AssignmentScope("default", ()))
+    allowed_paths: Tuple[Path, ...] = ()
+    prohibited_paths: Tuple[Path, ...] = ()
+    relevant_symbols: Tuple[str, ...] = ()
+    requirements: Tuple[str, ...] = ()
+    expected_outputs: Tuple[str, ...] = ()
+    verification_requirements: Tuple[str, ...] = ()
+    mutation_policy: MutationPolicy = field(default_factory=lambda: MutationPolicy(False))
+    model_constraints: RoutingConstraints = field(default_factory=lambda: RoutingConstraints())
+    deadline_seconds: int = 300
+
+    def __post_init__(self) -> None:
+        # Sync compatibility fields if left default
+        if self.allowed_mutation_paths and not self.allowed_paths:
+            object.__setattr__(self, "allowed_paths", self.allowed_mutation_paths)
+        if self.protected_paths and not self.prohibited_paths:
+            object.__setattr__(self, "prohibited_paths", self.protected_paths)
+        if self.acceptance_criteria and not self.requirements:
+            object.__setattr__(self, "requirements", self.acceptance_criteria)
+        if self.acceptance_criteria and not self.verification_requirements:
+            object.__setattr__(self, "verification_requirements", self.acceptance_criteria)
+        if self.expected_deliverables and not self.expected_outputs:
+            object.__setattr__(self, "expected_outputs", self.expected_deliverables)
 
 
 @dataclass(frozen=True)
@@ -236,9 +311,21 @@ class DelegationAssessment:
 
 
 @dataclass(frozen=True)
+class CollaborationDecision:
+    use_collaboration: bool
+    recommended_mode: CollaborationMode
+    reasons: Tuple[str, ...]
+    expected_benefit: str
+    expected_overhead: str
+    expected_cost: Decimal
+    risk: RiskLevel
+    confidence: float
+
+
+@dataclass(frozen=True)
 class ContextResource:
     resource_id: str
-    kind: str  # "file", "symbol", "test", "requirement"
+    kind: str
     path: Optional[str]
     content_hash: Optional[str]
 
@@ -287,7 +374,7 @@ class CoordinationMessage:
     assignment_id: str
     content: Mapping[str, Any]
     evidence_ids: Tuple[str, ...]
-    timestamp: datetime
+    timestamp: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
 
 
 @dataclass(frozen=True)
@@ -318,19 +405,45 @@ class ResourceUsage:
 
 
 @dataclass(frozen=True)
-class WorkerResult:
+class AssignmentResult:
     assignment_id: str
-    worker_id: str
-    status: WorkerResultStatus
-    summary: str
-    findings: Tuple[WorkerFinding, ...]
-    proposed_changes: Tuple[ProposedChange, ...]
-    transaction_reference: Optional[str]
-    verification_results: Tuple[str, ...]
-    unresolved_questions: Tuple[str, ...]
-    risks: Tuple[str, ...]
-    evidence_ids: Tuple[str, ...]
-    cost: ResourceUsage
+    status: AssignmentStatus
+    repository_snapshot_before: str = "main"
+    workspace_tree_after: str = "tree"
+    patch_artifact: Optional[str] = None
+    evidence: Tuple[str, ...] = ()
+    tests: Tuple[str, ...] = ()
+    findings: Tuple[WorkerFinding, ...] = ()
+    limitations: Tuple[str, ...] = ()
+    cost: ResourceUsage = field(default_factory=lambda: ResourceUsage(0, 0, 0, Decimal("0"), 0.0))
+    failure: Optional[str] = None
+
+    # Backward compatibility properties
+    worker_id: str = "worker-0"
+    summary: str = ""
+    proposed_changes: Tuple[ProposedChange, ...] = ()
+    transaction_reference: Optional[str] = None
+    verification_results: Tuple[str, ...] = ()
+    unresolved_questions: Tuple[str, ...] = ()
+    risks: Tuple[str, ...] = ()
+    evidence_ids: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.evidence and not self.evidence_ids:
+            object.__setattr__(self, "evidence_ids", self.evidence)
+        if self.tests and not self.verification_results:
+            object.__setattr__(self, "verification_results", self.tests)
+
+
+# Alias for backward compatibility
+WorkerResult = AssignmentResult
+
+
+@dataclass(frozen=True)
+class ReviewIssue:
+    issue_id: str
+    description: str
+    severity: RiskLevel
 
 
 @dataclass(frozen=True)
@@ -342,13 +455,32 @@ class ReviewFinding:
 
 
 @dataclass(frozen=True)
-class WorkerReview:
+class AssignmentReview:
     assignment_id: str
-    accepted: bool
-    findings: Tuple[ReviewFinding, ...]
-    missing_evidence: Tuple[str, ...]
-    required_revisions: Tuple[str, ...]
-    integration_eligible: bool
+    decision: ReviewDecision = ReviewDecision.APPROVE_FOR_INTEGRATION
+    review_id: str = "rev-0"
+    blocking_issues: Tuple[ReviewIssue, ...] = ()
+    warnings: Tuple[ReviewIssue, ...] = ()
+    missing_tests: Tuple[str, ...] = ()
+    scope_violations: Tuple[str, ...] = ()
+    security_findings: Tuple[str, ...] = ()
+    evidence: Tuple[str, ...] = ()
+
+    # Backward compatibility fields
+    accepted: bool = False
+    findings: Tuple[ReviewFinding, ...] = ()
+    missing_evidence: Tuple[str, ...] = ()
+    required_revisions: Tuple[str, ...] = ()
+    integration_eligible: bool = False
+
+    def __post_init__(self) -> None:
+        if self.decision == ReviewDecision.APPROVE_FOR_INTEGRATION or self.accepted:
+            object.__setattr__(self, "accepted", True)
+            object.__setattr__(self, "integration_eligible", True)
+
+
+# Alias for backward compatibility
+WorkerReview = AssignmentReview
 
 
 @dataclass(frozen=True)
@@ -365,12 +497,27 @@ class SecurityFinding:
 
 @dataclass(frozen=True)
 class IntegrationResult:
-    integrated_assignments: Tuple[str, ...]
+    integration_id: str
+    status: IntegrationStatus
+    baseline_tree: str
+    integrated_tree: Optional[str]
+    applied_assignments: Tuple[str, ...]
     rejected_assignments: Tuple[str, ...]
     conflicts: Tuple[str, ...]
-    verification_results: Tuple[str, ...]
-    transaction_id: str
-    evidence_ids: Tuple[str, ...]
+    evidence: Tuple[str, ...]
+    rollback_checkpoint: str
+
+    # Backward compatibility fields
+    transaction_id: str = ""
+    integrated_assignments: Tuple[str, ...] = ()
+    verification_results: Tuple[str, ...] = ()
+    evidence_ids: Tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.applied_assignments and not self.integrated_assignments:
+            object.__setattr__(self, "integrated_assignments", self.applied_assignments)
+        if self.evidence and not self.evidence_ids:
+            object.__setattr__(self, "evidence_ids", self.evidence)
 
 
 @dataclass(frozen=True)
@@ -386,23 +533,41 @@ class CollaborationBudget:
     maximum_reassignments: int
 
 
+@dataclass(frozen=True)
+class CollaborationRun:
+    collaboration_id: str
+    run_id: str
+    task_contract_id: str
+    plan_id: str
+    plan_version: int
+    repository_snapshot_id: str
+    mode: CollaborationMode
+    assignments: Tuple[AgentAssignment, ...]
+    dependency_graph: Any  # AssignmentGraph
+    integration_policy: str
+    verification_policy: str
+    concurrency_limit: int
+    budget: CollaborationBudget
+    status: CollaborationState
+
+
 @dataclass
 class CollaborationRunState:
-    """Mutable state container for a live collaboration run (not frozen — evolves)."""
     run_id: str
     collaboration_id: str
     state: CollaborationState
     policy: CollaborationPolicyProfile
     budget: CollaborationBudget
-    assignments: dict = field(default_factory=dict)  # assignment_id -> AgentAssignment
-    worker_states: dict = field(default_factory=dict)  # worker_id -> WorkerState
-    worker_results: dict = field(default_factory=dict)  # assignment_id -> WorkerResult
-    worker_reviews: dict = field(default_factory=dict)  # assignment_id -> WorkerReview
-    reservations: dict = field(default_factory=dict)   # reservation_id -> MutationScopeReservation
+    assignments: dict = field(default_factory=dict)
+    worker_states: dict = field(default_factory=dict)
+    worker_results: dict = field(default_factory=dict)
+    worker_reviews: dict = field(default_factory=dict)
+    reservations: dict = field(default_factory=dict)
     integration_result: Optional[IntegrationResult] = None
     cancelled: bool = False
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+    mode: CollaborationMode = CollaborationMode.SINGLE_AGENT
+    created_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
 
     def total_spent(self) -> ResourceUsage:
         calls = sum(r.cost.model_calls for r in self.worker_results.values())

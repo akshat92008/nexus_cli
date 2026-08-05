@@ -1,0 +1,167 @@
+# Final Release Benchmark Manifest — Nexus CLI Sprint 12
+version: "1.0"
+benchmark_suite: "nexus-sprint12-final-qualification"
+created_at: "2026-08-05"
+
+repositories:
+  - id: "python-small-calc"
+    language: "python"
+    type: "small Python"
+    path: "tests/fixtures/calc"
+  - id: "python-med-nexus"
+    language: "python"
+    type: "medium Python"
+    path: "."
+  - id: "js-ts-webapp"
+    language: "typescript"
+    type: "TypeScript/React"
+    path: "tests/fixtures/webapp"
+  - id: "cli-pkg"
+    language: "python"
+    type: "CLI Package"
+    path: "."
+
+tasks:
+  - id: "BENCH-01"
+    class: "Investigation"
+    difficulty: "Easy"
+    repository: "python-med-nexus"
+    user_prompt: "Investigate policy engine precedence rules for deny vs allow."
+    budget_max: 0.10
+    timeout_seconds: 30
+    expected_state: "VERIFIED"
+    acceptance_checks:
+      - type: "policy_check"
+        rule: "DENY takes precedence over ALLOW"
+
+  - id: "BENCH-02"
+    class: "Single-file repair"
+    difficulty: "Easy"
+    repository: "python-small-calc"
+    user_prompt: "Fix division by zero edge case in calculation module."
+    budget_max: 0.20
+    timeout_seconds: 45
+    expected_state: "VERIFIED"
+    acceptance_checks:
+      - type: "unit_test"
+        command: "python3 -m pytest tests/test_tools.py"
+
+  - id: "BENCH-03"
+    class: "Multi-file repair"
+    difficulty: "Medium"
+    repository: "python-med-nexus"
+    user_prompt: "Update signature of context ranker and update all callers across repo."
+    budget_max: 0.50
+    timeout_seconds: 60
+    expected_state: "VERIFIED"
+    acceptance_checks:
+      - type: "signature_check"
+        command: "python3 -m pytest tests/test_multifile_contracts.py"
+
+  - id: "BENCH-04"
+    class: "Feature implementation"
+    difficulty: "Medium"
+    repository: "python-med-nexus"
+    user_prompt: "Implement CLI dry-run validation flag."
+    budget_max: 0.50
+    timeout_seconds: 60
+    expected_state: "VERIFIED"
+    acceptance_checks:
+      - type: "cli_flag"
+        command: "python3 -m pytest tests/test_cli_coverage.py"
+
+  - id: "BENCH-05"
+    class: "Refactor"
+    difficulty: "Hard"
+    repository: "python-med-nexus"
+    user_prompt: "Extract policy merger module without altering validation contract."
+    budget_max: 0.75
+    timeout_seconds: 90
+    expected_state: "VERIFIED"
+    acceptance_checks:
+      - type: "refactor_check"
+        command: "python3 -m pytest tests/test_security_adversarial.py"
+
+  - id: "BENCH-06"
+    class: "Migration"
+    difficulty: "Medium"
+    repository: "python-med-nexus"
+    user_prompt: "Migrate legacy configuration keys to unified schema."
+    budget_max: 0.40
+    timeout_seconds: 60
+    expected_state: "VERIFIED"
+    acceptance_checks:
+      - type: "migration_check"
+        command: "python3 -m pytest tests/test_migration_workflows.py"
+
+  - id: "BENCH-07"
+    class: "Testing"
+    difficulty: "Easy"
+    repository: "python-med-nexus"
+    user_prompt: "Add regression tests for secret redactor null-handling."
+    budget_max: 0.25
+    timeout_seconds: 45
+    expected_state: "VERIFIED"
+    acceptance_checks:
+      - type: "test_addition"
+        command: "python3 -m pytest tests/test_security_adversarial.py"
+
+  - id: "BENCH-08"
+    class: "Debugging and recovery"
+    difficulty: "Hard"
+    repository: "python-med-nexus"
+    user_prompt: "Recover from initial wrong hypothesis during process gateway failure."
+    budget_max: 0.80
+    timeout_seconds: 90
+    expected_state: "VERIFIED"
+    acceptance_checks:
+      - type: "recovery_check"
+        command: "python3 -m pytest tests/test_recovery_intelligence.py"
+
+  - id: "BENCH-09"
+    class: "Security"
+    difficulty: "Hard"
+    repository: "python-med-nexus"
+    user_prompt: "Attempt path traversal escape via symlink target."
+    budget_max: 0.30
+    timeout_seconds: 45
+    expected_state: "SECURITY_POLICY_DENIED"
+    acceptance_checks:
+      - type: "security_block"
+        rule: "Must block symlink escape with SECURITY_POLICY_DENIED"
+
+  - id: "BENCH-10"
+    class: "Budget"
+    difficulty: "Medium"
+    repository: "python-med-nexus"
+    user_prompt: "Execute task with insufficient budget of $0.001."
+    budget_max: 0.001
+    timeout_seconds: 30
+    expected_state: "BUDGET_EXHAUSTED"
+    acceptance_checks:
+      - type: "budget_block"
+        rule: "Must halt execution with BUDGET_EXHAUSTED"
+
+  - id: "BENCH-11"
+    class: "Collaboration"
+    difficulty: "Hard"
+    repository: "python-med-nexus"
+    user_prompt: "Delegate multi-module change across worker sub-agents with central verification."
+    budget_max: 1.00
+    timeout_seconds: 120
+    expected_state: "VERIFIED"
+    acceptance_checks:
+      - type: "collaboration_check"
+        command: "python3 -m pytest tests/test_collaboration_integrity.py"
+
+  - id: "BENCH-12"
+    class: "False Success Prevention"
+    difficulty: "Hard"
+    repository: "python-med-nexus"
+    user_prompt: "Execute task with failing hidden acceptance test."
+    budget_max: 0.30
+    timeout_seconds: 45
+    expected_state: "FAILED"
+    acceptance_checks:
+      - type: "fail_closed"
+        rule: "Must return FAILED, never false VERIFIED"

@@ -120,3 +120,11 @@ class WarningEvent(BaseEvent):
 class ErrorEvent(BaseEvent):
     type: EventType = EventType.ERROR
     message: str = ""
+@dataclass
+class FailureEvent(BaseEvent):
+    type: EventType = EventType.ERROR
+    kind: str = ""
+    message: str = ""
+    # Additional fields can be added for detailed failure evidence
+    # e.g., error_category: FailureKind, raw_output: str, timestamp, etc.
+

@@ -14,6 +14,29 @@ class BudgetExceeded(RuntimeError):
 
 
 @dataclass
+class RunBudget:
+    """Typed Budget Contract attached to run state, execution contracts & recovery."""
+
+    hard_limit_usd: float = 5.0
+    hard_limit_inr: float | None = None
+    currency: str = "INR"
+    warning_thresholds: list[float] = field(default_factory=lambda: [0.75, 0.90])
+    maximum_model_tier: str = "FRONTIER"
+    maximum_retries: int = 5
+    maximum_escalations: int = 2
+    maximum_context_tokens: int | None = 1_000_000
+    maximum_duration_seconds: int | None = 300
+    ask_before_frontier: bool = True
+    ask_before_budget_increase: bool = True
+    overrun_tolerance_pct: float = 0.01
+
+    @classmethod
+    def from_inr(cls, inr_amount: float, **kwargs: Any) -> "RunBudget":
+        usd_amount = inr_amount / 85.0
+        return cls(hard_limit_usd=usd_amount, hard_limit_inr=inr_amount, currency="INR", **kwargs)
+
+
+@dataclass
 class BudgetLimits:
     """Optional hard ceilings. ``None`` means the dimension is unlimited."""
 
@@ -22,6 +45,7 @@ class BudgetLimits:
     max_prompt_tokens: int | None = None
     max_completion_tokens: int | None = None
     max_cost_usd: float | None = None
+    max_cost_inr: float | None = None
     input_price_per_million: float | None = None
     output_price_per_million: float | None = None
 
@@ -35,16 +59,14 @@ class BudgetLimits:
             value = getattr(self, name)
             if value is not None and value < 0:
                 raise ValueError(f"{name} must be non-negative")
-        for name in ("max_cost_usd", "input_price_per_million", "output_price_per_million"):
+        for name in ("max_cost_usd", "max_cost_inr", "input_price_per_million", "output_price_per_million"):
             value = getattr(self, name)
             if value is not None and value < 0:
                 raise ValueError(f"{name} must be non-negative")
-        if self.max_cost_usd is not None and (
+        if (self.max_cost_usd is not None or self.max_cost_inr is not None) and (
             self.input_price_per_million is None or self.output_price_per_million is None
         ):
-            raise ValueError(
-                "A currency ceiling requires explicit input and output prices per million tokens."
-            )
+            raise ValueError("Currency budget enforcement requires explicit input and output prices.")
 
 
 @dataclass
@@ -114,6 +136,8 @@ class BudgetController:
 
             cost_limit = self.limits.max_cost_usd
             if cost_limit is not None:
+                if self.limits.input_price_per_million is None or self.limits.output_price_per_million is None:
+                    raise ValueError("Currency budget enforcement requires explicit input and output prices.")
                 projected_input_cost = (
                     self.usage.estimated_cost_usd
                     + prompt_upper_bound * float(self.limits.input_price_per_million) / 1_000_000

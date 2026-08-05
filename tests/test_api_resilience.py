@@ -148,19 +148,29 @@ def test_cloud_api_exhaustion_falls_back_to_local_nova():
     """Verify that when all cloud APIs fail, agent.run falls back to local Nova turn."""
     from nexus.agent import Agent
 
+    import sys
+    print("Setting up agent...", file=sys.stderr, flush=True)
     agent = Agent(api_key="nvapi-test", model_key="deepseek-v4", enable_nova_fallback=True)
     agent.local_intern_enabled = True
+    agent.repo_graph = MagicMock()
+    agent.repo_graph.context_bundle.return_value = "Mocked Graph Context"
 
-    # Mock client.chat to simulate cloud rate limit exhaustion on a chat query
+    print("Patching client...", file=sys.stderr, flush=True)
+    # Mock client.stream to simulate cloud rate limit exhaustion on a chat query
     with patch.object(
+        agent.client, "stream", side_effect=RuntimeError("Rate limited after multiple retries")
+    ), patch.object(
         agent.client, "chat", side_effect=RuntimeError("Rate limited after multiple retries")
     ):
         with patch.object(
             agent, "_run_nova_turn", return_value=("Local Nova fallback response", [])
         ) as mock_nova:
+            print("Calling agent.run...", file=sys.stderr, flush=True)
             res = agent.run("hello, explain binary search trees")
+            print(f"agent.run finished with result: {res}", file=sys.stderr, flush=True)
             assert res == "Local Nova fallback response"
             mock_nova.assert_called_once()
+            print("Test passed.", file=sys.stderr, flush=True)
 
 
 def test_round_robin_key_pool():

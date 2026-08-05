@@ -38,10 +38,10 @@ def test_non_interactive_command_env():
         else "$CI $PAGER $DEBIAN_FRONTEND $TERM"
     )
     res = execute_tool("run_command", {"command": f"echo {variables}"})
-    assert "true" in res
-    assert "cat" in res
-    assert "noninteractive" in res
-    assert "dumb" in res
+    assert "true" in res.output
+    assert "cat" in res.output
+    assert "noninteractive" in res.output
+    assert "dumb" in res.output
 
 
 def test_agent_handle_stream_tool_drafting():

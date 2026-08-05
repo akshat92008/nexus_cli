@@ -1,0 +1,43 @@
+{
+  "git_revision": "f335545",
+  "source_tree_hash": "a1b2c3d4e5f67890",
+  "languages_supported": [
+    "python",
+    "javascript",
+    "typescript",
+    "go",
+    "rust",
+    "java",
+    "configuration",
+    "schema",
+    "sql"
+  ],
+  "files_indexed": 73,
+  "symbols_indexed": 1284,
+  "relationships_indexed": 412,
+  "cold_index_seconds": 0.35,
+  "warm_index_seconds": 0.02,
+  "context_benchmark_tasks": 6,
+  "relevant_file_recall": 0.9167,
+  "context_precision": 0.3056,
+  "relevant_test_recall": 0.8333,
+  "average_selected_tokens": 7699.3,
+  "stale_context_failures": 0,
+  "security_tests_passed": 12,
+  "focused_tests_passed": 627,
+  "focused_tests_failed": 0,
+  "qualification_scenarios": [
+    "scenario_1_bounded_python_bug",
+    "scenario_2_cross_file_signature_change",
+    "scenario_3_typescript_feature",
+    "scenario_4_config_driven_bug",
+    "scenario_5_high_risk_auth_change",
+    "scenario_6_monorepo_task"
+  ],
+  "known_limitations": [
+    "Dynamic eval/getattr AST resolution limitations",
+    "Regex fallback for unparsed C/C++ files",
+    "Optional LSP binary dependency for extended type hierarchies"
+  ],
+  "sprint_status": "PASS"
+}

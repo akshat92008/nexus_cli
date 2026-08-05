@@ -68,9 +68,87 @@ def get_history():
     return history
 
 
+from dataclasses import dataclass, field
+from typing import Any, Callable
+from enum import Enum
+
+class RiskLevel(Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"
+    DANGEROUS = "dangerous"
+
+class PermissionLevel(Enum):
+    READ = "read"
+    WRITE = "write"
+    EXECUTE = "execute"
+    NETWORK = "network"
+
+class ToolStatus(Enum):
+    SUCCESS = "success"
+    FAILURE = "failure"
+    TIMEOUT = "timeout"
+    CANCELLED = "cancelled"
+    BLOCKED = "blocked"
+    PERMISSION_DENIED = "permission_denied"
+    INVALID_INPUT = "invalid_input"
+    ENVIRONMENT_UNAVAILABLE = "environment_unavailable"
+    PARTIAL = "partial"
+
+@dataclass
+class ToolDefinition:
+    name: str
+    description: str
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any] = field(default_factory=dict)
+    risk_level: RiskLevel = RiskLevel.MEDIUM
+    permission: PermissionLevel = PermissionLevel.READ
+    mutates_workspace: bool = False
+    requires_network: bool = False
+    default_timeout_seconds: float = 120.0
+    handler: Callable | None = None
+    
+    def to_openai_format(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.input_schema,
+            }
+        }
+
+@dataclass
+class ToolResult:
+    status: ToolStatus
+    output: str
+    evidence: str = ""
+    error: str = ""
+    duration: float = 0.0
+    
+    @property
+    def success(self) -> bool:
+        return self.status == ToolStatus.SUCCESS
+
+class ToolRegistry:
+    def __init__(self):
+        self._tools: dict[str, ToolDefinition] = {}
+        
+    def register(self, tool: ToolDefinition) -> None:
+        self._tools[tool.name] = tool
+        
+    def get(self, name: str) -> ToolDefinition | None:
+        return self._tools.get(name)
+        
+    def list_tools(self) -> list[ToolDefinition]:
+        return list(self._tools.values())
+
+# Global registry instance
+registry = ToolRegistry()
+
 # ── Tool definitions (OpenAI function-calling format) ────────────────────────
 
-TOOL_DEFINITIONS = [
+RAW_TOOL_DEFINITIONS = [
     # ─── FILE TOOLS ──────────────────────────────────────────────────────
     {
         "type": "function",
@@ -756,7 +834,7 @@ TOOL_DEFINITIONS = [
     },
 ]
 
-TOOL_DEFINITIONS.extend(
+RAW_TOOL_DEFINITIONS.extend(
     [
         {
             "type": "function",
@@ -938,7 +1016,7 @@ TOOL_DEFINITIONS.extend(
     ],
 )
 
-TOOL_DEFINITIONS.extend(
+RAW_TOOL_DEFINITIONS.extend(
     [
         {
             "type": "function",
@@ -1016,6 +1094,15 @@ TOOL_DEFINITIONS.extend(
         },
     ]
 )
+
+TOOL_DEFINITIONS = [
+    ToolDefinition(
+        name=raw["function"]["name"],
+        description=raw["function"]["description"],
+        input_schema=raw["function"].get("parameters", {}),
+    )
+    for raw in RAW_TOOL_DEFINITIONS
+]
 
 # ── Ignore patterns ─────────────────────────────────────────────────────────
 
@@ -1185,16 +1272,16 @@ def _resolve_path(path_str: str) -> Path:
 # ── Tool implementations ────────────────────────────────────────────────────
 
 
-def tool_read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> str:
+def tool_read_file(path: str, start_line: int | None = None, end_line: int | None = None) -> ToolResult:
     """Read file contents with line numbers."""
     try:
         p = _resolve_path(path)
         if not p.exists():
-            return f"❌ File not found: {path}"
+            return ToolResult(status=ToolStatus.FAILURE, output=f"❌ File not found: {path}", error="File not found")
         if not p.is_file():
-            return f"❌ Not a file: {path}"
+            return ToolResult(status=ToolStatus.FAILURE, output=f"❌ Not a file: {path}", error="Not a file")
         if p.stat().st_size > 2 * 1024 * 1024:
-            return f"❌ File too large ({_format_size(p.stat().st_size)}). Use search_code instead."
+            return ToolResult(status=ToolStatus.FAILURE, output=f"❌ File too large ({_format_size(p.stat().st_size)}). Use search_code instead.", error="File too large")
 
         with open(p, "r", encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
@@ -1221,29 +1308,31 @@ def tool_read_file(path: str, start_line: int | None = None, end_line: int | Non
         if start_line or end_line:
             header += f"  [showing lines {start}-{end}]"
 
-        return header + "\n" + "\n".join(numbered)
+        return ToolResult(status=ToolStatus.SUCCESS, output=header + "\n" + "\n".join(numbered))
     except (LookupError, OSError, TypeError, ValueError) as e:
-        return f"❌ Error reading file: {e}"
+        return ToolResult(status=ToolStatus.FAILURE, output=f"❌ Error reading file: {e}", error=str(e))
 
 
 def tool_write_file(path: str, content: str) -> str:
     """Write content to a file, creating directories as needed. Tracked for undo."""
     try:
+        from nexus.mutation import MutationController
         p = _resolve_path(path)
 
         # Snapshot before writing
         history = get_history()
         snapshot = history.snapshot_before_write(str(p))
 
-        p.parent.mkdir(parents=True, exist_ok=True)
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(content)
+        mutator = MutationController(p.parent if p.parent.exists() else p.parent.parent)
+        res = mutator.write_file(p, content)
+        if not res.success:
+            return f"❌ Error writing file: {res.error}"
 
         # Record the change
         history.record_change(str(p), "write_file", snapshot)
 
         line_count = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
-        return f"✅ Wrote {line_count} lines to {p}"
+        return f"✅ Wrote {line_count} lines to {p}\nDiff:\n{res.diff}" if res.diff else f"✅ Wrote {line_count} lines to {p}"
     except (OSError, TypeError, ValueError) as e:
         return f"❌ Error writing file: {e}"
 
@@ -1300,14 +1389,17 @@ def tool_edit_file(path: str, old_text: str, new_text: str) -> str:
         snapshot = history.snapshot_before_write(str(p))
 
         new_content = content.replace(target_old, new_text, 1)
-        with open(p, "w", encoding="utf-8") as f:
-            f.write(new_content)
+        from nexus.mutation import MutationController
+        mutator = MutationController(p.parent)
+        res = mutator.write_file(p, new_content)
+        if not res.success:
+            return f"❌ Error editing file: {res.error}"
 
         history.record_change(str(p), "edit_file", snapshot)
 
         old_lc = old_text.count("\n") + 1
         new_lc = new_text.count("\n") + 1
-        return f"✅ Edited {p.name}: replaced {old_lc} lines → {new_lc} lines"
+        return f"✅ Edited {p.name}: replaced {old_lc} lines → {new_lc} lines\nDiff:\n{res.diff}"
     except (LookupError, OSError, TypeError, ValueError) as e:
         return f"❌ Error editing file: {e}"
 
@@ -1351,11 +1443,16 @@ def tool_patch_file(path: str, start_line: int, end_line: int, new_content: str)
             end_line = min(end_line, len(lines))
             lines[start_line - 1 : end_line] = new_lines
 
-        with open(p, "w", encoding="utf-8") as f:
-            f.writelines(lines)
+        new_content_final = "".join(lines)
+
+        from nexus.mutation import MutationController
+        mutator = MutationController(p.parent)
+        res = mutator.write_file(p, new_content_final)
+        if not res.success:
+            return f"❌ Error patching file: {res.error}"
 
         history.record_change(str(p), "patch_file", snapshot)
-        return f"✅ Patched {p.name}: lines {start_line}-{end_line} → {len(new_lines)} new lines"
+        return f"✅ Patched {p.name}: lines {start_line}-{end_line} → {len(new_lines)} new lines\nDiff:\n{res.diff}"
     except (LookupError, OSError, TypeError, ValueError) as e:
         return f"❌ Error patching file: {e}"
 
@@ -3017,13 +3114,70 @@ def normalize_tool_arguments(name: str, args: dict) -> dict:
     return args
 
 
-def execute_tool(name: str, arguments: dict) -> str:
+def execute_tool(name: str, arguments: dict) -> ToolResult:
     """Execute a tool by name with the given arguments."""
     arguments = normalize_tool_arguments(name, arguments)
-    fn = TOOL_DISPATCH.get(name)
-    if not fn:
-        return f"❌ Unknown tool: {name}"
+    tool_def = registry.get(name)
+    if not tool_def:
+        return ToolResult(
+            status=ToolStatus.INVALID_INPUT,
+            output=f"❌ Unknown tool: {name}",
+            error=f"Unknown tool: {name}"
+        )
     try:
-        return fn(**arguments)
+        if not tool_def.handler:
+            return ToolResult(
+                status=ToolStatus.FAILURE,
+                output=f"❌ No handler for tool: {name}"
+            )
+        result = tool_def.handler(**arguments)
+        if isinstance(result, ToolResult):
+            return result
+        return ToolResult(status=ToolStatus.SUCCESS, output=str(result))
     except Exception as e:
-        return f"❌ Tool execution failed for {name}: {e}"
+        return ToolResult(
+            status=ToolStatus.FAILURE,
+            output=f"❌ Tool execution failed for {name}: {e}",
+            error=str(e)
+        )
+
+# Initialize registry with RAW_TOOL_DEFINITIONS
+for raw_tool in RAW_TOOL_DEFINITIONS:
+    fn_def = raw_tool.get("function", {})
+    name = fn_def.get("name")
+    if not name:
+        continue
+        
+    handler = TOOL_DISPATCH.get(name)
+    
+    # Determine flags based on name (legacy mapping)
+    mutates = name in (
+        "write_file", "edit_file", "patch_file", "multi_edit", 
+        "git_commit", "git_branch", "run_command", "run_process", "process_run"
+    )
+    network = name in (
+        "web_fetch", "web_search", "github_list_issues", 
+        "github_view_issue", "github_create_pr", "api_check"
+    )
+    
+    perm = PermissionLevel.WRITE if mutates else PermissionLevel.READ
+    if network:
+        perm = PermissionLevel.NETWORK
+        
+    risk = RiskLevel.HIGH if mutates or network else RiskLevel.LOW
+    if name in ("run_command", "run_process", "process_run"):
+        risk = RiskLevel.DANGEROUS
+        perm = PermissionLevel.EXECUTE
+
+    tool = ToolDefinition(
+        name=name,
+        description=fn_def.get("description", ""),
+        input_schema=fn_def.get("parameters", {}),
+        output_schema={},
+        risk_level=risk,
+        permission=perm,
+        mutates_workspace=mutates,
+        requires_network=network,
+        handler=handler
+    )
+    registry.register(tool)

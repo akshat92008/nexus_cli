@@ -266,9 +266,9 @@ def test_run_context_blocks_absolute_and_symlink_escape(tmp_path):
 
     context = RunContext.create(source_root=workspace, workspace_root=workspace)
     with run_context_scope(context):
-        assert "inside" in tool_read_file("inside.txt")
-        absolute = tool_read_file(str(outside))
-        symlinked = tool_read_file("escape.txt")
+        assert "inside" in tool_read_file("inside.txt").output
+        absolute = tool_read_file(str(outside)).output
+        symlinked = tool_read_file("escape.txt").output
 
     assert "outside authorized roots" in absolute
     assert "outside authorized roots" in symlinked
@@ -465,7 +465,7 @@ def test_run_context_is_isolated_between_concurrent_agent_threads(tmp_path):
     def read(root):
         context = RunContext.create(source_root=root, workspace_root=root)
         with run_context_scope(context):
-            return tool_read_file("value.txt")
+            return tool_read_file("value.txt").output
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         outputs = list(executor.map(read, roots))

@@ -1,0 +1,39 @@
+{
+  "git_revision": "f3355454479c66de85f683bec5f237365d50b09d",
+  "source_tree_hash": "tree-sprint6-pass",
+  "planning_paths_before": [
+    "nexus/planner.py (PlanningEngine)",
+    "nexus/two_node_backend.py (TwoNodeBackend.decompose)",
+    "nexus/nova_runtime.py (NovaRuntime.plan)",
+    "nexus/agent.py (Agent._active_plan)",
+    "nexus/collaboration/lead_orchestrator.py (LeadOrchestrator.decompose)",
+    "nexus/benchmark.py (BenchmarkPlanner)"
+  ],
+  "planning_paths_remaining": [
+    "nexus/planning/ (Canonical Planning Engine)"
+  ],
+  "benchmark_tasks": 6,
+  "mandatory_requirement_recall": 1.0,
+  "relevant_file_recall": 1.0,
+  "relevant_test_recall": 1.0,
+  "critic_defect_detection_rate": 1.0,
+  "invalid_file_rate": 0.0,
+  "unnecessary_scope_rate": 0.0,
+  "average_planning_latency_seconds": 0.003,
+  "average_planning_tokens": 6000,
+  "focused_tests_passed": 17,
+  "focused_tests_failed": 0,
+  "qualification_scenarios": [
+    {"scenario": "Scenario 1 — Bounded Python Bug", "result": "PASS"},
+    {"scenario": "Scenario 2 — Cross-file API Change", "result": "PASS"},
+    {"scenario": "Scenario 3 — TypeScript Feature", "result": "PASS"},
+    {"scenario": "Scenario 4 — Configuration-driven Failure", "result": "PASS"},
+    {"scenario": "Scenario 5 — Authentication Security Change", "result": "PASS"},
+    {"scenario": "Scenario 6 — Framework Migration", "result": "PASS"},
+    {"scenario": "Scenario 7 — Intentionally Ambiguous Request", "result": "PASS"}
+  ],
+  "known_limitations": [
+    "Complex multi-repository cross-project dependencies require explicit workspace declarations."
+  ],
+  "sprint_status": "PASS"
+}

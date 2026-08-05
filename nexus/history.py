@@ -147,6 +147,13 @@ class FileHistory:
             f"  {m}" for m in messages
         )
 
+    def rollback(self, run_id: str | None = None) -> bool:
+        """Rollback all recorded changes in this history session."""
+        if not self.changes:
+            return False
+        ok, _ = self.undo_changes(len(self.changes))
+        return ok
+
     def get_recent_diffs(self, count: int = 10) -> str:
         """Render diffs for the most recent operations without changing history."""
         if not self.changes:

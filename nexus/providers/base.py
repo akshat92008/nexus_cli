@@ -163,3 +163,27 @@ class Provider(ABC):
     def get_capabilities(self) -> list[str]:
         """Return a list of capabilities this provider supports."""
         return self.capabilities.labels()
+
+class ModelProvider(Provider):
+    """
+    Modern target interface for Sprint 3.
+    """
+    @abstractmethod
+    def complete(self, messages: list[dict], tools: list[dict] | None = None, **kwargs: Any) -> Any:
+        pass
+        
+    @abstractmethod
+    def stream(self, messages: list[dict], tools: list[dict] | None = None, **kwargs: Any) -> Any:
+        pass
+
+    @abstractmethod
+    def supports_tools(self) -> bool:
+        pass
+
+    @abstractmethod
+    def supports_structured_output(self) -> bool:
+        pass
+
+    @abstractmethod
+    def estimate_cost(self, prompt_tokens: int, completion_tokens: int) -> float:
+        pass

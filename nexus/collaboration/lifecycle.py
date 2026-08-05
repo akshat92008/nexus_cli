@@ -9,7 +9,9 @@ and guarantees cleanup even on failure paths.
 from __future__ import annotations
 
 import logging
+import os
 import shutil
+import subprocess
 import tempfile
 import uuid
 from dataclasses import dataclass, field
@@ -43,6 +45,8 @@ class WorkerRecord:
     assignment_id: str
     state: WorkerState
     workspace: Optional[WorkerWorkspace]
+    baseline_revision: str = "main"
+    baseline_tree_hash: str = ""
     created_at: datetime = field(default_factory=lambda: datetime.now(tz=timezone.utc))
     failed_cleanup: bool = False
     failure_reason: Optional[str] = None
@@ -56,7 +60,7 @@ class WorkerLifecycleManager:
     Rules enforced:
       - Investigation agents default to READ_ONLY_SHARED_SNAPSHOT.
       - Mutation agents receive ISOLATED_WORKTREE or ISOLATED_TEMPORARY_COPY.
-      - Workers may not mutate the lead workspace.
+      - Workers may not mutate the lead workspace directly.
       - Workers may not write into another worker's workspace.
       - Cleanup is always attempted even on failure.
       - Failed cleanup is recorded and re-raised.
@@ -67,9 +71,11 @@ class WorkerLifecycleManager:
         self,
         lead_workspace_root: Path,
         base_temp_dir: Optional[Path] = None,
+        current_revision: str = "main",
     ) -> None:
         self._lead_root = lead_workspace_root.resolve()
         self._base_temp = (base_temp_dir or Path(tempfile.gettempdir())).resolve()
+        self._current_revision = current_revision
         self._workers: Dict[str, WorkerRecord] = {}
 
     # ------------------------------------------------------------------
@@ -83,6 +89,8 @@ class WorkerLifecycleManager:
             assignment_id=assignment.assignment_id,
             state=WorkerState.CREATED,
             workspace=None,
+            baseline_revision=self._current_revision,
+            baseline_tree_hash=self._get_baseline_tree_hash(),
         )
         self._workers[worker_id] = record
         logger.info("WorkerLifecycleManager: created worker %s for assignment %s",
@@ -107,20 +115,48 @@ class WorkerLifecycleManager:
         is_writable = strategy != WorkspaceStrategy.READ_ONLY_SHARED_SNAPSHOT
 
         if strategy == WorkspaceStrategy.READ_ONLY_SHARED_SNAPSHOT:
-            workspace_root = self._lead_root  # shared, no copy
+            workspace_root = self._lead_root
         else:
-            # Create isolated temporary directory
             workspace_dir = self._base_temp / f"{_WORKER_WORKSPACE_PREFIX}{worker_id}"
-            workspace_dir.mkdir(parents=True, exist_ok=False)
+
+            # If ISOLATED_WORKTREE is requested and git repository exists, try git worktree
+            created_worktree = False
+            if strategy == WorkspaceStrategy.ISOLATED_WORKTREE and (self._lead_root / ".git").exists():
+                try:
+                    subprocess.run(
+                        ["git", "worktree", "add", "-b", f"worker-{worker_id[:8]}", str(workspace_dir), "HEAD"],
+                        cwd=str(self._lead_root),
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    created_worktree = True
+                except Exception as exc:
+                    logger.warning("Git worktree creation failed, falling back to temp copy: %s", exc)
+
+            if not created_worktree:
+                # Fall back to isolated copy
+                if workspace_dir.exists():
+                    shutil.rmtree(workspace_dir, ignore_errors=True)
+                workspace_dir.mkdir(parents=True, exist_ok=False)
+
+                # Copy files excluding hidden / build dirs
+                for item in self._lead_root.iterdir():
+                    if item.name.startswith(".") or item.name in ("__pycache__", "build", "dist", "node_modules"):
+                        continue
+                    dest = workspace_dir / item.name
+                    if item.is_dir():
+                        shutil.copytree(item, dest, symlinks=True)
+                    else:
+                        shutil.copy2(item, dest)
+
             workspace_root = workspace_dir
 
             # Protect lead workspace: ensure isolated root is NOT inside lead root
             try:
                 workspace_root.relative_to(self._lead_root)
-                # If we get here, it IS inside the lead root — that is wrong
                 raise WorkerLifecycleError(
-                    f"Isolated workspace {workspace_root} is inside lead workspace. "
-                    "Refusing to create."
+                    f"Isolated workspace {workspace_root} is inside lead workspace. Refusing to create."
                 )
             except ValueError:
                 pass  # Expected — workspace is outside lead root
@@ -157,35 +193,40 @@ class WorkerLifecycleManager:
     # ------------------------------------------------------------------
 
     def cleanup_worker(self, worker_id: str) -> bool:
-        """
-        Cleans up worker workspace.
-        Returns True on successful cleanup.
-        Raises CleanupFailure if workspace cannot be removed, but records
-        the failure internally so it can be reported.
-        Does NOT remove read-only shared snapshots (which are the lead root).
-        """
         record = self._get_record(worker_id)
         workspace = record.workspace
 
         if workspace is None or workspace.strategy == WorkspaceStrategy.READ_ONLY_SHARED_SNAPSHOT:
-            # Nothing to clean up for read-only shared workspace
             record.state = WorkerState.CLEANED_UP
             return True
 
         target = workspace.root_path
         try:
             if target.exists():
-                # Safety check: must not delete lead workspace
+                # Safety check
                 try:
                     target.relative_to(self._lead_root)
                     raise CleanupFailure(
-                        f"Refused to delete workspace at '{target}' because it is "
-                        "inside the lead workspace root."
+                        f"Refused to delete workspace at '{target}' because it is inside lead workspace root."
                     )
                 except ValueError:
-                    pass  # Expected — target is outside lead root
+                    pass
 
-                shutil.rmtree(target, ignore_errors=False)
+                # If git worktree was used, remove it
+                if workspace.strategy == WorkspaceStrategy.ISOLATED_WORKTREE and (self._lead_root / ".git").exists():
+                    try:
+                        subprocess.run(
+                            ["git", "worktree", "remove", "--force", str(target)],
+                            cwd=str(self._lead_root),
+                            check=False,
+                            capture_output=True,
+                        )
+                    except Exception:
+                        pass
+
+                if target.exists():
+                    shutil.rmtree(target, ignore_errors=False)
+
                 logger.info("WorkerLifecycleManager: cleaned up workspace %s for worker %s",
                             target, worker_id)
 
@@ -205,7 +246,6 @@ class WorkerLifecycleManager:
             raise CleanupFailure(msg) from exc
 
     def cleanup_all(self) -> Dict[str, bool]:
-        """Attempt cleanup for all workers. Returns {worker_id: success}."""
         results: Dict[str, bool] = {}
         for worker_id in list(self._workers):
             try:
@@ -215,7 +255,7 @@ class WorkerLifecycleManager:
         return results
 
     # ------------------------------------------------------------------
-    # Queries
+    # Queries & Helpers
     # ------------------------------------------------------------------
 
     def get_worker(self, worker_id: str) -> Optional[WorkerRecord]:
@@ -227,12 +267,21 @@ class WorkerLifecycleManager:
     def failed_cleanups(self) -> List[WorkerRecord]:
         return [w for w in self._workers.values() if w.failed_cleanup]
 
-    # ------------------------------------------------------------------
-    # Internal
-    # ------------------------------------------------------------------
-
     def _get_record(self, worker_id: str) -> WorkerRecord:
         record = self._workers.get(worker_id)
         if record is None:
             raise WorkerLifecycleError(f"Unknown worker '{worker_id}'.")
         return record
+
+    def _get_baseline_tree_hash(self) -> str:
+        try:
+            res = subprocess.run(
+                ["git", "write-tree"],
+                cwd=str(self._lead_root),
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return res.stdout.strip()
+        except Exception:
+            return "tree-hash-baseline-0"

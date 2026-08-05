@@ -34,16 +34,42 @@ def _fake_agent(tmp_path: Path):
     """Build a minimal fake Agent-like object for service tests."""
     agent = SimpleNamespace(
         working_dir=str(tmp_path),
+        run_context=SimpleNamespace(
+            source_root=tmp_path,
+            workspace_root=tmp_path,
+            restricted_directories=[],
+        ),
         model_key="test",
         model_cfg={"name": "test", "id": "test"},
-        mode_policy=SimpleNamespace(allow_shell_command=True, require_os_isolation=False),
+        mode_policy=SimpleNamespace(allow_shell_command=True, require_os_isolation=False, may_edit=True),
+        _enforce_plan_tool_contract=False,
+        history=[],
+        conversation_id="test-conv",
+        planner=SimpleNamespace(get_plan_context=lambda: ""),
         evidence=SimpleNamespace(records=lambda: []),
-        hooks=SimpleNamespace(),
+        hooks=SimpleNamespace(fire=lambda *a, **kw: None),
         reflection=None,
-        _tool_capabilities={},
+        _tool_capabilities={"read_file": SimpleNamespace(requires=lambda x: False)},
+        _external_tool_path_arguments={},
+        disallowed_tools=set(),
+        allowed_tools=None,
         _pending_confirmations={},
         _execute_tool_with_safety=lambda name, args, **kw: ("ok", True),
         _run_single_turn=lambda messages, emit_ui=True: ("done", []),
+        capabilities={"read_file": {}},
+        _permissions_used=set(),
+        _network_calls=[],
+        _active_plan=None,
+        policy=SimpleNamespace(decide=lambda *a, **kw: SimpleNamespace(action="allow", reason="")),
+        extensions=SimpleNamespace(loaded=lambda x: []),
+        additional_dirs=[],
+        plugin_loader=SimpleNamespace(plugins={}),
+        mcp=SimpleNamespace(is_mcp_tool=lambda x: False),
+        context_mgr=SimpleNamespace(
+            track_file_access=lambda *a, **kw: None,
+            track_file_imports=lambda *a, **kw: None,
+            summarize_file=lambda *a, **kw: None,
+        ),
     )
     agent._run_finalizer = MagicMock()
     agent._run_finalizer.finish = lambda *a, **kw: {"status": "VERIFIED"}
@@ -105,6 +131,11 @@ class TestToolExecutionController:
     def test_execute_delegates_to_agent(self, tmp_path):
         agent = _fake_agent(tmp_path)
         ctrl = ToolExecutionController(agent)
+        
+        # Mock the dispatch to avoid actually reading files in this unit test
+        from nexus.tools import ToolResult, ToolStatus
+        ctrl._dispatch_tool_execution = lambda name, args: ToolResult(status=ToolStatus.SUCCESS, output="ok")
+        
         result, ok = ctrl.execute("read_file", {"path": "a.py"})
         assert result == "ok"
         assert ok is True

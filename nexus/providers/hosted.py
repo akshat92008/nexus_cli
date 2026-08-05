@@ -7,11 +7,11 @@ from typing import Any
 
 # Temporarily alias NvidiaClient until it's fully migrated out of api.py
 from nexus.api import NvidiaClient
-from nexus.providers.base import ChatRequest, Provider, ProviderCapabilities
+from nexus.providers.base import ChatRequest, Provider, ProviderCapabilities, ModelProvider
 
 logger = logging.getLogger(__name__)
 
-class HostedProvider(Provider):
+class HostedProvider(ModelProvider):
     """Adapter for hosted API providers (OpenAI-compatible).
 
     Wraps NvidiaClient and implements the full Provider protocol including
@@ -132,3 +132,20 @@ class HostedProvider(Provider):
         if hasattr(self._client, "count_tokens"):
             return self._client.count_tokens(text)
         return len(text) // 4  # Fallback rough estimate
+
+    # ── ModelProvider target interface ───────────────────────────────────────
+
+    def complete(self, messages: list[dict], tools: list[dict] | None = None, **kwargs: Any) -> Any:
+        return self.chat_sync(self.model_id, messages, tools=tools, **kwargs)
+
+    def stream(self, messages: list[dict], tools: list[dict] | None = None, **kwargs: Any) -> Any:
+        return self.chat(self.model_id, messages, tools=tools, stream=True, **kwargs)
+
+    def supports_tools(self) -> bool:
+        return self.capabilities.tools
+
+    def supports_structured_output(self) -> bool:
+        return self.capabilities.json_mode
+
+    def estimate_cost(self, prompt_tokens: int, completion_tokens: int) -> float:
+        return (prompt_tokens + completion_tokens) * 0.00001

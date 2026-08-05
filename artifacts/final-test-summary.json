@@ -1,0 +1,11 @@
+{
+  "pytest_version": "9.1.1",
+  "python_version": "3.13.2",
+  "platform": "darwin",
+  "total_collected": 834,
+  "passed": 830,
+  "skipped": 4,
+  "failed": 0,
+  "duration_seconds": 64.6,
+  "timestamp": "2026-08-05T11:18:36Z"
+}

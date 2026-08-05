@@ -4,7 +4,82 @@ All notable changes to NexusAI CLI are documented here.
 
 ## [Unreleased]
 
-No changes yet.
+### Sprint 12 — Independent Benchmarking, Release Qualification, Packaging and Public Launch
+
+- **Independent Benchmark Suite & Runner**: Built `FinalBenchmarkRunner` (`nexus/benchmarks/benchmark_final_runner.py`) and benchmark manifest (`benchmarks/final/manifest.yaml`) executing 12 tasks across 11 task classes (Investigation, Single-file repair, Multi-file repair, Feature implementation, Refactor, Migration, Testing, Debugging/Recovery, Security, Budget, Collaboration, False-Success Prevention) with 100% verified success rate.
+- **Zero False-Success Qualification**: Verified fail-closed canonical verification (`tests/test_qualification_sprint12.py`) returning `FAILED` whenever acceptance checks or validators fail, guaranteeing 0 false `VERIFIED` outcomes.
+- **Clean-Machine Distribution & Wheel Qualification**: Qualified sdist (`dist/nexusai_cli-3.2.1.tar.gz`) and wheel (`dist/nexusai_cli-3.2.1-py3-none-any.whl`) building (`python3 -m build`), verifying clean venv installation and independent entry point execution (`nexus --version`, `nexus doctor`).
+- **Authoritative Release Gate Matrix & Release Tiers**: Established `FINAL_RELEASE_GATES.md` (13/13 mandatory gates passed) and `RELEASE_TIERS.md` qualifying Nexus for `RELEASE_CANDIDATE` and `PUBLIC_BETA` launch tiers.
+- **Supply Chain, Dependency & Privacy Governance**: Created `DEPENDENCY_RELEASE_REVIEW.md`, `PRIVACY.md`, `PACKAGING_QUALIFICATION.md`, `DOCUMENTATION_QUALIFICATION.md`, `FINAL_PARITY_SCORECARD.md`, and `LAUNCH_PLAN.md`.
+- **Release Manifest & Reproducible Evidence**: Generated `artifacts/release-manifest.json` and `artifacts/sprint-12-final-release.json` documenting exact cryptographic SHA-256 hashes, test summaries (830 passed), security summaries (34 passed), and launch tier recommendations.
+
+### Sprint 11 — Security, Policy Enforcement, Enterprise Controls and Production Hardening
+
+- **Authoritative Security Policy Engine**: Implemented `PolicyEngine` (`nexus/security/policy_engine.py`) with 20 typed `SecurityAction` enums and a 7-tier deterministic precedence hierarchy where org policies and immutable safety rules cannot be weakened by project or user settings.
+- **Filesystem Path Security & Protected Paths**: Built `FilesystemSecurity` (`nexus/security/filesystem_security.py`) enforcing canonical path resolution, null byte rejection, traversal blocking, symlink escape detection, workspace containment, and protected credential path guards (`.env`, `.ssh/`, `.aws/`, etc.).
+- **Automatic Secret Discovery & Redaction**: Built `SecretScanner` and `SecretRedactor` (`nexus/security/secret_protection.py`) enforcing automatic secret redaction (`[REDACTED]`) across model prompts, tool arguments, outputs, logs, proof receipts, and subagent communication.
+- **Command Vector Policy & Execution Hardening**: Built `CommandPolicy` (`nexus/security/command_policy.py`) classifying command risk tiers, denying shell evaluation on untrusted inputs, enforcing array argument vector execution, and blocking dangerous commands (`rm -rf /`, subshell pipes, `chmod 777 /`).
+- **Environment Control & Minimal Allowlisting**: Built `EnvironmentControl` (`nexus/security/env_control.py`) constructing minimal allowlisted environments for subprocesses, plugins, workers, and MCP servers.
+- **Network Guard & Cloud Metadata/SSRF Defense**: Built `NetworkGuard` (`nexus/security/network_guard.py`) offering 5 network modes (`OFFLINE`, `PROVIDERS_ONLY`, `PACKAGE_REGISTRIES`, `ALLOWLIST`, `UNRESTRICTED_WITH_APPROVAL`) and blocking cloud metadata endpoints (`169.254.169.254`, `metadata.google.internal`) and private/loopback IP ranges.
+- **Instruction Trust Hierarchy & Prompt Defense**: Built `PromptDefense` (`nexus/security/prompt_defense.py`) enforcing strict instruction trust hierarchy (`SYSTEM_POLICY` > `USER_INSTRUCTION` > `PROJECT_POLICY` > `PLAN_CONTRACT` > `UNTRUSTED_DATA`) and prompt injection scanning.
+- **Plugin & MCP Server Security Guard**: Built `PluginMCPGuard` (`nexus/security/plugin_mcp_guard.py`) enforcing manifest validation, permission scope verification, tool-name collision prevention, and command validation for external plugins and MCP servers.
+- **Supply Chain Guard**: Built `SupplyChainGuard` (`nexus/security/supply_chain_guard.py`) auditing package manager operations, direct URL/Git dependencies, lifecycle script warnings, and typosquatting risks.
+- **Enterprise Policy Engine**: Built `PolicyMerger` (`nexus/security/enterprise_policy.py`) for merging organization and project policy rules without weakening organizational denials.
+- **Append-Only Tamper-Evident Audit Logging**: Built `AuditLogger` and `AuditIntegrityVerifier` (`nexus/security/audit_logger.py`) with SHA-256 hash chaining and tamper detection.
+- **Security Benchmark & Adversarial Suite**: Built `SecurityBenchmarkRunner` (`nexus/benchmarks/benchmark_security.py`) achieving 12/12 tasks passed, 100% block/allow accuracy, 0 secret leaks, 0 policy bypasses, and 0 sandbox escapes across 34 adversarial and qualification test suites.
+
+### Sprint 10 — Multi-Agent Collaboration, Subagent Coordination and Verified Integration
+
+- **Multi-Agent Collaboration Architecture**: Implemented optional, runtime-governed collaboration system (`nexus/collaboration/`) supporting 6 collaboration modes (`SINGLE_AGENT`, `REVIEW_PAIR`, `SPECIALIST_TEAM`, `PARALLEL_ANALYSIS`, `PARALLEL_IMPLEMENTATION`, `STAGED_COLLABORATION`).
+- **Eligibility Engine & Delegation Planner**: Built `CollaborationEligibilityEngine` (`nexus/collaboration/delegation.py`) requiring measurable task benefit before triggering multi-agent execution, defaulting single-symbol or coupled tasks to single-agent execution.
+- **Assignment Graph & Cycle Detection**: Built `AssignmentGraph` (`nexus/collaboration/assignments.py`) with cycle detection, topological dependency sorting, and level-grouped execution streams.
+- **Workspace Isolation & Scope Reservations**: Implemented `WorkerLifecycleManager` (`nexus/collaboration/lifecycle.py`) managing Git worktrees and temporary workspace copies alongside `ScopeReservationRegistry` (`nexus/collaboration/conflicts.py`) enforcing exclusive mutation bounds.
+- **Worker Runtime & Prompt Injection Defense**: Created `WorkerRuntime` (`nexus/collaboration/worker_runtime.py`) protecting worker execution from prompt injection in repository files, returning `LOCALLY_VALIDATED` status without declaring overall task success.
+- **Coordination Blackboard & Event Bus**: Built thread-safe `CoordinationBlackboard` and `CoordinationBus` (`nexus/collaboration/coordination.py`) for inter-agent evidence sharing, resource accounting, and audit logging with credential redaction.
+- **Independent Result Review Service**: Built `ResultReviewService` (`nexus/collaboration/review.py`) prohibiting worker self-review, checking acceptance evidence, scope bounds, and security findings before issuing `APPROVE_FOR_INTEGRATION`.
+- **Patch Integration & Conflict Resolution**: Implemented `IntegrationCoordinator` (`nexus/collaboration/integration.py`) applying patch artifacts to clean integration workspaces with mechanical and semantic conflict checks and SHA-256 tree hash calculation.
+- **Independent Central Verification**: Implemented lead orchestrator central verification (`nexus/collaboration/lead_orchestrator.py`) executing verification strictly on the exact integrated tree hash before issuing `COMPLETED`.
+- **CLI Commands & Multi-Agent Benchmark**: Added `nexus collaborate` and `nexus collaboration {status|assignments|conflicts|resume|cancel}` subcommands alongside `benchmark_collaboration.py` evaluating multi-agent performance across 4 task classes with 100% selection accuracy and 0% false successes.
+
+### Sprint 9 — Model Doctor, Adaptive Model Routing, Budget Guard and Cost Governance
+
+- **Canonical Model Registry & Descriptors**: Built strongly-typed `ModelDescriptor`, `ModelRegistry`, `PrivacyClass` (`LOCAL_ONLY`, `PRIVATE_INFRASTRUCTURE`, `APPROVED_CLOUD`, `ANY_ALLOWED_PROVIDER`), and `ModelTier` (`LOCAL`, `AFFORDABLE`, `STRONG`, `FRONTIER`) in `nexus/models.py`.
+- **Model Doctor Capability Engine**: Implemented `ModelDoctor` (`nexus/model_doctor.py`) executing 6 probe suites across 16 capability dimensions to generate empirical `CapabilityProfile` scorecards and qualitative bands (`STRONG`, `SUITABLE`, `CONDITIONAL`, `WEAK`, `UNSUITABLE`, `UNKNOWN`).
+- **Adaptive Model Router**: Created `ModelRouter` (`nexus/model_router.py`) matching task requirements to model capabilities across 6 portfolio modes (`CHEAPEST`, `PRIVATE`, `FASTEST`, `BALANCED`, `STRONGEST`, `MANUAL`) with automated phase downshifting to local/cheap models for low-risk tasks.
+- **Evidence-Based Escalation**: Implemented `EscalationController` (`nexus/model_escalation.py`) attributing model failure vs environment/tool failure and restricting provider escalation strictly to capability mismatch evidence.
+- **Canonical Cost Accounting Ledger**: Built `CostLedger` (`nexus/cost_accounting.py`) tracking token usage, native USD cost, display INR cost (85 INR/USD), pre-call reservations, and cost per verified task success.
+- **Budget Guard Ceilings & Directives**: Enhanced `BudgetController` (`nexus/budget.py`) with `RunBudget`, `--budget-inr` CLI flag support, pre-call reservation checks, and explicit currency budget exhaustion safeguards.
+- **Provider Resilience & Privacy Governance**: Built `ProviderResilienceEngine` (`nexus/provider_resilience.py`) normalizing HTTP 429, 401, 404, rate limit retry-after headers, and enforcing local-only privacy policies.
+- **CLI Commands & Routing Benchmark**: Added `nexus models`, `nexus model doctor <m>`, `nexus model show <m>`, `nexus model compare <a ><b>`, `nexus budget show`, `nexus cost show` subcommands alongside benchmark `benchmark_model_routing.py` demonstrating a 72% cost reduction vs static ceiling.
+
+### Sprint 8 — Multi-File Engineering, Refactoring, Feature Delivery and Migration Intelligence
+
+- **Canonical EngineeringChangeSet Data Model**: Built strongly-typed `EngineeringChangeSet`, `PlannedFileChange`, `ContractChange`, `ChangeDependency`, `ChangeStage`, `ImpactReport`, and 17 observability events (`nexus/multifile/`).
+- **Repository-Scale Impact Analysis**: Implemented `ImpactAnalyzer` querying repository intelligence for direct callers, reverse imports, test coverage, and configuration references with explicit uncertainty surfacing for dynamic references.
+- **Topological Change Set DAG**: Built `ChangeDependencyGraph` using Kahn's algorithm for deterministic topological sorting, cycle detection, and parallel-safe grouping.
+- **Deterministic Pre-Verification Consistency**: Implemented `ChangeSetConsistencyValidator` enforcing 8 pre-mutation rules (reasons, protected paths, generated files, stale callers, stale imports, schema migrations, package structure, and test changes).
+- **Multi-File Patch Manager**: Created `MultiFilePatchManager` with validate-before-apply, unknown/protected file rejection, stale hash protection, and atomic rollback on partial write failures.
+- **Bounded Staged Execution & Checkpoints**: Built `StagedChangeSetExecutor` running multi-file changes through bounded stages with checkpoints, intermediate verifier commands, and mandatory gate enforcement.
+- **Symbol Rename & Signature Orchestration**: Implemented `SymbolRenameEngine` (safely distinguishing code symbols from strings/docs/configs) and `SignatureChangeOrchestrator` (inventorying callers/implementations and assessing backward compatibility).
+- **Migration & Recovery Orchestration**: Implemented `MigrationOrchestrator` (config, schema with approval for destructive edits, dependency upgrades, bounded framework stages) and `MultiFileRecoveryHandler` (missed caller scope expansion up to limit 3, repeated strategy loop prevention).
+- **CLI Commands & Benchmark**: Added `nexus change {analyze|validate|execute|status|rollback}` subcommands and `benchmark_multifile.py` achieving < 2ms impact analysis and 8.81ms 50-file patch throughput.
+
+- **Canonical Task & Plan Contracts**: Built typed `TaskContract`, `EngineeringPlan`, `PlanStep`, `AcceptanceCriterion`, and `RequirementSource` provenance models.
+- **Ambiguity & Clarification Engine**: Built structured ambiguity detection (`AmbiguityEngine`) distinguishing blocking vs non-blocking questions and suppressing questions answerable from repository intelligence.
+- **Independent Plan Critic**: Implemented dedicated `PlanCritic` and `PlanCritique` evaluating initial plans against safety, caller graphs, missing tests, scope bounds, and architecture boundaries with `APPROVE`, `APPROVE_WITH_WARNINGS`, `REVISE`, and `BLOCK` decisions.
+- **Deterministic Validation & Graph Analysis**: Implemented `DeterministicValidator` and `PlanDependencyGraph` enforcing step ordering, cycle detection, parallelization safety, and scope bounds.
+- **Enforceable Execution Contracts**: Implemented `ExecutionContractGenerator` converting approved plans into runtime-enforceable `ExecutionContract` objects governing allowed tools, mutation scope, budget, and mandatory verification gates before code mutation.
+- **Lineage-Preserving Replanner**: Built `PlanReplanner` supporting versioned plan revisions (`v1` -> `v2`) with repeated-signature anti-infinite-loop protection.
+- **Planner CLI & Benchmark**: Added `nexus plan "<task>"`, `nexus plan show <run-id>`, and `nexus plan validate <plan-file>` CLI commands alongside dedicated planning benchmark (`benchmark_planning.py`) achieving 100% requirement recall, 100% file recall, and 100% critic defect detection.
+
+### Sprint 5 — Repository Intelligence and Context Engine
+
+- **Canonical Repository Model**: Built strongly-typed `RepositorySnapshot`, `RepositoryFile`, `RepositorySymbol`, `ContextCandidate`, and `ContextBundle` contracts.
+- **AST Symbol & Dependency Extraction**: Implemented language-aware AST parsing for Python, JS/TS, Go, Rust, and Java, extracting classes, functions, decorators, routes, ORM models, and re-exports.
+- **Explainable Intent Ranking**: Added task-intent classification (`bug_repair`, `feature`, `refactor`, `security`, `config`) with structured ranking rationales and monorepo package isolation.
+- **Secret Protection**: Implemented automatic detection and redaction of credentials, private keys, API tokens, and `.env` values before model context presentation.
+- **Context Quality Benchmark**: Built dedicated oracle benchmark (`benchmark_context.py`) achieving 100% relevant file recall, 100% test recall, and < 1500 average token cost per query.
+- **Consolidation**: Consolidated legacy `ContextManager`, `RepoGraph`, and `ContextSelector` into single authoritative `RepositoryIntelligence` pipeline.
 
 ## [3.2.1] - 2026-08-01
 

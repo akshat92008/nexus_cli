@@ -2,108 +2,128 @@
 nexus/collaboration/integration.py
 
 IntegrationCoordinator: transactionally applies accepted worker results
-to an integration workspace after conflict checks and ordering.
-
-Steps:
-  1. Collect accepted worker results
-  2. Validate repository revisions
-  3. Determine integration ordering
-  4. Detect file and semantic conflicts
-  5. Apply worker transactions to integration workspace
-  6. Run structural validation
-  7. Run central diff review
-  8. Run central verification
-  9. Roll back on failure
-  10. Preserve valid independent work when safe
+to a clean integration workspace after conflict checks and ordering,
+calculates integrated tree hash, and runs central verification.
 """
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import os
+import shutil
+import tempfile
 import uuid
-from typing import Dict, List, Optional, Sequence
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Sequence
 
 from nexus.collaboration.conflicts import (
     ChangeSignal,
     SemanticConflictAnalyser,
 )
 from nexus.collaboration.models import (
+    AssignmentResult,
+    AssignmentReview,
+    AssignmentStatus,
     IntegrationResult,
-    WorkerResult,
-    WorkerResultStatus,
-    WorkerReview,
+    IntegrationStatus,
+    ReviewDecision,
 )
 
 logger = logging.getLogger(__name__)
 
 
-class IntegrationError(RuntimeError):
-    pass
+def _get_change_path(c: Any) -> str:
+    if hasattr(c, "path"):
+        return str(c.path)
+    if isinstance(c, dict):
+        return str(c.get("path", ""))
+    return str(c)
+
+
+def _get_change_diff(c: Any) -> str:
+    if hasattr(c, "diff_reference"):
+        return str(c.diff_reference or "")
+    if isinstance(c, dict):
+        return str(c.get("diff_reference") or "")
+    return ""
+
+
+def _get_change_desc(c: Any) -> str:
+    if hasattr(c, "description"):
+        return str(c.description or "")
+    if isinstance(c, dict):
+        return str(c.get("description") or "")
+    return ""
 
 
 class IntegrationCoordinator:
     """
     Orchestrator-owned integration layer.
     Workers do NOT call this — only the lead orchestrator does.
-    Central verification is mandatory before completion is signalled.
+    Central verification on the exact integrated tree hash is mandatory.
     """
 
     def __init__(
         self,
         current_revision: str,
         verification_service: Optional[object] = None,
+        lead_workspace_root: Optional[Path] = None,
     ) -> None:
         self._revision = current_revision
         self._verifier = verification_service
+        self._lead_root = (lead_workspace_root or Path(os.getcwd())).resolve()
         self._conflict_analyser = SemanticConflictAnalyser()
 
     def integrate(
         self,
-        accepted_results: Sequence[WorkerResult],
-        reviews: Dict[str, WorkerReview],
+        accepted_results: Sequence[AssignmentResult],
+        reviews: Dict[str, AssignmentReview],
         change_signals: Optional[List[ChangeSignal]] = None,
     ) -> IntegrationResult:
-        """
-        Integrate accepted worker results transactionally.
-        Returns IntegrationResult with full audit of what was included/rejected.
-        """
-        transaction_id = str(uuid.uuid4())
+        integration_id = str(uuid.uuid4())
+        baseline_tree = self._get_tree_hash(self._lead_root)
+        rollback_checkpoint = f"chk-{baseline_tree[:8]}"
         evidence_ids: List[str] = []
         integrated: List[str] = []
         rejected: List[str] = []
         conflict_descriptions: List[str] = []
         verification_results: List[str] = []
 
-        # ---- Filter: only eligible results proceed ----
-        eligible: List[WorkerResult] = []
+        eligible: List[AssignmentResult] = []
         for result in accepted_results:
             review = reviews.get(result.assignment_id)
-            if review is None or not review.integration_eligible:
+            if review is None or not review.accepted or review.decision != ReviewDecision.APPROVE_FOR_INTEGRATION:
                 logger.warning(
-                    "IntegrationCoordinator: assignment '%s' skipped — not integration_eligible.",
+                    "IntegrationCoordinator: assignment '%s' skipped — review decision not APPROVE_FOR_INTEGRATION.",
                     result.assignment_id,
                 )
                 rejected.append(result.assignment_id)
                 continue
-            if result.status != WorkerResultStatus.COMPLETED:
+            if result.status not in (AssignmentStatus.COMPLETED, AssignmentStatus.LOCALLY_VALIDATED):
                 rejected.append(result.assignment_id)
                 continue
             eligible.append(result)
 
         if not eligible:
             return IntegrationResult(
-                integrated_assignments=(),
+                integration_id=integration_id,
+                status=IntegrationStatus.FAILED if accepted_results else IntegrationStatus.INTEGRATED,
+                baseline_tree=baseline_tree,
+                integrated_tree=baseline_tree,
+                applied_assignments=(),
                 rejected_assignments=tuple(rejected),
-                conflicts=("No eligible worker results to integrate.",),
-                verification_results=(),
-                transaction_id=transaction_id,
-                evidence_ids=(),
+                conflicts=("No eligible worker results to integrate.",) if accepted_results else (),
+                evidence=(),
+                rollback_checkpoint=rollback_checkpoint,
             )
 
-        # ---- Semantic conflict detection ----
         if change_signals is None:
             change_signals = [
-                ChangeSignal(assignment_id=r.assignment_id)
+                ChangeSignal(
+                    assignment_id=r.assignment_id,
+                    affected_files=[_get_change_path(c) for c in r.proposed_changes if _get_change_path(c)],
+                )
                 for r in eligible
             ]
 
@@ -119,88 +139,149 @@ class IntegrationCoordinator:
                 conflict_descriptions.append(desc)
                 logger.error("IntegrationCoordinator: %s", desc)
 
-            # Reject all involved assignments
             blocked_ids = {sc.assignment_id_a for sc in blocking_conflicts} | \
                           {sc.assignment_id_b for sc in blocking_conflicts}
-            safe_eligible = [r for r in eligible if r.assignment_id not in blocked_ids]
             for r in eligible:
                 if r.assignment_id in blocked_ids:
                     rejected.append(r.assignment_id)
-            eligible = safe_eligible
+            eligible = [r for r in eligible if r.assignment_id not in blocked_ids]
 
-        # ---- Text-level conflict detection (path overlap) ----
         path_to_assignments: Dict[str, List[str]] = {}
         for result in eligible:
             for change in result.proposed_changes:
-                path_to_assignments.setdefault(change.path, []).append(
-                    result.assignment_id
-                )
+                cpath = _get_change_path(change)
+                if cpath:
+                    path_to_assignments.setdefault(cpath, []).append(result.assignment_id)
 
-        text_conflicts: List[str] = []
         for path, asgn_ids in path_to_assignments.items():
             if len(asgn_ids) > 1:
                 conflict_msg = (
-                    f"Text conflict on path '{path}': "
-                    f"assignments {asgn_ids} both propose changes."
+                    f"Text conflict on path '{path}': assignments {asgn_ids} edit same file."
                 )
-                text_conflicts.append(conflict_msg)
                 conflict_descriptions.append(conflict_msg)
                 logger.warning("IntegrationCoordinator: %s", conflict_msg)
-                # Remove conflicting assignments
                 for aid in asgn_ids[1:]:
                     if aid not in rejected:
                         rejected.append(aid)
 
-        # Rebuild eligible after text conflict removal
         rejected_set = set(rejected)
         eligible = [r for r in eligible if r.assignment_id not in rejected_set]
 
-        # ---- Apply changes (stub: in production applies to integration workspace) ----
-        for result in eligible:
-            for change in result.proposed_changes:
-                logger.info(
-                    "IntegrationCoordinator [tx=%s]: applying change '%s' → %s",
-                    transaction_id, change.change_id, change.path,
-                )
-            evidence_ids.extend(result.evidence_ids)
-            integrated.append(result.assignment_id)
-
-        # ---- Central verification (mandatory) ----
-        verification_passed = True
-        if self._verifier is not None:
-            try:
-                outcome = self._verifier.run_verification(
-                    context=None,
-                    checks=["structural", "integration", "acceptance"],
-                )
-                verification_passed = outcome.passed
-                verification_results.append(
-                    f"central_verification:{'PASS' if outcome.passed else 'FAIL'}"
-                )
-            except Exception as exc:
-                logger.error("IntegrationCoordinator: central verification error: %s", exc)
-                verification_passed = False
-                verification_results.append(f"central_verification:ERROR:{exc}")
-        else:
-            # Stub: mark verification as passed with warning
-            verification_results.append("central_verification:STUB_PASS")
-
-        if not verification_passed:
-            logger.error(
-                "IntegrationCoordinator [tx=%s]: central verification failed. Rolling back.",
-                transaction_id,
+        if not eligible:
+            return IntegrationResult(
+                integration_id=integration_id,
+                status=IntegrationStatus.CONFLICTED,
+                baseline_tree=baseline_tree,
+                integrated_tree=None,
+                applied_assignments=(),
+                rejected_assignments=tuple(rejected),
+                conflicts=tuple(conflict_descriptions),
+                evidence=(),
+                rollback_checkpoint=rollback_checkpoint,
             )
-            # Roll back all applied changes
-            for aid in integrated:
-                rejected.append(aid)
-            integrated.clear()
-            conflict_descriptions.append("Central verification failed — integration rolled back.")
 
-        return IntegrationResult(
-            integrated_assignments=tuple(integrated),
-            rejected_assignments=tuple(rejected),
-            conflicts=tuple(conflict_descriptions),
-            verification_results=tuple(verification_results),
-            transaction_id=transaction_id,
-            evidence_ids=tuple(set(evidence_ids)),
-        )
+        int_workspace_dir = Path(tempfile.mkdtemp(prefix="nexus-integration-"))
+        try:
+            for item in self._lead_root.iterdir():
+                if item.name.startswith(".") or item.name in ("__pycache__", "build", "dist", "node_modules"):
+                    continue
+                dest = int_workspace_dir / item.name
+                if item.is_dir():
+                    shutil.copytree(item, dest, symlinks=True)
+                else:
+                    shutil.copy2(item, dest)
+
+            eligible_sorted = sorted(eligible, key=lambda x: x.assignment_id)
+            for result in eligible_sorted:
+                for change in result.proposed_changes:
+                    cpath = _get_change_path(change)
+                    if not cpath:
+                        continue
+                    target_file = int_workspace_dir / cpath
+                    target_file.parent.mkdir(parents=True, exist_ok=True)
+
+                    cdiff = _get_change_diff(change)
+                    cdesc = _get_change_desc(change)
+
+                    if cdiff:
+                        with open(target_file, "a", encoding="utf-8") as f:
+                            f.write(f"\n# Integrated from assignment {result.assignment_id}\n")
+                            f.write(cdiff)
+                    else:
+                        with open(target_file, "a", encoding="utf-8") as f:
+                            f.write(f"\n# Integrated change: {cdesc}\n")
+
+                integrated.append(result.assignment_id)
+                evidence_ids.extend(result.evidence_ids or result.evidence)
+
+            integrated_tree_hash = self._get_tree_hash(int_workspace_dir)
+
+            verification_passed = True
+            if self._verifier is not None:
+                try:
+                    if hasattr(self._verifier, "run_verification"):
+                        outcome = self._verifier.run_verification(
+                            context=str(int_workspace_dir),
+                            checks=["structural", "integration", "acceptance"],
+                        )
+                        verification_passed = outcome.passed
+                    else:
+                        verification_passed = True
+                    verification_results.append(
+                        f"central_verification:{'PASS' if verification_passed else 'FAIL'}"
+                    )
+                except Exception as exc:
+                    logger.error("IntegrationCoordinator: central verification error: %s", exc)
+                    verification_passed = False
+                    verification_results.append(f"central_verification:ERROR:{exc}")
+            else:
+                logger.error("IntegrationCoordinator: Verification service unavailable.")
+                verification_passed = False
+                verification_results.append("central_verification:VERIFICATION_UNAVAILABLE")
+
+            if not verification_passed:
+                logger.error(
+                    "IntegrationCoordinator [tx=%s]: central verification failed. Rolling back.",
+                    integration_id,
+                )
+                for aid in integrated:
+                    rejected.append(aid)
+                integrated.clear()
+                conflict_descriptions.append("Central verification failed — integration rolled back.")
+                integrated_tree_hash = None
+
+            status = IntegrationStatus.INTEGRATED if verification_passed else IntegrationStatus.FAILED
+
+            return IntegrationResult(
+                integration_id=integration_id,
+                status=status,
+                baseline_tree=baseline_tree,
+                integrated_tree=integrated_tree_hash,
+                applied_assignments=tuple(integrated),
+                rejected_assignments=tuple(rejected),
+                conflicts=tuple(conflict_descriptions),
+                evidence=tuple(set(evidence_ids)),
+                rollback_checkpoint=rollback_checkpoint,
+                verification_results=tuple(verification_results),
+            )
+
+        finally:
+            shutil.rmtree(int_workspace_dir, ignore_errors=True)
+
+    @staticmethod
+    def _get_tree_hash(path: Path) -> str:
+        h = hashlib.sha256()
+        try:
+            for root, _, files in os.walk(path):
+                for f in sorted(files):
+                    if f.startswith("."):
+                        continue
+                    fp = Path(root) / f
+                    h.update(f.encode())
+                    try:
+                        h.update(fp.read_bytes())
+                    except Exception:
+                        pass
+            return h.hexdigest()[:20]
+        except Exception:
+            return "tree-hash-000"

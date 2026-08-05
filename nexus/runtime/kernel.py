@@ -17,6 +17,7 @@ from nexus.run_state import RunLedger
 from nexus.runtime.events import (
     BaseEvent,
     ErrorEvent,
+    FailureEvent,
     ModelRequestCompleted,
     ModelRequestStarted,
     ModelStreamChunk,
@@ -28,8 +29,10 @@ from nexus.runtime.events import (
     TurnCompleted,
     TurnStarted,
 )
+from nexus.recovery import RecoveryController
 from nexus.runtime.state_machine import RunState, StateMachine
-
+from nexus.recovery.records import FailureRecord
+from nexus.recovery.normalizer import FailureNormalizer
 logger = logging.getLogger(__name__)
 
 
@@ -143,6 +146,7 @@ class ExecutionKernel:
             self.model_id = model_id or "unknown"
         self.run_id = run_id
         self.state_machine = StateMachine()
+        self.recovery = RecoveryController()
         self.tool_executor: Callable[[str, dict], tuple[bool, str]] | None = None
         self.before_tool_hook: Callable[[str, dict], None] | None = None
         self.after_tool_hook: Callable[[str, dict, bool, str], None] | None = None
@@ -240,6 +244,20 @@ class ExecutionKernel:
                     temperature=temperature,
                 )
             except Exception as e:
+                # Normalize the raw exception into a FailureRecord
+                raw_msg = str(e)
+                failure_record = FailureNormalizer.normalize(
+                    raw_msg,
+                    source_component="provider",
+                    phase="provider_call",
+                    run_id=self.run_id or "run-unknown",
+                    command="provider.chat",
+                    exit_code=None,
+                    metadata={},
+                )
+                # Attempt recovery (may apply a repair strategy)
+                recovered, strategy = self.recovery.diagnose_and_recover(failure_record, context={})
+
                 if self.ledger and self.ledger.turn_dir:
                     completed = datetime.now(timezone.utc)
                     self.ledger.append_model_call(
@@ -250,9 +268,11 @@ class ExecutionKernel:
                         started_at=request_started.isoformat(),
                         completed_at=completed.isoformat(),
                         duration_ms=int((completed - request_started).total_seconds() * 1000),
-                        error_category=classify_failure(str(e)).value,
-                        detail=str(e)[:1000],
+                        error_category=self.recovery.classify(raw_msg).value,
+                        detail=raw_msg[:1000],
                     )
+                # Emit failure event (including classification)
+                yield self._create_and_emit(FailureEvent(kind=self.recovery.classify(raw_msg), message=raw_msg))
                 yield self._create_and_emit(ErrorEvent(message=f"Provider error: {e}"))
                 self.state_machine.transition_to(RunState.FAILED)
                 yield self._create_and_emit(RunFailed(error=str(e)))
@@ -274,9 +294,10 @@ class ExecutionKernel:
                         started_at=request_started.isoformat(),
                         completed_at=completed.isoformat(),
                         duration_ms=int((completed - request_started).total_seconds() * 1000),
-                        error_category=classify_failure(str(exc)).value,
+                        error_category=self.recovery.classify(str(exc)).value,
                         detail=str(exc)[:1000],
                     )
+                yield self._create_and_emit(FailureEvent(kind=self.recovery.classify(str(exc)), message=str(exc)))
                 yield self._create_and_emit(ErrorEvent(message=f"Provider stream error: {exc}"))
                 self.state_machine.transition_to(RunState.FAILED)
                 yield self._create_and_emit(RunFailed(error=str(exc)))
@@ -379,15 +400,6 @@ class ExecutionKernel:
                     )
                 )
 
-                # Append tool result
-                current_messages.append(
-                    {
-                        "role": "tool",
-                        "tool_call_id": tc.get("id", ""),
-                        "name": tool_name,
-                        "content": result_text,
-                    }
-                )
         else:
             # Max turns exhausted with tool calls still pending — this is a
             # partial/failed outcome, not a clean completion.
@@ -742,8 +754,10 @@ _FAILURE_PATTERNS: tuple[tuple[FailureKind, tuple[str, ...]], ...] = (
 )
 
 
-def classify_failure(output: str) -> FailureKind:
+def classify_failure(output: Any) -> FailureKind:
     """Classify raw failure evidence without asking a model."""
+    if not isinstance(output, str):
+        output = str(output or "")
     normalized = re.sub(r"\s+", " ", output.lower())
     for kind, patterns in _FAILURE_PATTERNS:
         if any(pattern in normalized for pattern in patterns):

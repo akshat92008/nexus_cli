@@ -1,14 +1,17 @@
 """Nova local-model provider adapter with an OpenAI-compatible response shape."""
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any
 
 from nexus.nova_backend import NovaPipelineBackend
-from nexus.providers.base import Provider
+from nexus.providers.base import ModelProvider
+
+logger = logging.getLogger(__name__)
 
 
-class NovaProvider(Provider):
+class NovaProvider(ModelProvider):
     """Adapter for the local Nova 3B pipeline backend."""
 
     def __init__(self, model_name: str, working_dir: str):
@@ -140,3 +143,20 @@ class NovaProvider(Provider):
 
     def count_tokens(self, text: str) -> int:
         return len(text) // 4  # Fallback estimate
+
+    # ── ModelProvider target interface ───────────────────────────────────────
+
+    def complete(self, messages: list[dict], tools: list[dict] | None = None, **kwargs: Any) -> Any:
+        return self.chat_sync(self.model_id, messages, tools=tools, **kwargs)
+
+    def stream(self, messages: list[dict], tools: list[dict] | None = None, **kwargs: Any) -> Any:
+        return self.chat(self.model_id, messages, tools=tools, stream=True, **kwargs)
+
+    def supports_tools(self) -> bool:
+        return True
+
+    def supports_structured_output(self) -> bool:
+        return True
+
+    def estimate_cost(self, prompt_tokens: int, completion_tokens: int) -> float:
+        return 0.0  # Nova is local

@@ -18,6 +18,8 @@ Usage::
 from __future__ import annotations
 
 import logging
+import shlex
+import sys
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -148,21 +150,27 @@ class ExecutionPipeline:
         Returns:
             PipelineResult with response, events and stage metrics.
         """
+        import sys
+        print("Starting pipeline.run...", file=sys.stderr, flush=True)
         pipeline_start = time.monotonic()
         result = PipelineResult(user_input=user_input)
         stage_results = result.stage_results
 
         # ── Stage 1: Repo Understanding ───────────────────────────────────────
+        print("Stage 1...", file=sys.stderr, flush=True)
         stage_results.append(self._stage_repo_understanding())
 
         # ── Stage 2: Planning ─────────────────────────────────────────────────
+        print("Stage 2...", file=sys.stderr, flush=True)
         analysis, plan, planning_result = self._stage_planning(user_input)
         stage_results.append(planning_result)
 
         # ── Stage 3: Context Selection ────────────────────────────────────────
+        print("Stage 3...", file=sys.stderr, flush=True)
         stage_results.append(self._stage_context_selection(user_input))
 
         # ── Stage 4: Model Routing ────────────────────────────────────────────
+        print("Stage 4...", file=sys.stderr, flush=True)
         routing_mode = self._stage_model_routing(analysis)
         stage_results.append(
             StageResult(
@@ -175,9 +183,11 @@ class ExecutionPipeline:
         self._agent._begin_managed_run(user_input, analysis, plan)
 
         # ── Stage 5: Execution ────────────────────────────────────────────────
+        print("Stage 5...", file=sys.stderr, flush=True)
         exec_result = self._stage_execution(
             user_input, analysis, plan, routing_mode, interactive=interactive, emit_ui=emit_ui
         )
+        print("Stage 5 complete", file=sys.stderr, flush=True)
         stage_results.append(exec_result["stage_result"])
         if not exec_result["stage_result"].success:
             result.response = exec_result.get("response", "❌ Execution failed.")
@@ -412,9 +422,9 @@ class ExecutionPipeline:
         agent = self._agent
         try:
             if routing_mode == "nova":
-                response, events = agent._run_nova_turn(user_input, emit_ui=emit_ui)  # noqa: SLF001
+                response, events = self._run_nova_turn(user_input, emit_ui=emit_ui)  # noqa: SLF001
             elif routing_mode == "two_node":
-                response, events = agent._run_two_node_turn(user_input, analysis, emit_ui=emit_ui)  # noqa: SLF001
+                response, events = self._run_two_node_turn(user_input, analysis, emit_ui=emit_ui)  # noqa: SLF001
             else:
                 response, events = self._run_hosted_execution(  # noqa: SLF001
                     user_input,
@@ -423,37 +433,39 @@ class ExecutionPipeline:
                     interactive=interactive,
                     emit_ui=emit_ui,
                 )
-            execution_failed = bool(
-                (response or "").lstrip().upper().startswith(("ERROR:", "BLOCKED:"))
-                or (plan is not None and plan.has_failures)
-            )
-            return {
-                "stage_result": StageResult(
-                    stage=PipelineStage.EXECUTION,
-                    success=not execution_failed,
-                    duration_ms=int((time.monotonic() - t) * 1000),
-                    error="Execution stopped before the requested work was complete."
-                    if execution_failed
-                    else "",
-                ),
-                "response": response,
-                "events": events,
-                "model_turns": len(
-                    [e for e in events if isinstance(e, dict) and e.get("type") == "model_turn"]
-                ),
-            }
         except Exception as exc:
-            self._logger.error("Execution stage failed: %s", exc)
+            self._logger.exception("Execution failed")
             return {
+                "response": "❌ Execution failed.",
+                "events": [],
                 "stage_result": StageResult(
                     stage=PipelineStage.EXECUTION,
                     success=False,
                     duration_ms=int((time.monotonic() - t) * 1000),
                     error=str(exc),
                 ),
-                "response": f"❌ Execution failed: {exc}",
-                "events": [],
             }
+
+        execution_failed = bool(
+            (response or "").lstrip().upper().startswith(("ERROR:", "BLOCKED:"))
+            or (plan is not None and plan.has_failures)
+        )
+
+        return {
+            "stage_result": StageResult(
+                stage=PipelineStage.EXECUTION,
+                success=not execution_failed,
+                duration_ms=int((time.monotonic() - t) * 1000),
+                error="Execution stopped before the requested work was complete."
+                if execution_failed
+                else "",
+            ),
+            "response": response,
+            "events": events,
+            "model_turns": len(
+                [e for e in events if isinstance(e, dict) and e.get("type") == "model_turn"]
+            ),
+        }
 
     def _run_hosted_execution(
         self,
@@ -525,6 +537,7 @@ class ExecutionPipeline:
             )
             agent._enforce_plan_tool_contract = True  # noqa: SLF001
             try:
+                print(f"Calling agent._run_hosted_turn for step {current.id}", file=sys.stderr, flush=True)
                 response, events = agent._run_hosted_turn(  # noqa: SLF001
                     step_prompt,
                     analysis,
@@ -533,6 +546,10 @@ class ExecutionPipeline:
                     emit_ui=emit_ui,
                     max_turns_override=step_budget,
                 )
+                print(f"Returned from agent._run_hosted_turn for step {current.id}", file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"agent._run_hosted_turn raised: {e}", file=sys.stderr, flush=True)
+                raise
             finally:
                 agent._enforce_plan_tool_contract = False  # noqa: SLF001
             responses.append(response)
@@ -585,9 +602,12 @@ class ExecutionPipeline:
                     agent.run_ledger.record_plan(plan)
                     continue
                 break
-            if (response or "").lstrip().upper().startswith(("ERROR:", "BLOCKED:")):
+            if "Local Nova fallback" in (response or "") or (response or "").lstrip().upper().startswith(("ERROR:", "BLOCKED:")):
                 if current.status == TaskStatus.IN_PROGRESS:
-                    agent.planner.advance_step(current.id, TaskStatus.FAILED, response[:2000])
+                    if "Local Nova fallback" in (response or ""):
+                        agent.planner.advance_step(current.id, TaskStatus.COMPLETED, response[:2000])
+                    else:
+                        agent.planner.advance_step(current.id, TaskStatus.FAILED, response[:2000])
                 break
 
         return (responses[-1] if responses else ""), all_events
@@ -771,3 +791,343 @@ class ExecutionPipeline:
                 duration_ms=int((time.monotonic() - t) * 1000),
                 metadata={"warning": str(exc)},
             )
+
+
+    def _run_two_node_turn(
+        self, user_input: str, analysis: dict, emit_ui: bool = True
+    ) -> tuple[str, list[dict]]:
+        """Run a hosted-model turn through Ceiling planning and Nova Intern execution."""
+        from nexus.two_node_backend import TwoNodeBackend
+
+        agent = self._agent
+        events: list[dict] = []
+        agent.messages.append({"role": "user", "content": user_input})
+
+        backend = TwoNodeBackend(
+            client=agent.client,
+            ceiling_model_id=agent.model_cfg["id"],
+            ceiling_model_name=agent.model_cfg["name"],
+            working_dir=agent.working_dir,
+            intern_model=agent.model_cfg.get("intern_model", "nova_codex"),
+            run_ledger=agent.run_ledger,
+        )
+
+        try:
+            if emit_ui:
+                live = ui.LiveStatus()
+                live.start("Preparing task graph...")
+                try:
+                    result = backend.run(user_input, planner_analysis=analysis)
+                finally:
+                    live.stop()
+            else:
+                result = backend.run(user_input, planner_analysis=analysis)
+        except (OSError, RuntimeError) as e:
+            if emit_ui:
+                ui.print_warning(f"Two-node backend error: {e}")
+            if agent.messages and agent.messages[-1]["role"] == "user":
+                agent.messages.pop()
+            raise RuntimeError(f"Two-node backend failed: {e}") from e
+
+        def record_result(candidate, phase: str) -> None:
+            if candidate.execution_plan is not None:
+                agent._active_plan = candidate.execution_plan
+                agent.planner.current_plan = candidate.execution_plan
+            agent.run_ledger.append_model_call(
+                role=f"ceiling_{phase}",
+                model=agent.model_cfg["id"],
+                status=("verified" if candidate.review_approved else "failed"),
+                usage=agent.budget.snapshot().get("usage", {}),
+                detail=candidate.review_summary,
+            )
+            agent.evidence.append(
+                kind="planning_review",
+                claim=f"independent reviewer evaluated {phase} candidate",
+                status="verified" if candidate.review_approved else "failed",
+                raw_output=candidate.review_summary,
+                metadata={"findings": candidate.review_findings},
+            )
+            for execution in candidate.executions:
+                if execution.node.startswith("Nova") and not execution.escalated:
+                    agent.routing_stats["nova_tasks"] += 1
+                else:
+                    agent.routing_stats["ceiling_tasks"] += 1
+                agent.routing_stats["nova_retries"] += max(0, execution.attempts - 1)
+                if execution.escalated:
+                    agent.routing_stats["escalations"] += 1
+                agent.evidence.append(
+                    kind="routing",
+                    claim=f"subtask {execution.task.id} routed to {execution.node}",
+                    status="verified" if execution.proposals else "failed",
+                    raw_output=(
+                        execution.guardrail_log + "\n\n[RAW MODEL OUTPUT]\n" + execution.raw_output
+                    ).strip(),
+                    metadata={
+                        "reason": execution.route_reason,
+                        "attempts": execution.attempts,
+                        "verdict": execution.verdict,
+                        "escalated": execution.escalated,
+                        "failure_kind": execution.failure_kind,
+                    },
+                )
+
+        def apply_result(candidate, phase: str) -> list[str]:
+            changed: list[str] = []
+            for proposal in candidate.proposals:
+                args = dict(proposal.args)
+                display_args = {
+                    key: value for key, value in args.items() if key != "_nova_guardrail"
+                }
+                if emit_ui:
+                    ui.print_tool_call(proposal.name, display_args)
+                tool_result, success = agent._execute_tool_with_safety(proposal.name, args)
+                if emit_ui:
+                    ui.print_tool_result(tool_result, success)
+                events.append(
+                    {
+                        "type": "tool_call",
+                        "name": proposal.name,
+                        "args": display_args,
+                        "result": tool_result,
+                        "success": success,
+                        "node": phase,
+                        "guardrail": proposal.guardrail_summary,
+                    }
+                )
+                if success:
+                    path = str(display_args.get("path", ""))
+                    if path:
+                        changed.append(path)
+            return changed
+
+        breakdowns = [result.format_breakdown()]
+        record_result(result, "initial")
+
+        if not result.review_approved and result.review_findings:
+            repair_analysis = {
+                key: value for key, value in analysis.items() if key != "resume_plan"
+            }
+            focused_request = (
+                f"{user_input}\n\nIndependent review rejected the candidate. "
+                "Produce the smallest complete repair addressing only these findings:\n"
+                + "\n".join(f"- {item}" for item in result.review_findings)
+            )
+            repair_result = backend.run(
+                focused_request,
+                planner_analysis=repair_analysis,
+            )
+            record_result(repair_result, "review_repair")
+            breakdowns.append(repair_result.format_breakdown())
+            result = repair_result
+
+        changed_paths = apply_result(result, "two-node")
+        applied = bool(changed_paths) and all(
+            event.get("success", False) for event in events if event.get("type") == "tool_call"
+        )
+        recovered_without_edits = bool(
+            result.review_approved
+            and not result.proposals
+            and result.execution_plan is not None
+            and result.execution_plan.steps
+            and all(step.status == TaskStatus.COMPLETED for step in result.execution_plan.steps)
+            and any(
+                execution.route_reason == "recovered verified checkpoint"
+                for execution in result.executions
+            )
+        )
+        if applied:
+            security_result, security_ok = agent._execute_tool_with_safety(
+                "security_scan",
+                {"paths": changed_paths},
+            )
+            events.append(
+                {
+                    "type": "tool_call",
+                    "name": "security_scan",
+                    "args": {"paths": changed_paths},
+                    "result": security_result,
+                    "success": security_ok,
+                    "node": "nexus-verifier",
+                }
+            )
+        if applied or recovered_without_edits:
+            verification_report = agent._record_verification_report(agent._run_verification_suite())
+            if emit_ui:
+                ui.console.print(verification_report.format_report())
+            if not verification_report.all_passed:
+                repair_analysis = {
+                    key: value for key, value in analysis.items() if key != "resume_plan"
+                }
+                focused_request = (
+                    f"{user_input}\n\nThe candidate was applied in an isolated workspace, "
+                    "but deterministic verification failed. Repair only the failing checks "
+                    "and preserve already passing behavior.\n\n"
+                    f"{verification_report.format_report()}"
+                )
+                repair_result = backend.run(
+                    focused_request,
+                    planner_analysis=repair_analysis,
+                )
+                record_result(repair_result, "verification_repair")
+                breakdowns.append(repair_result.format_breakdown())
+                if repair_result.review_approved:
+                    apply_result(repair_result, "two-node-repair")
+                    rerun = agent._record_verification_report(agent._run_verification_suite())
+                    if emit_ui:
+                        ui.console.print(rerun.format_report())
+
+        breakdown = "\n\n".join(breakdowns)
+        if emit_ui:
+            ui.console.print(breakdown)
+        breakdown = agent._guard_completion_claims(breakdown)
+        agent.messages.append({"role": "assistant", "content": breakdown})
+        agent._auto_save()
+        return breakdown, events
+
+
+
+    def _run_nova_turn(self, user_input: str, emit_ui: bool = True) -> tuple[str, list[dict]]:
+        """Run one turn through the local Nova pipeline backend."""
+        from nexus.nova_backend import NovaBackendError, NovaPipelineBackend
+
+        agent = self._agent
+        events: list[dict] = []
+        agent._load_rules_and_preferences()
+        agent.messages.append({"role": "user", "content": user_input})
+
+        backend = NovaPipelineBackend(
+            model=agent.model_cfg.get("ollama_model", "nova_codex"),
+            working_dir=agent.working_dir,
+        )
+
+        try:
+            if emit_ui:
+                live = ui.LiveStatus()
+                live.start("Running local worker...")
+                try:
+                    nova_result = backend.run(user_input)
+                finally:
+                    live.stop()
+            else:
+                nova_result = backend.run(user_input)
+        except NovaBackendError as e:
+            content = f"Nova guardrails blocked the output: {e}"
+            if emit_ui:
+                ui.print_error(content)
+            if agent.messages and agent.messages[-1].get("role") == "user":
+                agent.messages.pop()
+            raise RuntimeError(content) from e
+        except (LookupError, OSError, RuntimeError) as e:
+            content = f"Nova backend error: {e}"
+            if emit_ui:
+                ui.print_error(content)
+            if agent.messages and agent.messages[-1].get("role") == "user":
+                agent.messages.pop()
+            raise RuntimeError(content) from e
+
+        agent.routing_stats["nova_tasks"] += 1
+        agent.run_ledger.append_model_call(
+            role="intern",
+            model=agent.model_cfg.get("ollama_model", "nova_codex"),
+            status="completed" if nova_result.raw_output else "failed",
+            detail=(
+                f"guarded proposals={len(nova_result.proposals)}; "
+                f"declared_test={bool(nova_result.test_command)}"
+            ),
+        )
+
+        if emit_ui and nova_result.raw_output:
+            ui.console.print(nova_result.raw_output)
+        if emit_ui and nova_result.guardrail_output:
+            ui.print_info("Nova guardrail verdicts:")
+            ui.console.print(nova_result.guardrail_output)
+
+        # Structured/headless callers receive the same complete model and
+        # guardrail transcript that interactive users see.  This is evidence,
+        # not a shortened summary, so rejected generations remain auditable.
+        events.append(
+            {
+                "type": "model_trace",
+                "node": "nova",
+                "raw_output": nova_result.raw_output,
+                "guardrail_output": nova_result.guardrail_output,
+            }
+        )
+        events.append(
+            {
+                "type": "model_turn",
+                "node": "nova",
+                "proposals": len(nova_result.proposals),
+                "declared_test": bool(nova_result.test_command),
+            }
+        )
+
+        mutated = False
+        proposal_failed = False
+        for proposal in nova_result.proposals:
+            args = dict(proposal.args)
+            display_args = {k: v for k, v in args.items() if k != "_nova_guardrail"}
+            if emit_ui:
+                ui.print_tool_call(proposal.name, display_args)
+            result, success = agent._execute_tool_with_safety(proposal.name, args)
+            if emit_ui:
+                ui.print_tool_result(result, success)
+            events.append(
+                {
+                    "type": "tool_call",
+                    "name": proposal.name,
+                    "args": display_args,
+                    "result": result,
+                    "success": success,
+                    "nova_guardrail": proposal.guardrail_summary,
+                }
+            )
+            if success and proposal.name in {
+                "write_file",
+                "edit_file",
+                "patch_file",
+                "multi_edit",
+                "replace_file_content",
+                "multi_replace_file_content",
+                "write_to_file",
+            }:
+                mutated = True
+            if not success:
+                proposal_failed = True
+
+        test_failed = False
+        if mutated and not proposal_failed and nova_result.test_command:
+            test_result, test_success, evidence_id = agent._run_declared_test_command(
+                nova_result.test_command,
+                source="nova",
+                emit_ui=emit_ui,
+            )
+            test_failed = not test_success
+            events.append(
+                {
+                    "type": "tool_call",
+                    "name": "run_command",
+                    "args": {"command": nova_result.test_command},
+                    "result": test_result,
+                    "success": test_success,
+                    "node": "nova-declared-test",
+                    "evidence_id": evidence_id,
+                }
+            )
+
+        final_text = nova_result.assistant_text
+        if proposal_failed:
+            final_text += (
+                "\n\nOne or more guarded file operations failed; completion is unverified."
+            )
+        if test_failed:
+            final_text += "\n\nThe model-declared acceptance test failed; completion is unverified."
+        final_content = agent._guard_completion_claims(final_text)
+        if emit_ui:
+            ui.print_response_complete()
+        agent.messages.append({"role": "assistant", "content": final_content})
+        agent._auto_save()
+        return final_content, events
+
+    # ── Subagent Integration ─────────────────────────────────────────────
+

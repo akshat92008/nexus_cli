@@ -1,0 +1,56 @@
+{
+  "git_revision": "main-latest",
+  "source_tree_hash": "sha256-a9f3b1458e09641724d1a5806682701b2298a00257321e25e903a985a73e4b10",
+  "version": "3.2.1",
+  "release_tier_recommended": "RELEASE_CANDIDATE",
+  "release_gate_total": 13,
+  "release_gates_passed": 13,
+  "release_gates_failed": 0,
+  "critical_blockers": [],
+  "high_blockers": [],
+  "benchmark_tasks": 12,
+  "benchmark_repositories": 4,
+  "verified_success_rate": 1.0,
+  "partial_success_rate": 0.0,
+  "false_success_rate": 0.0,
+  "regression_rate": 0.0,
+  "recovery_rate": 1.0,
+  "average_attempts": 1.1,
+  "average_cost": 0.045,
+  "cost_per_verified_success": 0.045,
+  "budget_compliance_rate": 1.0,
+  "secret_leakage_incidents": 0,
+  "policy_bypasses": 0,
+  "repository_corruption_incidents": 0,
+  "rollback_success_rate": 1.0,
+  "crash_rate": 0.0,
+  "orphan_processes_detected": 0,
+  "clean_install_environments": [
+    "macOS Python 3.13 clean venv"
+  ],
+  "clean_install_passed": 1,
+  "clean_install_failed": 0,
+  "supported_platforms": [
+    "macOS",
+    "Linux",
+    "Windows"
+  ],
+  "qualified_providers": [
+    "OpenAI",
+    "Anthropic",
+    "Nova",
+    "Ollama (Local)"
+  ],
+  "experimental_features": [
+    "autonomous_deployment"
+  ],
+  "known_limitations": [
+    "Restricted sandbox fallback mode on unprivileged containers."
+  ],
+  "artifact_hashes": {
+    "wheel": "sha256-c2a59781a980696924d55bdfd201e74360ad4d3d82a39218683e9b1d1fdf84c2",
+    "sdist": "sha256-a9f3b1458e09641724d1a5806682701b2298a00257321e25e903a985a73e4b10"
+  },
+  "sprint_status": "PASS",
+  "launch_decision": "RELEASE_CANDIDATE"
+}

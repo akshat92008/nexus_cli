@@ -68,8 +68,8 @@ def _probe_ollama_cached(model: str, base_url: str, cache_bucket: int) -> Backen
         str(item.get("name", "")) for item in payload.get("models", []) if isinstance(item, dict)
     }
     normalized = {name.split(":", 1)[0] for name in installed}
-    requested = model.split(":", 1)[0]
-    if model not in installed and requested not in normalized:
+    requested = (model or "nova_codex").split(":", 1)[0]
+    if model and model not in installed and requested not in normalized:
         return BackendProbe(
             ready=False,
             backend="ollama",

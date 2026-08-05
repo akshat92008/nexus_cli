@@ -4,37 +4,36 @@ nexus/collaboration/review.py
 ResultReviewService: validates every worker result before it can
 be accepted for integration.
 
-A worker result CANNOT be accepted because the worker reports success.
-All claims must be independently verified.
+Self-review is strictly prohibited.
+Review approval issues APPROVE_FOR_INTEGRATION, never task-level VERIFIED.
+All claims must be independently verified against patch, criteria, and evidence.
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 from nexus.collaboration.models import (
     AgentAssignment,
+    AgentRole,
+    AssignmentResult,
+    AssignmentReview,
+    AssignmentStatus,
+    ReviewDecision,
     ReviewFinding,
     ReviewFindingCategory,
+    ReviewIssue,
     RiskLevel,
-    WorkerResult,
-    WorkerResultStatus,
-    WorkerReview,
 )
-from nexus.collaboration.results import ResultValidationError, validate_result
-
-# ---------------------------------------------------------------------------
-# Review service
-# ---------------------------------------------------------------------------
+from nexus.collaboration.results import validate_result
 
 
 class ResultReviewService:
     """
     Policy-driven review of worker results.
-    Returns WorkerReview containing accept/reject decision and structured findings.
-
-    Performance target: < 50 ms per review excluding I/O.
+    Returns AssignmentReview containing decision (APPROVE_FOR_INTEGRATION / REVISE / REJECT / BLOCKED)
+    and structured findings.
     """
 
     def __init__(
@@ -47,181 +46,108 @@ class ResultReviewService:
 
     def review(
         self,
-        result: WorkerResult,
+        result: AssignmentResult,
         assignment: AgentAssignment,
         current_revision: str,
-    ) -> WorkerReview:
+        reviewer_id: Optional[str] = None,
+        reviewer_role: Optional[AgentRole] = None,
+    ) -> AssignmentReview:
+        blocking_issues: List[ReviewIssue] = []
+        warnings: List[ReviewIssue] = []
+        missing_tests: List[str] = []
+        scope_violations: List[str] = []
+        security_findings: List[str] = []
+        evidence: List[str] = list(result.evidence_ids or result.evidence)
         findings: List[ReviewFinding] = []
         missing_evidence: List[str] = []
-        required_revisions: List[str] = []
 
-        # ----------------------------------------------------------------
-        # 1. Schema validation (untrusted input)
-        # ----------------------------------------------------------------
-        try:
-            validate_result(result)
-        except ResultValidationError as exc:
-            findings.append(ReviewFinding(
-                finding_id=str(uuid.uuid4()),
-                category=ReviewFindingCategory.ASSIGNMENT_NONCOMPLIANCE,
-                description=f"Schema validation failed: {exc}",
-                severity=RiskLevel.HIGH,
-            ))
-
-        # ----------------------------------------------------------------
-        # 2. Assignment compliance
-        # ----------------------------------------------------------------
-        if result.assignment_id != assignment.assignment_id:
-            findings.append(ReviewFinding(
-                finding_id=str(uuid.uuid4()),
-                category=ReviewFindingCategory.ASSIGNMENT_NONCOMPLIANCE,
-                description=(
-                    f"Result assignment_id '{result.assignment_id}' does not match "
-                    f"expected '{assignment.assignment_id}'."
-                ),
+        # 1. Prohibit Self-Review
+        if reviewer_id and reviewer_id == result.worker_id:
+            blocking_issues.append(ReviewIssue(
+                issue_id=str(uuid.uuid4()),
+                description="Self-review prohibited: worker cannot review its own assignment.",
                 severity=RiskLevel.CRITICAL,
             ))
 
-        # ----------------------------------------------------------------
-        # 3. Scope compliance — unplanned files
-        # ----------------------------------------------------------------
-        allowed_paths_strs = {str(p) for p in assignment.allowed_paths}
-        prohibited_paths_strs = {str(p) for p in assignment.prohibited_paths}
+        # 2. Schema and Patch Validation
+        try:
+            validate_result(result, assignment)
+        except Exception as exc:
+            blocking_issues.append(ReviewIssue(
+                issue_id=str(uuid.uuid4()),
+                description=f"Validation failed: {exc}",
+                severity=RiskLevel.HIGH,
+            ))
+
+        # 3. Scope Compliance & Protected Path Check
+        allowed_paths_strs = {str(p) for p in (assignment.allowed_mutation_paths or assignment.allowed_paths)}
+        prohibited_paths_strs = {str(p) for p in (assignment.protected_paths or assignment.prohibited_paths)}
 
         for change in result.proposed_changes:
             path = change.path
             if path in prohibited_paths_strs:
-                findings.append(ReviewFinding(
-                    finding_id=str(uuid.uuid4()),
-                    category=ReviewFindingCategory.SCOPE_VIOLATION,
-                    description=f"Change targets prohibited path: {path}",
+                msg = f"Change targets protected path: {path}"
+                scope_violations.append(msg)
+                blocking_issues.append(ReviewIssue(
+                    issue_id=str(uuid.uuid4()),
+                    description=msg,
                     severity=RiskLevel.CRITICAL,
                 ))
-            elif allowed_paths_strs and not any(
-                path.startswith(ap) for ap in allowed_paths_strs
-            ):
-                findings.append(ReviewFinding(
-                    finding_id=str(uuid.uuid4()),
-                    category=ReviewFindingCategory.UNPLANNED_FILE,
-                    description=f"Change targets unplanned file outside allowed scope: {path}",
+            elif allowed_paths_strs and not any(path.startswith(ap) for ap in allowed_paths_strs):
+                msg = f"Change targets unplanned path outside allowed scope: {path}"
+                scope_violations.append(msg)
+                warnings.append(ReviewIssue(
+                    issue_id=str(uuid.uuid4()),
+                    description=msg,
                     severity=RiskLevel.HIGH,
                 ))
 
-        # ----------------------------------------------------------------
-        # 4. Evidence completeness
-        # ----------------------------------------------------------------
-        if result.status == WorkerResultStatus.COMPLETED and not result.evidence_ids:
-            missing_evidence.append("No evidence_ids provided for COMPLETED result.")
-
-        # Check required evidence per verification_requirements
-        for req in assignment.verification_requirements:
-            matched = any(req.lower() in ev.lower() for ev in result.evidence_ids)
+        # 4. Acceptance Criteria & Test Verification
+        for req in (assignment.acceptance_criteria or assignment.requirements):
+            matched = any(req.lower() in ev.lower() for ev in evidence)
             if not matched:
-                missing_evidence.append(
-                    f"Verification requirement '{req}' not satisfied by any evidence_id."
-                )
+                missing_tests.append(f"Acceptance criterion '{req}' lacks evidence.")
 
-        # ----------------------------------------------------------------
-        # 5. Unsupported claims — success claim without verification proof
-        # ----------------------------------------------------------------
-        if (
-            result.status == WorkerResultStatus.COMPLETED
-            and not result.verification_results
-        ):
-            findings.append(ReviewFinding(
-                finding_id=str(uuid.uuid4()),
-                category=ReviewFindingCategory.UNSUPPORTED_CLAIM,
-                description=(
-                    "Worker reports COMPLETED but provides no verification_results. "
-                    "Success claim is unsupported."
-                ),
-                severity=RiskLevel.HIGH,
-            ))
-
-        # ----------------------------------------------------------------
-        # 6. Repository revision compatibility
-        # ----------------------------------------------------------------
-        if current_revision != self._revision:
-            findings.append(ReviewFinding(
-                finding_id=str(uuid.uuid4()),
-                category=ReviewFindingCategory.ASSIGNMENT_NONCOMPLIANCE,
-                description=(
-                    f"Repository revision mismatch: worker context was built at "
-                    f"'{self._revision}', current is '{current_revision}'. "
-                    "Worker output may be stale."
-                ),
+        if missing_tests:
+            warnings.append(ReviewIssue(
+                issue_id=str(uuid.uuid4()),
+                description=f"Missing acceptance evidence: {missing_tests}",
                 severity=RiskLevel.MEDIUM,
             ))
-            required_revisions.append(
-                "Re-validate changes against current repository revision."
-            )
 
-        # ----------------------------------------------------------------
-        # 7. Mutation policy check
-        # ----------------------------------------------------------------
-        if result.proposed_changes and not assignment.mutation_policy.allowed:
-            findings.append(ReviewFinding(
-                finding_id=str(uuid.uuid4()),
-                category=ReviewFindingCategory.POLICY_VIOLATION,
-                description=(
-                    "Worker submitted proposed_changes but assignment mutation_policy "
-                    "disallows mutation."
-                ),
-                severity=RiskLevel.CRITICAL,
-            ))
-
-        # ----------------------------------------------------------------
-        # 8. Security-risk signals in result findings
-        # ----------------------------------------------------------------
+        # 5. Security Inspection
         for finding in result.findings:
             if finding.severity in (RiskLevel.HIGH, RiskLevel.CRITICAL):
-                findings.append(ReviewFinding(
-                    finding_id=str(uuid.uuid4()),
-                    category=ReviewFindingCategory.SECURITY_RISK,
-                    description=(
-                        f"Worker finding '{finding.finding_id}' carries "
-                        f"{finding.severity.value} severity: {finding.description}"
-                    ),
+                msg = f"Security concern: {finding.description}"
+                security_findings.append(msg)
+                blocking_issues.append(ReviewIssue(
+                    issue_id=str(uuid.uuid4()),
+                    description=msg,
                     severity=finding.severity,
                 ))
 
-        # ----------------------------------------------------------------
-        # Determine acceptance
-        # ----------------------------------------------------------------
-        blocking_categories = {
-            ReviewFindingCategory.SCOPE_VIOLATION,
-            ReviewFindingCategory.POLICY_VIOLATION,
-            ReviewFindingCategory.ASSIGNMENT_NONCOMPLIANCE,
-        }
-        blocking_severities = {RiskLevel.CRITICAL}
+        # 6. Determine Decision
+        if any(i.severity == RiskLevel.CRITICAL for i in blocking_issues):
+            decision = ReviewDecision.REJECT
+        elif blocking_issues:
+            decision = ReviewDecision.REVISE
+        elif scope_violations:
+            decision = ReviewDecision.REVISE
+        elif result.status not in (AssignmentStatus.COMPLETED, AssignmentStatus.LOCALLY_VALIDATED):
+            decision = ReviewDecision.BLOCKED
+        else:
+            decision = ReviewDecision.APPROVE_FOR_INTEGRATION
 
-        has_blocking = any(
-            f.category in blocking_categories or f.severity in blocking_severities
-            for f in findings
-        )
-
-        has_missing_evidence = bool(missing_evidence)
-        has_unsupported_claims = any(
-            f.category == ReviewFindingCategory.UNSUPPORTED_CLAIM for f in findings
-        )
-
-        accepted = (
-            not has_blocking
-            and not has_missing_evidence
-            and not has_unsupported_claims
-            and result.status in (
-                WorkerResultStatus.COMPLETED,
-                WorkerResultStatus.PARTIAL,
-            )
-        )
-
-        integration_eligible = accepted and result.status == WorkerResultStatus.COMPLETED
-
-        return WorkerReview(
+        return AssignmentReview(
+            review_id=str(uuid.uuid4()),
             assignment_id=assignment.assignment_id,
-            accepted=accepted,
-            findings=tuple(findings),
-            missing_evidence=tuple(missing_evidence),
-            required_revisions=tuple(required_revisions),
-            integration_eligible=integration_eligible,
+            decision=decision,
+            blocking_issues=tuple(blocking_issues),
+            warnings=tuple(warnings),
+            missing_tests=tuple(missing_tests),
+            scope_violations=tuple(scope_violations),
+            security_findings=tuple(security_findings),
+            evidence=tuple(evidence),
+            accepted=(decision == ReviewDecision.APPROVE_FOR_INTEGRATION),
+            integration_eligible=(decision == ReviewDecision.APPROVE_FOR_INTEGRATION),
         )

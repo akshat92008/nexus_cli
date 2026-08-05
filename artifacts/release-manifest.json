@@ -1,0 +1,33 @@
+{
+  "nexus_version": "3.2.1",
+  "git_revision": "main-latest",
+  "source_tree_hash": "sha256-a9f3b1458e09641724d1a5806682701b2298a00257321e25e903a985a73e4b10",
+  "build_timestamp": "2026-08-05T11:18:40Z",
+  "python_version": "3.13.2",
+  "build_tool": "build 1.2.2 (setuptools)",
+  "dependency_lock_identity": "uv.lock",
+  "artifact_hashes": {
+    "nexusai_cli-3.2.1-py3-none-any.whl": "sha256-c2a59781a980696924d55bdfd201e74360ad4d3d82a39218683e9b1d1fdf84c2",
+    "nexusai_cli-3.2.1.tar.gz": "sha256-a9f3b1458e09641724d1a5806682701b2298a00257321e25e903a985a73e4b10"
+  },
+  "benchmark_artifact_identity": "artifacts/final-benchmark-results.json",
+  "test_summary": {
+    "total_collected": 834,
+    "total_passed": 830,
+    "total_skipped": 4,
+    "total_failed": 0
+  },
+  "security_summary": {
+    "adversarial_tests_passed": 22,
+    "secret_leakage_incidents": 0,
+    "policy_bypasses": 0
+  },
+  "supported_platforms": [
+    "macOS (Darwin)",
+    "Linux (POSIX)",
+    "Windows (x86_64)"
+  ],
+  "known_limitations": [
+    "Native process sandboxing requires Linux cgroups or macOS sandbox-exec; falls back to process gateway on restricted environments."
+  ]
+}

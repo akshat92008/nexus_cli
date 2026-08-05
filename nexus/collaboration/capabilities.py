@@ -22,8 +22,8 @@ from nexus.collaboration.models import (
 
 def _default_profiles() -> Dict[AgentRole, AgentCapabilityProfile]:
     return {
-        AgentRole.LEAD_ENGINEER: AgentCapabilityProfile(
-            role=AgentRole.LEAD_ENGINEER,
+        AgentRole.PLANNER: AgentCapabilityProfile(
+            role=AgentRole.PLANNER,
             supported_task_types=("planning", "orchestration", "review", "finalization"),
             supported_languages=("*",),
             allowed_tool_capabilities=(
@@ -41,8 +41,8 @@ def _default_profiles() -> Dict[AgentRole, AgentCapabilityProfile]:
             can_request_approval=True,
             can_create_workers=True,
         ),
-        AgentRole.REPOSITORY_ANALYST: AgentCapabilityProfile(
-            role=AgentRole.REPOSITORY_ANALYST,
+        AgentRole.INVESTIGATOR: AgentCapabilityProfile(
+            role=AgentRole.INVESTIGATOR,
             supported_task_types=("analysis", "investigation", "mapping"),
             supported_languages=("*",),
             allowed_tool_capabilities=("read_file", "search_code", "list_directory"),
@@ -57,8 +57,8 @@ def _default_profiles() -> Dict[AgentRole, AgentCapabilityProfile]:
             can_request_approval=False,
             can_create_workers=False,
         ),
-        AgentRole.IMPLEMENTATION_ENGINEER: AgentCapabilityProfile(
-            role=AgentRole.IMPLEMENTATION_ENGINEER,
+        AgentRole.IMPLEMENTER: AgentCapabilityProfile(
+            role=AgentRole.IMPLEMENTER,
             supported_task_types=("implementation", "refactoring", "bug_fix"),
             supported_languages=("python", "javascript", "typescript", "go", "rust"),
             allowed_tool_capabilities=(
@@ -92,18 +92,18 @@ def _default_profiles() -> Dict[AgentRole, AgentCapabilityProfile]:
             can_request_approval=False,
             can_create_workers=False,
         ),
-        AgentRole.DEBUGGER: AgentCapabilityProfile(
-            role=AgentRole.DEBUGGER,
-            supported_task_types=("debugging", "hypothesis_testing", "trace_analysis"),
+        AgentRole.REVIEWER: AgentCapabilityProfile(
+            role=AgentRole.REVIEWER,
+            supported_task_types=("architecture_review", "design_analysis", "review"),
             supported_languages=("*",),
-            allowed_tool_capabilities=("read_file", "run_command", "search_code"),
+            allowed_tool_capabilities=("read_file", "search_code"),
             mutation_allowed=False,
             maximum_risk_level=RiskLevel.NONE,
             preferred_model_tiers=(
+                ModelTier.CLOUD_FRONTIER,
                 ModelTier.CLOUD_STANDARD,
-                ModelTier.LOCAL_LARGE,
             ),
-            context_budget=48_000,
+            context_budget=64_000,
             can_request_approval=False,
             can_create_workers=False,
         ),
@@ -122,53 +122,23 @@ def _default_profiles() -> Dict[AgentRole, AgentCapabilityProfile]:
             can_request_approval=False,
             can_create_workers=False,
         ),
-        AgentRole.ARCHITECTURE_REVIEWER: AgentCapabilityProfile(
-            role=AgentRole.ARCHITECTURE_REVIEWER,
-            supported_task_types=("architecture_review", "design_analysis"),
+        AgentRole.INTEGRATION_ENGINEER: AgentCapabilityProfile(
+            role=AgentRole.INTEGRATION_ENGINEER,
+            supported_task_types=("integration", "merge", "patch_application"),
             supported_languages=("*",),
-            allowed_tool_capabilities=("read_file", "search_code"),
-            mutation_allowed=False,
-            maximum_risk_level=RiskLevel.NONE,
-            preferred_model_tiers=(
-                ModelTier.CLOUD_FRONTIER,
-                ModelTier.CLOUD_STANDARD,
-            ),
-            context_budget=64_000,
-            can_request_approval=False,
-            can_create_workers=False,
-        ),
-        AgentRole.DEPENDENCY_SPECIALIST: AgentCapabilityProfile(
-            role=AgentRole.DEPENDENCY_SPECIALIST,
-            supported_task_types=("dependency_analysis", "version_compatibility"),
-            supported_languages=("*",),
-            allowed_tool_capabilities=("read_file", "search_code", "run_command"),
-            mutation_allowed=False,
-            maximum_risk_level=RiskLevel.LOW,
-            preferred_model_tiers=(
-                ModelTier.LOCAL_MEDIUM,
-                ModelTier.LOCAL_SMALL,
-            ),
-            context_budget=24_000,
-            can_request_approval=False,
-            can_create_workers=False,
-        ),
-        AgentRole.DOCUMENTATION_ENGINEER: AgentCapabilityProfile(
-            role=AgentRole.DOCUMENTATION_ENGINEER,
-            supported_task_types=("documentation", "readme", "api_docs"),
-            supported_languages=("markdown", "rst", "python"),
-            allowed_tool_capabilities=("read_file", "write_file", "search_code", "transaction_gateway"),
+            allowed_tool_capabilities=("read_file", "write_file", "run_command", "search_code"),
             mutation_allowed=True,
-            maximum_risk_level=RiskLevel.LOW,
+            maximum_risk_level=RiskLevel.MEDIUM,
             preferred_model_tiers=(
-                ModelTier.LOCAL_LARGE,
                 ModelTier.CLOUD_STANDARD,
+                ModelTier.LOCAL_LARGE,
             ),
-            context_budget=32_000,
+            context_budget=48_000,
             can_request_approval=False,
             can_create_workers=False,
         ),
-        AgentRole.INDEPENDENT_VERIFIER: AgentCapabilityProfile(
-            role=AgentRole.INDEPENDENT_VERIFIER,
+        AgentRole.CENTRAL_VERIFIER: AgentCapabilityProfile(
+            role=AgentRole.CENTRAL_VERIFIER,
             supported_task_types=("verification", "acceptance_testing", "diff_review"),
             supported_languages=("*",),
             allowed_tool_capabilities=("read_file", "run_command", "search_code"),
@@ -202,51 +172,37 @@ class AgentCapabilityRegistry:
     def get_profile(self, role: AgentRole) -> Optional[AgentCapabilityProfile]:
         return self._profiles.get(role)
 
-    def register_profile(self, profile: AgentCapabilityProfile) -> None:
-        self._profiles[profile.role] = profile
-
-    def list_roles(self) -> list[AgentRole]:
-        return list(self._profiles.keys())
-
-    def validate_tool_access(self, role: AgentRole, tool: str) -> bool:
-        profile = self.get_profile(role)
-        if not profile:
-            return False
-        return tool in profile.allowed_tool_capabilities
-
     def can_mutate(self, role: AgentRole) -> bool:
         profile = self.get_profile(role)
-        return bool(profile and profile.mutation_allowed)
+        return profile.mutation_allowed if profile else False
 
     def can_create_workers(self, role: AgentRole) -> bool:
         profile = self.get_profile(role)
-        return bool(profile and profile.can_create_workers)
+        return profile.can_create_workers if profile else False
 
-    def validate_assignment_role(
-        self,
-        role: AgentRole,
-        task_type: str,
-        requires_mutation: bool,
-    ) -> tuple[bool, str]:
-        """
-        Returns (ok, rejection_reason).
-        Rejects if: role not registered, task type unsupported,
-        or mutation requested for a non-mutation role.
-        """
+    def validate_assignment(self, role: AgentRole, task_type: str, language: str = "*") -> bool:
         profile = self.get_profile(role)
         if not profile:
-            return False, f"Role {role.value} is not registered in capability registry."
+            return False
+        task_ok = ("*" in profile.supported_task_types) or (task_type in profile.supported_task_types)
+        lang_ok = ("*" in profile.supported_languages) or (language in profile.supported_languages)
+        return task_ok and lang_ok
 
-        if task_type not in profile.supported_task_types and "*" not in profile.supported_task_types:
-            return False, (
-                f"Role {role.value} does not support task type '{task_type}'. "
-                f"Supported: {profile.supported_task_types}"
-            )
+    def register_profile(self, profile: AgentCapabilityProfile) -> None:
+        self._profiles[profile.role] = profile
 
+    def validate_tool_access(self, role: AgentRole, tool_name: str) -> bool:
+        profile = self.get_profile(role)
+        if not profile:
+            return False
+        return ("*" in profile.allowed_tool_capabilities) or (tool_name in profile.allowed_tool_capabilities)
+
+    def validate_assignment_role(self, role: AgentRole, task_type: str, requires_mutation: bool = False) -> tuple[bool, str]:
+        profile = self.get_profile(role)
+        if not profile:
+            return False, f"Role {role} is not registered"
+        if ("*" not in profile.supported_task_types) and (task_type not in profile.supported_task_types):
+            return False, f"Role {role.value if hasattr(role, 'value') else role} does not support task type {task_type}"
         if requires_mutation and not profile.mutation_allowed:
-            return False, (
-                f"Role {role.value} does not allow mutation. "
-                "Assign a mutation-capable role."
-            )
-
+            return False, f"Role {role.value if hasattr(role, 'value') else role} does not allow mutation"
         return True, ""

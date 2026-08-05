@@ -1,0 +1,10 @@
+{
+  "metrics": {
+    "ran": 612,
+    "passed": 608,
+    "skipped": 4,
+    "failed": 0
+  },
+  "wheel_path": "dist/nexusai_cli-3.2.1-py3-none-any.whl",
+  "remaining_blockers": []
+}

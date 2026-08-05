@@ -1,75 +1,125 @@
 """
 nexus/collaboration/results.py
 
-Worker result schema, validation, and status tracking.
+Worker result schema, validation, patch inspection, and evidence verification.
 
 Workers must not submit unrestricted prose as their only output.
-All results must pass schema and evidence validation before acceptance.
+All results must pass schema, syntax, placeholder, and evidence validation before acceptance.
 """
 
 from __future__ import annotations
 
+import ast
 import uuid
 from decimal import Decimal
-from typing import Optional, Tuple
+from pathlib import Path
+from typing import Optional, Sequence, Tuple
 
 from nexus.collaboration.models import (
+    AgentAssignment,
+    AssignmentResult,
+    AssignmentStatus,
     ProposedChange,
     ResourceUsage,
     RiskLevel,
     WorkerFinding,
-    WorkerResult,
-    WorkerResultStatus,
 )
 
-# ---------------------------------------------------------------------------
-# Result validation
-# ---------------------------------------------------------------------------
+# Alias for backward compatibility
+WorkerResult = AssignmentResult
+WorkerResultStatus = AssignmentStatus
 
 
 class ResultValidationError(ValueError):
-    """Raised when a WorkerResult fails schema or evidence validation."""
+    """Raised when a WorkerResult fails schema, patch, or evidence validation."""
 
 
-def validate_result(result: WorkerResult) -> None:
+_PLACEHOLDER_PATTERNS = [
+    "pass",
+    "todo",
+    "fixme",
+    "stub_pass",
+    "notimplementederror",
+    "placeholder",
+]
+
+
+def validate_result(result: AssignmentResult, assignment: Optional[AgentAssignment] = None) -> None:
     """
-    Validates that a WorkerResult satisfies the minimum contract.
+    Validates that a WorkerResult satisfies the minimum contract, contains no placeholder code,
+    has real patch artifacts, and obeys assignment scope.
     Raises ResultValidationError on failure.
     """
     if not result.assignment_id:
         raise ResultValidationError("WorkerResult.assignment_id is required.")
 
-    if not result.worker_id:
-        raise ResultValidationError("WorkerResult.worker_id is required.")
-
-    if not result.summary or len(result.summary.strip()) < 10:
+    summary_text = result.summary or ""
+    if not summary_text or len(summary_text.strip()) < 10:
         raise ResultValidationError(
             "WorkerResult.summary must be a substantive description (≥10 chars)."
         )
 
-    if result.status == WorkerResultStatus.COMPLETED:
-        # Completed results must have evidence
-        if not result.evidence_ids:
+    if result.status in (AssignmentStatus.COMPLETED, AssignmentStatus.LOCALLY_VALIDATED):
+        evidence_ids = result.evidence_ids or result.evidence
+        if not evidence_ids:
             raise ResultValidationError(
                 "COMPLETED result must provide at least one evidence_id."
             )
-        # Completed results must have proposed changes or findings
-        if not result.proposed_changes and not result.findings:
-            raise ResultValidationError(
-                "COMPLETED result must include proposed_changes or findings."
-            )
-        # Proposed changes need diff references for mutation workers
+
+        # Check for mutation workers
+        if assignment and assignment.mutation_policy.allowed and assignment.allowed_mutation_paths:
+            if not result.proposed_changes and not result.patch_artifact:
+                raise ResultValidationError(
+                    "COMPLETED mutating worker result must provide real proposed_changes or patch_artifact."
+                )
+
+        # Check proposed changes for placeholders, syntax errors, and path boundaries
         for change in result.proposed_changes:
             if not change.path:
                 raise ResultValidationError(
                     f"ProposedChange '{change.change_id}' missing required 'path'."
                 )
 
-    if result.status == WorkerResultStatus.INVALID:
-        # Always rejected — no further validation needed
+            path_str = change.path
+            diff_ref = change.diff_reference or ""
+
+            # Check protected / allowed scope if assignment provided
+            if assignment:
+                prohibited = {str(p) for p in assignment.prohibited_paths}
+                allowed = {str(p) for p in assignment.allowed_paths}
+                if path_str in prohibited:
+                    raise ResultValidationError(
+                        f"ProposedChange targets prohibited path: {path_str}"
+                    )
+                if allowed and not any(path_str.startswith(ap) for ap in allowed):
+                    raise ResultValidationError(
+                        f"ProposedChange targets path outside allowed scope: {path_str}"
+                    )
+
+            # Check for placeholder code in diff or description
+            content_to_check = (change.description + "\n" + diff_ref).lower()
+            for pattern in _PLACEHOLDER_PATTERNS:
+                if f"# {pattern}" in content_to_check or f"raise {pattern}" in content_to_check:
+                    raise ResultValidationError(
+                        f"ProposedChange on '{path_str}' contains placeholder code pattern '{pattern}'."
+                    )
+
+            # Python syntax check if diff contains python code snippet
+            if path_str.endswith(".py") and diff_ref and diff_ref.startswith("+"):
+                try:
+                    added_lines = "\n".join(
+                        line[1:] for line in diff_ref.splitlines() if line.startswith("+")
+                    )
+                    if added_lines.strip():
+                        ast.parse(added_lines)
+                except SyntaxError as exc:
+                    raise ResultValidationError(
+                        f"ProposedChange on '{path_str}' contains invalid Python syntax: {exc}"
+                    ) from exc
+
+    if result.status == AssignmentStatus.INVALID:
         return
 
-    # Cost must be a ResourceUsage
     if not isinstance(result.cost, ResourceUsage):
         raise ResultValidationError("WorkerResult.cost must be a ResourceUsage instance.")
 
@@ -112,7 +162,7 @@ def build_proposed_change(
 def build_result(
     assignment_id: str,
     worker_id: str,
-    status: WorkerResultStatus,
+    status: AssignmentStatus,
     summary: str,
     findings: Tuple[WorkerFinding, ...] = (),
     proposed_changes: Tuple[ProposedChange, ...] = (),
@@ -126,8 +176,9 @@ def build_result(
     tokens_used: int = 0,
     cost_usd: Optional[Decimal] = None,
     wall_clock_seconds: float = 0.0,
-) -> WorkerResult:
-    return WorkerResult(
+    patch_artifact: Optional[str] = None,
+) -> AssignmentResult:
+    return AssignmentResult(
         assignment_id=assignment_id,
         worker_id=worker_id,
         status=status,
@@ -139,6 +190,7 @@ def build_result(
         unresolved_questions=unresolved_questions,
         risks=risks,
         evidence_ids=evidence_ids,
+        patch_artifact=patch_artifact,
         cost=ResourceUsage(
             model_calls=model_calls,
             tool_calls=tool_calls,

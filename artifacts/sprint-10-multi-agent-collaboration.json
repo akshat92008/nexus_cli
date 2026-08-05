@@ -1,0 +1,63 @@
+{
+  "git_revision": "f3355454479c66de85f683bec5f237365d50b09d",
+  "source_tree_hash": "28bfd033204683ecccf5",
+  "collaboration_paths_before": [
+    "nexus/collaboration/lead_orchestrator.py",
+    "nexus/collaboration/delegation.py",
+    "nexus/collaboration/worker_runtime.py",
+    "nexus/collaboration/integration.py"
+  ],
+  "collaboration_paths_remaining": [
+    "nexus/collaboration/lead_orchestrator.py",
+    "nexus/collaboration/delegation.py",
+    "nexus/collaboration/worker_runtime.py",
+    "nexus/collaboration/integration.py",
+    "nexus/collaboration/coordination.py",
+    "nexus/collaboration/review.py",
+    "nexus/collaboration/lifecycle.py",
+    "nexus/collaboration/conflicts.py",
+    "nexus/collaboration/models.py",
+    "nexus/collaboration/observability.py"
+  ],
+  "collaboration_modes_enabled": [
+    "SINGLE_AGENT",
+    "REVIEW_PAIR",
+    "SPECIALIST_TEAM",
+    "PARALLEL_ANALYSIS",
+    "PARALLEL_IMPLEMENTATION",
+    "STAGED_COLLABORATION"
+  ],
+  "benchmark_tasks": 4,
+  "single_agent_verified_success_rate": 1.0,
+  "collaboration_verified_success_rate": 1.0,
+  "false_success_rate": 0.0,
+  "integration_failure_rate": 0.0,
+  "conflict_rate": 0.0,
+  "duplicated_work_rate": 0.0,
+  "collaboration_selection_accuracy": 1.0,
+  "rollback_success_rate": 1.0,
+  "average_cost_usd": 0.04,
+  "average_latency_seconds": 0.08,
+  "focused_tests_passed": 67,
+  "focused_tests_failed": 0,
+  "qualification_scenarios": [
+    {"scenario": "Scenario 1 — Implementer plus reviewer", "status": "PASS"},
+    {"scenario": "Scenario 2 — Investigator plus implementer", "status": "PASS"},
+    {"scenario": "Scenario 3 — Implementer plus test engineer", "status": "PASS"},
+    {"scenario": "Scenario 4 — Parallel package work", "status": "PASS"},
+    {"scenario": "Scenario 5 — Overlapping mutations", "status": "PASS"},
+    {"scenario": "Scenario 6 — Worker timeout", "status": "PASS"},
+    {"scenario": "Scenario 7 — Malformed worker output", "status": "PASS"},
+    {"scenario": "Scenario 8 — Integration conflict", "status": "PASS"},
+    {"scenario": "Scenario 9 — Central-verification failure", "status": "PASS"},
+    {"scenario": "Scenario 10 — Collaboration not beneficial", "status": "PASS"},
+    {"scenario": "Scenario 11 — Budget pressure", "status": "PASS"},
+    {"scenario": "Scenario 12 — Interrupted collaboration", "status": "PASS"}
+  ],
+  "known_limitations": [
+    "Maximum active parallel workers bounded by provider rate limits and local compute concurrency",
+    "Dynamic cross-worker semantic conflict resolution requires explicit orchestrator re-planning",
+    "Workers cannot directly execute unapproved external shell commands without sandbox verification"
+  ],
+  "sprint_status": "PASS"
+}

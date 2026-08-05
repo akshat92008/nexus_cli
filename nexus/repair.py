@@ -1,19 +1,7 @@
 """
 Autonomous Repair Loop for Nexus CLI.
-
-Implements a closed-loop repair system:
-    Collect failures → Classify root cause → Generate targeted repair prompt →
-    Apply repair → Re-verify → Repeat until success or budget exhausted.
-
-This is fundamentally different from simply re-running the original prompt.
-Repairs are targeted to the specific failure class (syntax, import, type,
-test, runtime, dependency, timeout, security).
-
-Usage::
-
-    from nexus.repair import RepairLoop
-    loop = RepairLoop(agent)
-    success = loop.attempt(original_prompt, failure_context="test failed: ...")
+Integrated with canonical RecoveryController for typed diagnosis, loop prevention,
+strategy selection, and budget governance.
 """
 
 from __future__ import annotations
@@ -23,16 +11,16 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from nexus.runtime.kernel import FailureKind, classify_failure
+from nexus.recovery.controller import RecoveryController
+from nexus.recovery.records import FailureKind
+from nexus.runtime.kernel import classify_failure
 
 if TYPE_CHECKING:
     from nexus.agent import Agent
 
 logger = logging.getLogger(__name__)
 
-# Maximum number of repair iterations before giving up
 DEFAULT_MAX_ITERATIONS = 3
-# Maximum seconds to spend in total repair
 DEFAULT_REPAIR_BUDGET_SECONDS = 120
 
 
@@ -72,15 +60,9 @@ class RepairReport:
 
 class RepairLoop:
     """
-    Closed-loop autonomous repair engine.
-
-    Identifies the class of failure from actual output, generates a targeted
-    repair prompt (not a verbatim retry of the original), applies it, and
-    re-verifies until the failure is resolved or the budget is exhausted.
+    Closed-loop autonomous repair engine powered by RecoveryController.
     """
 
-    # Repair prompt templates keyed by FailureKind.
-    # Each template receives {original_prompt}, {failure_context}, {iteration}.
     _TEMPLATES: dict[FailureKind, str] = {
         FailureKind.SYNTAX: (
             "The previous attempt produced a syntax error:\n\n{failure_context}\n\n"
@@ -146,22 +128,17 @@ class RepairLoop:
         self._agent = agent
         self._max_iterations = max_iterations
         self._budget_seconds = budget_seconds
+        self.recovery_controller = getattr(
+            agent,
+            "recovery_controller",
+            RecoveryController(run_id=getattr(agent, "run_id", "run-repair")),
+        )
 
     def attempt(
         self,
         original_prompt: str,
         failure_context: str,
     ) -> bool:
-        """
-        Run the repair loop.
-
-        Args:
-            original_prompt: The user's original request (for context).
-            failure_context: The error output / failure description.
-
-        Returns:
-            True if repair succeeded within budget, False otherwise.
-        """
         report = self.run(original_prompt, failure_context)
         return report.succeeded
 
@@ -170,50 +147,51 @@ class RepairLoop:
         original_prompt: str,
         failure_context: str,
     ) -> RepairReport:
-        """
-        Run the full repair loop and return a detailed report.
-
-        Args:
-            original_prompt: The user's original request.
-            failure_context: The error output / failure description.
-
-        Returns:
-            RepairReport with all iteration details.
-        """
         report = RepairReport(
             original_prompt=original_prompt,
             failure_context=failure_context,
         )
         deadline = time.monotonic() + self._budget_seconds
-
         current_failure = failure_context
-        failure_history: list[str] = []
+
         for iteration in range(1, self._max_iterations + 1):
             if time.monotonic() >= deadline:
                 logger.info("Repair budget exhausted at iteration %d.", iteration)
                 break
 
             t_start = time.monotonic()
-            failure_kind = classify_failure(current_failure)
-            fingerprint = current_failure.strip()[:1000]
-            repeated_failure = fingerprint in failure_history
-            failure_history.append(fingerprint)
+
+            # Route through canonical RecoveryController
+            strategy, diagnosis, terminal = self.recovery_controller.handle_failure(
+                current_failure,
+                source_component="RepairLoop",
+                phase="repair",
+                plan_version=1,
+            )
+
+            if terminal and terminal not in ("CONTINUE", "RETRY"):
+                logger.info("RecoveryController returned terminal state: %s", terminal)
+                break
+
+            fk_val = diagnosis.primary_failure.kind.value
+            failure_kind = FailureKind(fk_val) if fk_val in FailureKind.__members__.values() else FailureKind.UNKNOWN
+
             repair_prompt = self._build_repair_prompt(
                 original_prompt=original_prompt,
                 failure_context=current_failure,
                 failure_kind=failure_kind,
                 iteration=iteration,
-                repeated_failure=repeated_failure,
+                strategy_name=strategy.strategy_type.value,
             )
 
             logger.info(
-                "Repair iteration %d/%d — kind=%s",
+                "Repair iteration %d/%d — strategy=%s kind=%s",
                 iteration,
                 self._max_iterations,
+                strategy.strategy_type.value,
                 failure_kind.value,
             )
 
-            # Run the targeted repair via the agent
             evidence_start = len(self._agent.evidence.records())
             try:
                 response, events = self._agent._run_hosted_turn(  # noqa: SLF001
@@ -230,9 +208,6 @@ class RepairLoop:
 
             duration_ms = int((time.monotonic() - t_start) * 1000)
 
-            # A new mutation is necessary but not sufficient. A repair succeeds
-            # only when deterministic project checks run after that mutation and
-            # all of those checks pass.
             evidence = self._agent.evidence.records()[evidence_start:]
             mutations = [e for e in evidence if e.get("kind") == "file_mutation"]
             checks = []
@@ -244,6 +219,7 @@ class RepairLoop:
                 verification_output = verification_report.format_report()
                 evidence = self._agent.evidence.records()[evidence_start:]
                 checks = [e for e in evidence if e.get("kind") == "verification_check"]
+
             succeeded = bool(mutations) and bool(checks) and all(
                 item.get("status") == "verified" for item in [*mutations, *checks]
             )
@@ -258,29 +234,12 @@ class RepairLoop:
                 output=(response + "\n\n" + verification_output)[:2000],
             )
             report.attempts.append(attempt)
-            if getattr(getattr(self._agent, "run_ledger", None), "turn_dir", None):
-                self._agent.run_ledger.append_event(
-                    "repair_iteration",
-                    status="verified" if succeeded else "failed",
-                    detail=(
-                        f"Repair iteration {iteration} {'succeeded' if succeeded else 'failed'} "
-                        f"for {failure_kind.value}."
-                    ),
-                    metadata={
-                        "iteration": iteration,
-                        "failure_kind": failure_kind.value,
-                        "repeated_failure": repeated_failure,
-                        "mutations": len(mutations),
-                        "checks": len(checks),
-                    },
-                )
 
             if succeeded:
                 report.succeeded = True
                 logger.info("Repair succeeded at iteration %d.", iteration)
                 break
 
-            # Collect the new failure context for the next iteration
             current_failure = (
                 verification_output
                 or self._extract_failure_from_response(response, events)
@@ -299,9 +258,8 @@ class RepairLoop:
         failure_context: str,
         failure_kind: FailureKind,
         iteration: int,
-        repeated_failure: bool = False,
+        strategy_name: str = "",
     ) -> str:
-        """Construct a targeted repair prompt for the given failure class."""
         template = self._TEMPLATES.get(failure_kind, self._TEMPLATES[FailureKind.UNKNOWN])
         body = template.format(
             original_prompt=original_prompt,
@@ -320,35 +278,25 @@ class RepairLoop:
                 )
             except (OSError, TypeError, ValueError):
                 graph_context = ""
-        strategy_guard = ""
-        if repeated_failure:
-            strategy_guard = (
-                "\nThe same failure signature has already occurred. Do not repeat the prior "
-                "patch. Re-check the root-cause assumption, inspect callers and tests, and use a "
-                "different minimal repair strategy.\n"
-            )
+
         return (
-            f"[REPAIR ITERATION {iteration}/{self._max_iterations}]\n\n"
+            f"[REPAIR ITERATION {iteration}/{self._max_iterations} | STRATEGY: {strategy_name}]\n\n"
             f"Original task: {original_prompt[:300]}\n\n"
-            f"{body}\n"
-            f"{strategy_guard}\n"
+            f"{body}\n\n"
             "Repair protocol:\n"
             "1. Reproduce or inspect the exact failure.\n"
             "2. Identify the smallest responsible code path.\n"
             "3. Read callers, contracts, and the nearest tests before editing.\n"
             "4. Apply a minimal coherent patch.\n"
-            "5. Run the narrow failing check first, then the applicable project checks.\n"
+            "5. Run the narrow failing check first, then applicable project checks.\n"
             "6. Do not claim success while any check is failing.\n\n"
             f"{graph_context}"
         )
 
     @staticmethod
     def _extract_failure_from_response(response: str, events: list[dict[str, Any]]) -> str:
-        """Extract the new failure context from a repair attempt's output."""
-        # Look for command failures in events
         for event in reversed(events):
             if isinstance(event, dict) and event.get("type") == "tool_call":
                 if not event.get("success", True):
                     return event.get("detail", response)[:2000]
-        # Fall back to the response text
         return response[:2000]
