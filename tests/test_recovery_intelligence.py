@@ -4,14 +4,11 @@ Unit Test Suite for Nexus CLI Recovery Intelligence (Sprint 7).
 
 from __future__ import annotations
 
-import json
-from decimal import Decimal
 import pytest
 
 from nexus.recovery import (
     AttemptSignature,
     BaselineAnalyzer,
-    BuildLintTypeDiagnoser,
     DiagnosisEngine,
     EnvironmentDiagnoser,
     FailureCategory,
@@ -19,8 +16,6 @@ from nexus.recovery import (
     FailureNormalizer,
     FailureRecord,
     FailureRelation,
-    FailureSeverity,
-    HypothesisStatus,
     LoopDetector,
     PatchQualityDiagnoser,
     RecoveryBudget,
@@ -31,8 +26,6 @@ from nexus.recovery import (
     StrategyRegistry,
     TerminalState,
     TerminalStateGovernance,
-    TestFailureDiagnoser,
-    UserInterventionManager,
 )
 
 

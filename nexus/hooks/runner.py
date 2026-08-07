@@ -9,7 +9,7 @@ Security:
 """
 
 import logging
-import subprocess
+from pathlib import Path
 
 from nexus.hooks.base import (
     BaseHook,
@@ -193,13 +193,21 @@ class HookRunner:
         cwd = self.working_dir or "."
         from nexus.process_gateway import ProcessExecutionGateway, ProcessRequest
         
+        # A very small set of inert filesystem/process primitives may run through
+        # the restricted fallback.  All formatters, tests, package managers, and
+        # repository-controlled executables still require native OS isolation.
+        inert_commands = {"touch", "true", "echo", "printf", "mkdir"}
+        executable = Path(command[0]).name.lower()
+        require_native = bool(getattr(hook, "require_native_isolation", True))
+        if executable in inert_commands and not getattr(hook, "network_access", False):
+            require_native = False
         request = ProcessRequest.create(
             purpose=f"hook_{hook.name}",
             command=command,
             workspace=cwd,
             timeout_seconds=30,
-            isolation_policy="required",
-            network_policy="allow", # Hooks might need network access
+            isolation_policy="required" if require_native else "trusted_host",
+            network_policy="allow" if getattr(hook, "network_access", False) else "deny",
         )
         result = ProcessExecutionGateway.run(request)
 

@@ -1,25 +1,21 @@
 """Comprehensive Unit Test Suite for Sprint 6 Planning Intelligence Subsystem."""
 
-import pytest
-from pathlib import Path
-from nexus.planning.task_contract import (
-    TaskContract, Requirement, RequirementSource, TaskType, RiskLevel, Question, Assumption
-)
+from nexus.planning.acceptance import AcceptanceEngine
 from nexus.planning.ambiguity import AmbiguityEngine
-from nexus.planning.engineering_plan import (
-    EngineeringPlan, PlanStep, ActionType, Hypothesis, HypothesisStatus
-)
-from nexus.planning.acceptance import AcceptanceEngine, VerificationType
-from nexus.planning.validator import DeterministicValidator, IssueSeverity
-from nexus.planning.graph import PlanDependencyGraph
-from nexus.planning.scope import ScopeEstimator
-from nexus.planning.risk import RiskAssessor
-from nexus.planning.cost import CostEstimator
-from nexus.planning.critic import PlanCritic, CritiqueDecision
-from nexus.planning.execution_contract import ExecutionContractGenerator
-from nexus.planning.replanner import PlanReplanner
-from nexus.planning.policies import PlanningPolicyRegistry
+from nexus.planning.critic import CritiqueDecision, PlanCritic
 from nexus.planning.engine import PlanningEngine
+from nexus.planning.engineering_plan import ActionType, EngineeringPlan, PlanStep
+from nexus.planning.execution_contract import ExecutionContractGenerator
+from nexus.planning.graph import PlanDependencyGraph
+from nexus.planning.replanner import PlanReplanner
+from nexus.planning.task_contract import (
+    Requirement,
+    RequirementSource,
+    RiskLevel,
+    TaskContract,
+    TaskType,
+)
+from nexus.planning.validator import DeterministicValidator, IssueSeverity
 
 
 def test_task_contract_serialization():

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
 from pathlib import Path
+from typing import Any, Dict
+
 from nexus.events import EventBus, EventType
 from nexus.intelligence.repository.engine import RepositoryIntelligence
 

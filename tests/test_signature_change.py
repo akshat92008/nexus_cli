@@ -1,15 +1,16 @@
 """Tests for SignatureChangeOrchestrator (Sprint 8)."""
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
 
+import pytest
+
+from nexus.multifile.contracts import CompatibilityPolicy
 from nexus.multifile.signature import (
     ParameterDiff,
     SignatureChange,
     SignatureChangeOrchestrator,
 )
-from nexus.multifile.contracts import CompatibilityPolicy
 
 
 def _write(path: Path, content: str) -> None:

@@ -1,5 +1,19 @@
 # NEXUS CLI and `nova_codex` capability report
 
+## Nexus 3.8.2 launch and repository-intelligence boundary
+
+- Engineering deliberation compiles falsifiable hypotheses, evidence requirements, invariants, alternatives, and stop conditions before high-risk mutation.
+- Failure evidence drives repository context expansion through stack paths, failing tests, symbols, imports, reverse dependencies, callers, configuration, migration surfaces, and concurrency signals under risk-scaled file/token/graph-hop budgets.
+- Multi-file completion is an executable contract: missing inspection, required coordinated edits, targeted verification, unexpected paths, or preserved-file violations block completion.
+- Test evidence is fail-closed: only a recognized runner with observable execution, exact scope, revision binding, and content-addressed provenance can satisfy completion; narrow passes cannot erase broad failures.
+- Recovery extracts stack paths, symbols, test nodes, missing modules, migration signals, and concurrency symptoms directly from raw runtime failures; it then requires evidence delta and structural plan mutation, so duplicate evidence cannot masquerade as replanning or loop indefinitely.
+- Model routing distinguishes measured capability evidence from conservative priors and blocks autonomous high-risk certification when evidence is missing.
+- `nexus benchmark duel` supports Nexus, a same-model direct baseline, and real Claude Code on blind matched repositories; `nexus benchmark superiority-gate` refuses a claim without private unseen tasks, withheld oracles, distinct provenance, repeated trials, per-category wins, cost, latency, intervention evidence, and a valid independent Ed25519 evaluator signature.
+- `nexus sandbox qualify` behaviorally attests process containment, filesystem isolation, network isolation, and the supported execution mode for the current host.
+- Release qualification now requires both per-module process isolation and the entire suite in one interpreter.
+
+The product objective is to outperform Claude Code. The runtime now contains a strict empirical gate for that claim; until real private benchmark evidence passes it, the software reports the goal as unproven rather than lowering the goal.
+
 Updated on 2026-07-29. The local Nova model used by Nexus is the Ollama model named **`nova_codex`**. Nexus exposes it through the model key `nova3b` and aliases including `nova_codex`, `nova`, and `local`.
 
 This report separates model generation ability from Nexus enforcement. “Guarded” means Nexus can detect and stop a bad result; it does not mean `nova_codex` always generates the right result on its first attempt.
@@ -114,7 +128,7 @@ This report separates model generation ability from Nexus enforcement. “Guarde
 
 ## Current Claude Code parity boundary
 
-Nexus 3.2.1 covers the open runtime described in its product
+Nexus 3.5.0 covers the open runtime described in its product
 specification: guarded model orchestration, persistent repository
 intelligence, typed task contracts and tools, automatic workspaces, optional
 native sandboxing, bounded repair and review, behavioral verification,
@@ -131,7 +145,7 @@ cloud, mobile, IDE, and Remote Control services are not Nexus features.
 
 ## Raw verification record
 
-- Version 3.2.1 deterministic Python suite and release-gate totals are recorded
+- Version 3.6.1 deterministic Python suite and release-gate totals are recorded
   by the tagged CI run and benchmark JSON rather than hard-coded before CI.
 - The release gate also runs Ruff, byte-compilation, sdist/wheel builds, an
   isolated wheel-target install, packaged Nova and web backend imports,
@@ -141,3 +155,35 @@ cloud, mobile, IDE, and Remote Control services are not Nexus features.
   scenarios remain failures; they are not relabeled as passes.
 
 No benchmark percentage beyond these recorded runs is claimed.
+
+
+## 3.6.1 execution-truth hardening
+
+The canonical runtime now adds these enforced invariants:
+
+- plugin, extension, and MCP calls always normalize to structured `ToolResult` values;
+- orchestration success is determined only by `ToolStatus.SUCCESS`, never display text;
+- MCP `isError` responses remain failures through the Agent boundary;
+- shell commands are wrapped in a content-addressed workspace transaction that detects creations, modifications, deletions, permission changes, symlink changes, and timestamp-preserving rewrites;
+- failed commands automatically restore and verify the complete pre-command snapshot;
+- command mutation evidence uses typed artifact records and verifies expected deletion as well as expected content;
+- explicit repair intent outranks secondary “add tests” language, risky moderate repairs require a plan, and canonical plan tools must exist in the live registry;
+- a process-isolated pytest-module gate detects functional regressions without allowing leaked global state from one module to contaminate another.
+
+These controls improve runtime reliability and eliminate the audit findings. Model-level Claude Code equivalence still requires external matched-model benchmarks.
+
+## 3.6.0 truth-integrity boundary
+
+Nexus now guarantees the following deterministic invariants in the active Verified Repair path:
+
+- repository cache reuse requires a matching content hash, not matching timestamps or sizes;
+- planning, editing, verification, and recovery evidence carry repository revision identities;
+- explicit prohibitions compile into tool-level and semantic policies;
+- model prose is never acceptance evidence;
+- scope expansion requires Nexus-registered dependency/compiler/test evidence or explicit human authority;
+- writes use optimistic concurrency checks;
+- persistent engineering state is HMAC-authenticated with external key material;
+- the installed wheel must execute a real bounded repair and adversarial integrity suite;
+- supervised production readiness and autonomous production readiness are reported separately.
+
+The release still does not establish frontier-model coding intelligence, unattended production safety, or Claude Code equivalence.

@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 import time
 import tracemalloc
 from collections import OrderedDict, deque
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+
+from nexus.storage import exclusive_file_lock
 
 
 @dataclass(frozen=True)
@@ -134,18 +138,28 @@ class ContentHashCache:
     def _save(self) -> None:
         while len(self._entries) > self.max_entries:
             self._entries.popitem(last=False)
-        self.path.write_text(
-            json.dumps(
-                {
-                    "version": "nexus.performance.cache.v1",
-                    "parser_version": self.parser_version,
-                    "entries": dict(self._entries),
-                },
-                indent=2,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
-        )
+        payload = json.dumps(
+            {
+                "version": "nexus.performance.cache.v2",
+                "parser_version": self.parser_version,
+                "entries": dict(self._entries),
+            },
+            indent=2,
+            sort_keys=True,
+        ) + "\n"
+        with exclusive_file_lock(self.path):
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f".{self.path.name}.", dir=str(self.path.parent), text=True
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp_name, self.path)
+            finally:
+                if os.path.exists(temp_name):
+                    os.unlink(temp_name)
 
     def get(self, path: Path) -> dict[str, Any] | None:
         key = str(Path(path).resolve())
@@ -161,9 +175,10 @@ class ContentHashCache:
 
     def put(self, path: Path, value: dict[str, Any]) -> dict[str, Any]:
         file_path = Path(path)
+        fingerprint = _fingerprint(file_path)
         item = {
-            "fingerprint": _fingerprint(file_path),
-            "content_hash": hashlib.sha256(file_path.read_bytes()).hexdigest(),
+            "fingerprint": fingerprint,
+            "content_hash": fingerprint["sha256"],
             "value": value,
             "stored_at": time.time(),
         }
@@ -209,5 +224,24 @@ class LowResourceProfile:
 
 
 def _fingerprint(path: Path) -> dict[str, Any]:
-    stat = path.stat()
-    return {"mtime_ns": stat.st_mtime_ns, "size": stat.st_size}
+    """Return a content-aware, stable fingerprint.
+
+    Metadata is retained for diagnostics only; cache validity is anchored to bytes.
+    The retry loop avoids accepting a file that changed while it was being read.
+    """
+    file_path = Path(path)
+    for _attempt in range(3):
+        before = file_path.stat()
+        data = file_path.read_bytes()
+        after = file_path.stat()
+        if (
+            before.st_mtime_ns == after.st_mtime_ns
+            and before.st_size == after.st_size
+            and len(data) == after.st_size
+        ):
+            return {
+                "sha256": hashlib.sha256(data).hexdigest(),
+                "mtime_ns": after.st_mtime_ns,
+                "size": after.st_size,
+            }
+    raise OSError(f"File changed repeatedly while fingerprinting: {file_path}")

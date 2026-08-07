@@ -8,10 +8,10 @@ from __future__ import annotations
 import difflib
 import hashlib
 import os
-import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
 from nexus.events import EventBus, EventType
 
 

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from nexus.planning.task_contract import Requirement, TaskContract, RiskLevel
+from nexus.planning.task_contract import RiskLevel, TaskContract
 
 
 class VerificationType(str, Enum):

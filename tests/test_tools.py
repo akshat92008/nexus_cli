@@ -11,7 +11,12 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from nexus.tools import ToolResult, ToolStatus, RAW_TOOL_DEFINITIONS, TOOL_DISPATCH, execute_tool  # noqa: E402
+from nexus.tools import (  # noqa: E402
+    RAW_TOOL_DEFINITIONS,
+    TOOL_DISPATCH,
+    ToolResult,
+    execute_tool,
+)
 
 
 class _FakeHTTPResponse:
@@ -188,21 +193,21 @@ def test_search_code():
 
 def test_run_command():
     """run_command should execute a shell command."""
-    result = execute_tool("run_command", {"command": "echo hello_test"})
+    result = execute_tool("run_command", {"command": "echo hello_test", "require_os_isolation": False, "allow_unisolated_host_process": True})
     assert "✅" in result.output
     assert "hello_test" in result.output
 
 
 def test_run_command_string_timeout():
     """run_command should handle timeout passed as a string without crashing."""
-    result = execute_tool("run_command", {"command": "echo timeout_test", "timeout": "120"})
+    result = execute_tool("run_command", {"command": "echo timeout_test", "timeout": "120", "require_os_isolation": False, "allow_unisolated_host_process": True})
     assert "✅" in result.output
     assert "timeout_test" in result.output
 
 
 def test_run_command_failure():
     """run_command should show exit code for failed commands."""
-    result = execute_tool("run_command", {"command": "exit 1"})
+    result = execute_tool("run_command", {"command": "exit 1", "require_os_isolation": False, "allow_unisolated_host_process": True})
     assert "❌" in result.output or "exit code 1" in result.output
 
 
@@ -324,7 +329,7 @@ def test_all_tools_execute():
 
 def test_resolve_path():
     """Relative desktop paths stay scoped to the active workspace."""
-    from nexus.tools import ToolResult, ToolStatus, _resolve_path
+    from nexus.tools import _resolve_path
 
     dt_path = _resolve_path("desktop/calculator/index.html")
     expected = Path.cwd() / "desktop" / "calculator" / "index.html"
@@ -333,7 +338,7 @@ def test_resolve_path():
 
 def test_normalize_tool_arguments():
     """normalize_tool_arguments should normalize parameter names."""
-    from nexus.tools import ToolResult, ToolStatus, normalize_tool_arguments
+    from nexus.tools import normalize_tool_arguments
 
     res1 = normalize_tool_arguments("write_file", {"file_path": "a.py", "content": "1"})
     assert res1["path"] == "a.py"
@@ -348,7 +353,7 @@ def test_normalize_tool_arguments():
 def test_tool_repo_index(monkeypatch, tmp_path):
 
     # We must ensure _tool_working_dir returns tmp_path
-    from nexus.tools import ToolResult, ToolStatus, _tool_working_dir, tool_repo_index
+    from nexus.tools import _tool_working_dir, tool_repo_index
 
     _tool_working_dir.set(str(tmp_path))
 
@@ -357,7 +362,7 @@ def test_tool_repo_index(monkeypatch, tmp_path):
 
 
 def test_tool_repo_symbols(monkeypatch, tmp_path):
-    from nexus.tools import ToolResult, ToolStatus, _tool_working_dir, tool_repo_symbols
+    from nexus.tools import _tool_working_dir, tool_repo_symbols
 
     _tool_working_dir.set(str(tmp_path))
 
@@ -370,7 +375,7 @@ def test_tool_repo_symbols(monkeypatch, tmp_path):
 
 
 def test_tool_repo_impact(monkeypatch, tmp_path):
-    from nexus.tools import ToolResult, ToolStatus, _tool_working_dir, tool_repo_impact
+    from nexus.tools import _tool_working_dir, tool_repo_impact
 
     _tool_working_dir.set(str(tmp_path))
 
@@ -382,7 +387,7 @@ def test_tool_repo_impact(monkeypatch, tmp_path):
 
 
 def test_tool_repo_context(monkeypatch, tmp_path):
-    from nexus.tools import ToolResult, ToolStatus, _tool_working_dir, tool_repo_context
+    from nexus.tools import _tool_working_dir, tool_repo_context
 
     _tool_working_dir.set(str(tmp_path))
 
@@ -395,7 +400,7 @@ def test_tool_repo_context(monkeypatch, tmp_path):
 def test_tool_api_check(monkeypatch):
     import httpx
 
-    from nexus.tools import ToolResult, ToolStatus, tool_api_check
+    from nexus.tools import tool_api_check
 
     class MockResponse:
         def __init__(self):
@@ -417,7 +422,7 @@ def test_tool_api_check(monkeypatch):
 
 
 def test_tool_database_check_migration():
-    from nexus.tools import ToolResult, ToolStatus, tool_database_check
+    from nexus.tools import tool_database_check
 
     res = tool_database_check(sql="DROP TABLE users;")
     assert "failed" in res
@@ -425,7 +430,7 @@ def test_tool_database_check_migration():
 
 
 def test_tool_security_scan(tmp_path):
-    from nexus.tools import ToolResult, ToolStatus, _tool_working_dir, tool_security_scan
+    from nexus.tools import _tool_working_dir, tool_security_scan
 
     _tool_working_dir.set(str(tmp_path))
 
@@ -438,7 +443,7 @@ def test_tool_security_scan(tmp_path):
 def test_tool_browser_check(monkeypatch):
     from unittest.mock import MagicMock
 
-    from nexus.tools import ToolResult, ToolStatus, tool_browser_check
+    from nexus.tools import tool_browser_check
 
     sync_api = pytest.importorskip("playwright.sync_api")
 

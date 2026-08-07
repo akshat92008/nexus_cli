@@ -1,18 +1,18 @@
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from nexus.collaboration.integration import IntegrationCoordinator
 from nexus.collaboration.lead_orchestrator import LeadOrchestrator
 from nexus.collaboration.models import (
+    AgentAssignment,
     CollaborationPolicyProfile,
+    CollaborationState,
+    MutationPolicy,
     WorkerResult,
     WorkerResultStatus,
     WorkerReview,
-    CollaborationState,
-    AgentAssignment,
-    MutationPolicy,
 )
+
 
 class AsyncMock(MagicMock):
     async def __call__(self, *args, **kwargs):
@@ -59,6 +59,7 @@ def test_integration_coordinator_rejects_missing_verifier():
 
 
 import asyncio
+
 
 def test_lead_orchestrator_fails_on_stub_pass(tmp_path: Path):
     """Verify that the orchestrator does not accept STUB_PASS as a success."""

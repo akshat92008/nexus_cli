@@ -4,9 +4,9 @@ Adaptive Model Router — Task-Specific Capability Matching, Portfolio Modes and
 
 from __future__ import annotations
 
-import hashlib
-import time
-from dataclasses import asdict, dataclass, field
+import os
+import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -78,6 +78,9 @@ class RoutingDecision:
     policy_constraints: list[str]
     escalation_allowed: bool = True
     approval_required: bool = False
+    meets_requirements: bool = True
+    capability_gaps: list[str] = field(default_factory=list)
+    evaluation_source: str = ""
     timestamp: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
     def to_dict(self) -> dict[str, Any]:
@@ -94,6 +97,9 @@ class RoutingDecision:
             "policy_constraints": self.policy_constraints,
             "escalation_allowed": self.escalation_allowed,
             "approval_required": self.approval_required,
+            "meets_requirements": self.meets_requirements,
+            "capability_gaps": self.capability_gaps,
+            "evaluation_source": self.evaluation_source,
             "timestamp": self.timestamp,
         }
 
@@ -161,7 +167,11 @@ class ModelRouter:
         portfolio_mode = PortfolioMode(mode) if isinstance(mode, str) else mode
         failed_set = set(previous_failed_models or [])
 
-        descriptors = model_registry.list_all()
+        descriptors = [
+            item
+            for item in model_registry.list_all()
+            if item.enabled and (item.backend != "custom" or os.environ.get("NEXUS_MODEL_ID", "").strip())
+        ]
         reasons: list[str] = []
         policy_constraints: list[str] = []
 
@@ -190,12 +200,21 @@ class ModelRouter:
             # Fallback to all enabled descriptors if filtering over-constrained
             valid_descs = model_registry.list_all()
 
-        # Score & Rank Descriptors
-        scored_candidates: list[tuple[float, ModelDescriptor, CapabilityProfile]] = []
+        if not valid_descs:
+            raise RuntimeError("No enabled model satisfies the required privacy, tool, structured-output, and context constraints.")
+
+        # Score & rank candidates.  Certified candidates are always preferred
+        # over merely high-scoring candidates for high-risk work.
+        scored_candidates: list[tuple[float, ModelDescriptor, CapabilityProfile, list[str]]] = []
         for desc in valid_descs:
             profile = model_doctor.get_profile(desc.model_id)
+            gaps = self._capability_gaps(profile, requirements)
             score = self._evaluate_model_suitability(desc, profile, requirements, portfolio_mode, budget_remaining_usd)
-            scored_candidates.append((score, desc, profile))
+            if not gaps:
+                score += 500.0
+            elif requirements.risk_level in ("high", "critical"):
+                score -= 500.0
+            scored_candidates.append((score, desc, profile, gaps))
 
         scored_candidates.sort(key=lambda x: x[0], reverse=True)
 
@@ -225,14 +244,25 @@ class ModelRouter:
             approval = True
             policy_constraints.append("Frontier tier model selected; requires user approval")
 
-        sel_profile = model_doctor.get_profile(selected_desc.model_id)
-        confidence = 0.85 if sel_profile and sel_profile.overall_band in (CapabilityBand.STRONG, CapabilityBand.SUITABLE) else 0.60
+        selected_row = next(item for item in scored_candidates if item[1] == selected_desc)
+        sel_profile = selected_row[2]
+        capability_gaps = list(selected_row[3])
+        meets_requirements = not capability_gaps
+        measured = bool(sel_profile and sel_profile.source not in {"conservative-prior", "prior", "unknown"})
+        if requirements.risk_level in ("high", "critical") and not measured:
+            capability_gaps.append("high-risk routing requires measured Model Doctor evidence; profile is prior-only")
+            meets_requirements = False
+        confidence = 0.85 if meets_requirements and sel_profile and sel_profile.overall_band in (CapabilityBand.STRONG, CapabilityBand.SUITABLE) else 0.45
+        if not meets_requirements:
+            approval = True
+            policy_constraints.append("Selected model is not certified for every required capability; autonomous execution is blocked pending approval or escalation")
+            reasons.append("Capability gaps: " + "; ".join(capability_gaps))
 
         reasons.append(f"Phase {requirements.phase.value} risk {requirements.risk_level}")
         reasons.append(f"Estimated cost ${expected_cost:.6f}")
 
         decision = RoutingDecision(
-            decision_id=f"route-{hash(time.time()) & 0xFFFFFFFF:08x}",
+            decision_id=f"route-{uuid.uuid4().hex[:12]}",
             task_phase=requirements.phase,
             selected_model=selected_desc.display_name,
             selected_model_key=selected_key,
@@ -244,10 +274,31 @@ class ModelRouter:
             policy_constraints=policy_constraints,
             escalation_allowed=True,
             approval_required=approval,
+            meets_requirements=meets_requirements,
+            capability_gaps=capability_gaps,
+            evaluation_source=f"model_doctor:{getattr(sel_profile, 'source', 'missing')}",
         )
 
         self.history.append(decision)
         return decision
+
+    @staticmethod
+    def _capability_gaps(
+        profile: CapabilityProfile | None,
+        requirements: TaskCapabilityRequirements,
+    ) -> list[str]:
+        if profile is None:
+            return ["capability profile unavailable"]
+        gaps: list[str] = []
+        for dimension, minimum in requirements.minimum_capabilities.items():
+            score = profile.capabilities.get(dimension.value)
+            if score is None:
+                gaps.append(f"{dimension.value}: missing (required {minimum:.2f})")
+            elif score.score < minimum:
+                gaps.append(f"{dimension.value}: {score.score:.2f} < {minimum:.2f}")
+            elif score.confidence < 0.50:
+                gaps.append(f"{dimension.value}: confidence {score.confidence:.2f} < 0.50")
+        return gaps
 
     def _evaluate_model_suitability(
         self,
@@ -278,6 +329,19 @@ class ModelRouter:
         elif mode == PortfolioMode.FASTEST:
             if desc.local:
                 score += 35.0
+
+        # High-risk work must not be routed to weak local models merely because
+        # they are cheap.  Strong/frontier tiers receive an explicit reliability
+        # premium, while unqualified local profiles are penalized.
+        if reqs.risk_level in ("high", "critical"):
+            if desc.tier == ModelTier.FRONTIER:
+                score += 35.0
+            elif desc.tier == ModelTier.STRONG:
+                score += 28.0
+            elif desc.tier == ModelTier.AFFORDABLE:
+                score += 8.0
+            elif desc.tier == ModelTier.LOCAL:
+                score -= 35.0
 
         # Capability profile matching
         if profile:

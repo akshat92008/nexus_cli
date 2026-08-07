@@ -1,9 +1,11 @@
 """Tests for migration workflows (Sprint 8)."""
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
 
+import pytest
+
+from nexus.multifile.contracts import ChangeType
 from nexus.multifile.migrations import (
     ConfigurationMigration,
     DependencyChange,
@@ -13,7 +15,6 @@ from nexus.multifile.migrations import (
     MigrationStatus,
     SchemaMigration,
 )
-from nexus.multifile.contracts import CompatibilityPolicy, ChangeType
 
 
 def _write(path: Path, content: str) -> None:
@@ -190,7 +191,11 @@ def test_framework_migration_stage_valid(repo):
 
 def test_failed_intermediate_stage_blocks_continuation(tmp_path):
     """StagedChangeSetExecutor does not run later stages after a mandatory one fails."""
-    from nexus.multifile.contracts import ChangeStage, ChangeStageStatus, EngineeringChangeSet, PlannedFileChange, ChangeType
+    from nexus.multifile.contracts import (
+        ChangeStage,
+        EngineeringChangeSet,
+        PlannedFileChange,
+    )
     from nexus.multifile.staged_execution import StagedChangeSetExecutor
 
     cs = EngineeringChangeSet(

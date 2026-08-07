@@ -33,10 +33,10 @@ import logging
 import re
 import shlex
 import time
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Protocol
-
 
 from nexus.approvals import preview_mutation
 from nexus.capabilities import ToolCapability
@@ -47,10 +47,16 @@ from nexus.hooks.base import HookContext, HookEvent
 from nexus.planner import TaskStatus
 from nexus.policy import PermissionDecision
 from nexus.recovery.controller import RecoveryController
-from nexus.recovery.records import FailureRecord
 from nexus.safety import SafetyCheck, SafetyLevel
 from nexus.security.policy_engine import PolicyEngine
-from nexus.tools import execute_tool
+from nexus.tools import ToolResult, ToolStatus, execute_tool
+from nexus.verification_evidence import analyse_test_command, validate_test_execution
+from nexus.workspace_journal import (
+    ContentAddressedWorkspaceJournal,
+    WorkspaceMutation,
+    WorkspaceSnapshot,
+    WorkspaceSnapshotError,
+)
 
 if TYPE_CHECKING:
     from nexus.agent import Agent
@@ -131,11 +137,48 @@ class ToolExecutionController:
     def __init__(self, agent: "Agent") -> None:
         self._agent = agent
         self._policy_engine: PolicyEngine | None = PolicyEngine()
-        self._recovery_controller: RecoveryController = RecoveryController(
+        shared_recovery = getattr(agent, "recovery_controller", None)
+        self._recovery_controller: RecoveryController = shared_recovery or RecoveryController(
             run_id=getattr(agent, "conversation_id", None),
             working_dir=getattr(agent, "working_dir", "."),
             budget=getattr(agent, "budget", None),
         )
+        self._command_workspace_journal: ContentAddressedWorkspaceJournal | None = None
+
+    def _history_count(self) -> int:
+        """Return a compatible history length for real and protocol-test agents."""
+        history = getattr(self._agent, "history", None)
+        changes = getattr(history, "changes", history if isinstance(history, list) else ())
+        try:
+            return len(changes)
+        except TypeError:
+            return 0
+
+    @staticmethod
+    def _estimated_mutation_lines(name: str, args: dict[str, Any]) -> int:
+        """Conservative changed-line estimate used before disk mutation."""
+        if name == "write_file":
+            return max(1, len(str(args.get("content", "")).splitlines()))
+        if name == "edit_file":
+            return max(
+                1,
+                len(str(args.get("old_text", "")).splitlines()),
+                len(str(args.get("new_text", "")).splitlines()),
+            )
+        if name == "patch_file":
+            old_span = max(0, int(args.get("end_line", 0) or 0) - int(args.get("start_line", 0) or 0) + 1)
+            return max(1, old_span, len(str(args.get("new_content", "")).splitlines()))
+        if name == "multi_edit":
+            return sum(
+                max(
+                    1,
+                    len(str(item.get("old_text", "")).splitlines()),
+                    len(str(item.get("new_text", "")).splitlines()),
+                )
+                for item in args.get("edits", [])
+                if isinstance(item, dict)
+            )
+        return 0
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public interface
@@ -152,6 +195,7 @@ class ToolExecutionController:
     ) -> tuple[str, bool]:
         """Execute a guarded tool and mirror its outcome into the run ledger."""
         started = time.monotonic()
+        history_start = self._history_count()
         from nexus.run_context import run_context_scope
         from nexus.tools import tool_context
 
@@ -222,6 +266,35 @@ class ToolExecutionController:
                     self._agent.repo_graph.update_paths(path for path in raw_paths if path)
                 except (OSError, ValueError) as exc:
                     logger.debug("Repository graph incremental refresh failed: %s", exc)
+                brain = getattr(self._agent, "engineering_brain", None)
+                if brain is not None:
+                    mutation_paths = [path for path in raw_paths if path]
+                    estimated_lines = self._estimated_mutation_lines(name, args)
+                    try:
+                        brain.record_changes([
+                            (path, f"verified mutation via {name}", estimated_lines)
+                            for path in mutation_paths
+                        ])
+                    except Exception as exc:
+                        self._agent.evidence.append(
+                            kind="engineering_state_integrity",
+                            claim="Persist verified mutation in HMAC-authenticated task memory",
+                            status="failed",
+                            raw_output=str(exc),
+                            metadata={
+                                "paths": [str(path) for path in mutation_paths],
+                                "tool": name,
+                                "error_type": type(exc).__name__,
+                            },
+                        )
+                        return self._rollback_post_mutation_failure(
+                            history_start=history_start,
+                            reason=f"Engineering task state could not be persisted: {exc}",
+                            tool=name,
+                        )
+                    guard = getattr(brain, "scope_guard", None)
+                    if guard is not None:
+                        guard.register_change(mutation_paths, lines_changed=estimated_lines)
                 self._agent.run_ledger.checkpoint(
                     f"verified-{name}",
                     plan=self._agent._active_plan,
@@ -559,22 +632,88 @@ class ToolExecutionController:
                 )
         return True, mutation_diff, ("", False)
 
+    @staticmethod
+    def _external_result(result: Any, *, source: str) -> ToolResult:
+        """Normalize extension results into the authoritative structured contract."""
+        if isinstance(result, ToolResult):
+            return result
+        if isinstance(result, dict):
+            supplied_status = result.get("status")
+            raw_status = str(supplied_status or "").strip().lower()
+            raw_status = raw_status.removeprefix("toolstatus.")
+            is_error = bool(result.get("isError") or result.get("is_error"))
+            aliases = {
+                "ok": ToolStatus.SUCCESS,
+                "passed": ToolStatus.SUCCESS,
+                "failed": ToolStatus.FAILURE,
+                "error": ToolStatus.FAILURE,
+                "denied": ToolStatus.PERMISSION_DENIED,
+            }
+            if isinstance(supplied_status, ToolStatus):
+                status = supplied_status
+            elif raw_status in {item.value for item in ToolStatus}:
+                status = ToolStatus(raw_status)
+            elif raw_status in aliases:
+                status = aliases[raw_status]
+            elif supplied_status not in (None, ""):
+                status = ToolStatus.FAILURE
+                is_error = True
+            else:
+                status = ToolStatus.FAILURE if is_error else ToolStatus.SUCCESS
+            output_value = result.get("output", result.get("content", result))
+            if isinstance(output_value, (dict, list)):
+                output = json.dumps(output_value, ensure_ascii=False, default=str)
+            else:
+                output = str(output_value)
+            default_error = (
+                f"Invalid {source} status: {supplied_status}"
+                if supplied_status not in (None, "") and status == ToolStatus.FAILURE
+                and raw_status not in {item.value for item in ToolStatus}
+                and raw_status not in aliases
+                else (f"{source} error" if is_error else "")
+            )
+            return ToolResult(
+                status=status,
+                output=output,
+                error=str(result.get("error") or default_error),
+            )
+        return ToolResult(status=ToolStatus.SUCCESS, output=str(result))
+
+    @staticmethod
+    def _mcp_output(response: dict[str, Any]) -> str:
+        content = response.get("content", [])
+        if not isinstance(content, list):
+            return str(content)
+        chunks: list[str] = []
+        for item in content:
+            if isinstance(item, dict):
+                if "text" in item:
+                    chunks.append(str(item["text"]))
+                else:
+                    chunks.append(json.dumps(item, ensure_ascii=False, default=str))
+            else:
+                chunks.append(str(item))
+        return "\n".join(chunks)
+
     def _dispatch_tool_execution(
         self,
         name: str,
         args: dict,
     ) -> ToolResult:
-        # Check plugin tool dispatch first
+        """Dispatch one tool and always return a structured, truthful result."""
         for plugin in self._agent.plugin_loader.plugins.values():
             dispatch = plugin.get_tool_dispatch()
-            if name in dispatch:
-                try:
-                    res = dispatch[name](**args)
-                    if isinstance(res, ToolResult):
-                        return res
-                    return ToolResult(status=ToolStatus.SUCCESS, output=str(res))
-                except LookupError as e:
-                    return ToolResult(status=ToolStatus.FAILURE, output=f"❌ Plugin tool error: {e}", error=str(e))
+            if name not in dispatch:
+                continue
+            try:
+                return self._external_result(dispatch[name](**args), source="plugin")
+            except Exception as exc:
+                logger.exception("Plugin tool %s failed", name)
+                return ToolResult(
+                    status=ToolStatus.FAILURE,
+                    output=f"Plugin tool failed: {exc}",
+                    error=str(exc),
+                )
 
         for extension_tool in self._agent.extensions.loaded("tools"):
             if extension_tool.name != name:
@@ -593,74 +732,501 @@ class ToolExecutionController:
                         permission_mode=self._agent.permission_mode,
                     ),
                 )
-                output = (
-                    extension_result
-                    if isinstance(extension_result, str)
-                    else json.dumps(extension_result, ensure_ascii=False)
+                return self._external_result(extension_result, source="extension")
+            except Exception as exc:
+                logger.exception("Extension tool %s failed", name)
+                return ToolResult(
+                    status=ToolStatus.FAILURE,
+                    output=f"Extension tool failed: {exc}",
+                    error=str(exc),
                 )
-                return ToolResult(status=ToolStatus.SUCCESS, output=output)
-            except (TypeError, ValueError) as exc:
-                return ToolResult(status=ToolStatus.FAILURE, output=f"❌ Extension tool error: {exc}", error=str(exc))
 
         if self._agent.mcp.is_mcp_tool(name):
-            res = self._agent.mcp.call_tool(name, args)
-            if isinstance(res, dict) and "content" in res:
-                # Basic handling of MCP response structure
-                content = res["content"]
-                if isinstance(content, list) and len(content) > 0 and "text" in content[0]:
-                    output = content[0]["text"]
-                else:
-                    output = str(content)
-                is_error = res.get("isError", False)
-                status = ToolStatus.FAILURE if is_error else ToolStatus.SUCCESS
-                return ToolResult(status=status, output=output, error="MCP Error" if is_error else "")
-            return ToolResult(status=ToolStatus.SUCCESS, output=str(res))
-        else:
-            tool_result = execute_tool(name, args, policy_engine=self._policy_engine)
-            # Route failures through RecoveryController (P1-10)
-            if tool_result.status.value in ("failure", "blocked") and tool_result.error:
-                raw_failure = {
-                    "tool": name,
-                    "error": tool_result.error,
-                    "output": tool_result.output,
-                    "args": args,
-                }
-                failure_record = FailureRecord(raw=raw_failure)
-                strategy, _diag, terminal = self._recovery_controller.handle_failure(
-                    failure_record,
-                    source_component="tool_executor",
-                    phase="tool_dispatch",
+            try:
+                response = self._agent.mcp.call_tool(name, args)
+            except Exception as exc:
+                logger.exception("MCP tool %s failed", name)
+                return ToolResult(
+                    status=ToolStatus.FAILURE,
+                    output=f"MCP tool failed: {exc}",
+                    error=str(exc),
                 )
-                logger.debug(
-                    "RecoveryController outcome for %s: strategy=%s terminal=%s",
-                    name,
-                    getattr(strategy, "name", strategy),
-                    terminal,
+            if isinstance(response, dict) and "content" in response:
+                is_error = bool(response.get("isError") or response.get("is_error"))
+                return ToolResult(
+                    status=ToolStatus.FAILURE if is_error else ToolStatus.SUCCESS,
+                    output=self._mcp_output(response),
+                    error=str(response.get("error") or ("MCP error" if is_error else "")),
                 )
-            # Return the full ToolResult — _execute_impl accesses .output, .status, etc.
-            return tool_result
+            return self._external_result(response, source="mcp")
+
+        tool_result = execute_tool(name, args, policy_engine=self._policy_engine)
+        if tool_result.status in {ToolStatus.FAILURE, ToolStatus.BLOCKED} and tool_result.error:
+            raw_failure = {
+                "tool": name,
+                "error": tool_result.error,
+                "output": tool_result.output,
+                "args": args,
+            }
+            strategy, _diag, terminal = self._recovery_controller.handle_failure(
+                raw_failure,
+                source_component="tool_executor",
+                phase="tool_dispatch",
+            )
+            logger.debug(
+                "RecoveryController outcome for %s: strategy=%s terminal=%s",
+                name,
+                getattr(strategy, "name", strategy),
+                terminal,
+            )
+        return tool_result
 
 
-    def _snapshot_workspace(self) -> dict[str, float]:
-        """Snapshot the actual workspace before execution."""
-        snapshot = {}
-        ignored = {".git", ".nexusai", "node_modules", "venv", ".venv", "__pycache__", "history", ".pytest_cache"}
-        wd = Path(self._agent.working_dir)
+    def _enforce_engineering_scope(
+        self,
+        name: str,
+        args: dict[str, Any],
+        scope_paths: list[str],
+        mutation_tools: tuple[str, ...],
+    ) -> tuple[bool, tuple[str, bool] | None]:
+        """Enforce the repository-aware mutation boundary below the model."""
+        brain = getattr(self._agent, "engineering_brain", None)
+        if name not in mutation_tools or brain is None:
+            return True, None
+        scope_reason = str(args.get("scope_reason") or args.get("reason") or "")
+        raw_scope_evidence = args.get("scope_evidence") or []
+        if isinstance(raw_scope_evidence, dict):
+            raw_scope_evidence = [raw_scope_evidence]
+        if not isinstance(raw_scope_evidence, list):
+            raw_scope_evidence = []
+        decision = brain.authorize_mutation(
+            scope_paths,
+            expansion_evidence=raw_scope_evidence,
+            reason=scope_reason,
+        )
+        if not decision.allowed:
+            return False, (
+                f"❌ BLOCKED: Engineering scope contract: {decision.reason}",
+                False,
+            )
+        guard = getattr(brain, "scope_guard", None)
+        estimated_lines = self._estimated_mutation_lines(name, args)
+        projected_lines = (guard.changed_lines + estimated_lines) if guard is not None else 0
+        if guard is not None and projected_lines > guard.contract.max_changed_lines:
+            return False, (
+                f"❌ BLOCKED: Engineering scope contract: projected edit volume "
+                f"{projected_lines} exceeds the {guard.contract.max_changed_lines}-line budget.",
+                False,
+            )
+        if decision.requires_scope_expansion:
+            self._agent.evidence.append(
+                kind="scope_expansion",
+                claim="Engineering Brain approved a bounded scope expansion",
+                status="verified",
+                raw_output=decision.reason,
+                metadata=decision.to_dict(),
+            )
+        return True, None
+
+    def _current_workspace_revision(self) -> str:
+        """Return the content-addressed source revision, excluding Nexus state."""
         try:
-            for path in wd.rglob("*"):
-                if path.is_file() and not any(part in ignored for part in path.parts):
-                    snapshot[str(path)] = path.stat().st_mtime
-        except OSError:
-            pass
-        return snapshot
+            from nexus.intelligence.repository.snapshot import workspace_revision
+            return workspace_revision(self._agent.working_dir)
+        except (OSError, ValueError):
+            return ""
 
-    def _reconcile_workspace(self, before_snapshot: dict[str, float], after_snapshot: dict[str, float]) -> list[str]:
-        """Reconcile filesystem/Git changes after a potentially mutating command."""
-        changed = []
-        for path, mtime in after_snapshot.items():
-            if path not in before_snapshot or before_snapshot[path] != mtime:
-                changed.append(path)
-        return changed
+    @staticmethod
+    def _evidence_metadata(check_type: str, revision: str, **extra: Any) -> dict[str, Any]:
+        """Build provenance metadata shared by deterministic evidence records."""
+        return {
+            "check_type": check_type,
+            "workspace_revision": revision,
+            "producer_type": "deterministic_tool",
+            "independently_validated": True,
+            **extra,
+        }
+
+    def _workspace_journal(self) -> ContentAddressedWorkspaceJournal:
+        history = getattr(self._agent, "history", None)
+        session_dir = getattr(history, "session_dir", None)
+        if session_dir is None:
+            from nexus.paths import nexus_home
+
+            session_dir = nexus_home() / "history" / str(self._agent.conversation_id)
+        if self._command_workspace_journal is None:
+            from nexus.paths import nexus_home
+
+            self._command_workspace_journal = ContentAddressedWorkspaceJournal(
+                self._agent.working_dir,
+                preimage_dir=Path(session_dir) / "command-preimages",
+                excluded_roots=(nexus_home(),),
+            )
+        return self._command_workspace_journal
+
+    def _snapshot_workspace(self, *, store_preimages: bool = False) -> WorkspaceSnapshot:
+        """Capture a complete content-addressed workspace snapshot."""
+        return self._workspace_journal().capture(store_preimages=store_preimages)
+
+    @staticmethod
+    def _reconcile_workspace(
+        before_snapshot: WorkspaceSnapshot,
+        after_snapshot: WorkspaceSnapshot,
+    ) -> list[WorkspaceMutation]:
+        """Detect creations, modifications, deletions and mode changes by digest."""
+        return ContentAddressedWorkspaceJournal.diff(before_snapshot, after_snapshot)
+
+    def _record_command_mutations(
+        self,
+        *,
+        name: str,
+        before_snapshot: WorkspaceSnapshot,
+        after_snapshot: WorkspaceSnapshot,
+        transaction_id: str,
+        append_evidence: bool = True,
+    ) -> list[WorkspaceMutation]:
+        """Persist one command transaction without ambiguous partial evidence."""
+        mutations = self._reconcile_workspace(before_snapshot, after_snapshot)
+        root = Path(before_snapshot.root)
+        history_batch: list[dict[str, Any]] = []
+        for mutation in mutations:
+            old = mutation.before
+            new = mutation.after
+            absolute = root / mutation.relative_path
+            history_batch.append(
+                {
+                    "filepath": str(absolute),
+                    "tool_name": name,
+                    "snapshot_path": (
+                        old.preimage_path if old and old.kind == "file" else None
+                    ),
+                    "description": f"{mutation.change_type} implicitly by {name}",
+                    "is_new_file": old is None,
+                    "change_type": mutation.change_type,
+                    "before_sha256": old.sha256 if old else "",
+                    "after_sha256": new.sha256 if new else "",
+                    "before_mode": old.mode if old else None,
+                    "after_mode": new.mode if new else None,
+                    "before_kind": old.kind if old else "file",
+                    "before_link_target": old.link_target if old else "",
+                    "transaction_id": transaction_id,
+                }
+            )
+        batch_recorder = getattr(self._agent.history, "record_changes_batch", None)
+        if callable(batch_recorder):
+            batch_recorder(history_batch)
+        else:
+            for change in history_batch:
+                self._agent.history.record_change(**change)
+
+        if append_evidence and mutations:
+            self._agent.evidence.append(
+                kind="file_mutation",
+                claim=(
+                    f"content-addressed command journal detected {len(mutations)} "
+                    f"workspace mutation(s)"
+                ),
+                status="verified",
+                tool=name,
+                artifacts=[
+                    {
+                        "path": str(root / item.relative_path),
+                        "exists": item.after is not None,
+                        "sha256": item.after.sha256 if item.after else None,
+                        "size": item.after.size if item.after else 0,
+                        "kind": (
+                            item.after.kind
+                            if item.after is not None
+                            else (item.before.kind if item.before else "file")
+                        ),
+                        "link_target": item.after.link_target if item.after else "",
+                    }
+                    for item in mutations
+                ],
+                raw_output="",
+                metadata={
+                    "transaction_id": transaction_id,
+                    "independently_validated": True,
+                    "check_type": "content_addressed_mutation_transaction",
+                    "mutations": [
+                        {
+                            "path": item.relative_path,
+                            "change_type": item.change_type,
+                            "before_sha256": item.before.sha256 if item.before else "",
+                            "after_sha256": item.after.sha256 if item.after else "",
+                        }
+                        for item in mutations
+                    ],
+                },
+            )
+        return mutations
+
+
+    def _prepare_multi_edit_change_set(self, args: dict[str, Any]):
+        """Create and persist the multi-file transaction before disk mutation."""
+        from nexus.multifile.contracts import (
+            ChangeType,
+            EngineeringChangeSet,
+            PlannedFileChange,
+            TaskType,
+        )
+        from nexus.multifile.persistence import ChangeSetPersistence
+
+        unique_paths = list(dict.fromkeys(
+            str(edit.get("path", ""))
+            for edit in args.get("edits", [])
+            if isinstance(edit, dict) and edit.get("path")
+        ))
+        file_changes = [
+            PlannedFileChange(
+                path=path,
+                change_type=ChangeType.MODIFY,
+                reason="Atomic multi_edit transaction via canonical tool boundary",
+            )
+            for path in unique_paths
+        ]
+        active_plan = getattr(self._agent, "_active_plan", None)
+        objective = str(
+            getattr(active_plan, "goal", "")
+            or getattr(active_plan, "objective", "")
+            or f"multi_edit: {len(unique_paths)} file(s)"
+        )
+        change_set = EngineeringChangeSet(
+            run_id=str(getattr(getattr(self._agent, "run_context", None), "run_id", "") or ""),
+            plan_id=str(getattr(active_plan, "id", "") or ""),
+            plan_version=int(getattr(active_plan, "version", 1) or 1),
+            repository_snapshot_id=self._current_workspace_revision(),
+            objective=objective,
+            task_type=TaskType.FEATURE,
+            file_changes=file_changes,
+        )
+        persistence = None
+        turn_dir = getattr(getattr(self._agent, "run_ledger", None), "turn_dir", None)
+        if turn_dir is not None:
+            persistence = ChangeSetPersistence(Path(turn_dir) / "change-set")
+            persistence.save_change_set(change_set)
+        return change_set, persistence
+
+    def _begin_command_transaction(
+        self, name: str
+    ) -> tuple[WorkspaceSnapshot | None, str, tuple[str, bool] | None]:
+        """Create the fail-closed pre-command journal for synchronous processes."""
+        if name not in {"run_command", "run_process"}:
+            return None, "", None
+        transaction_id = f"cmd-{uuid.uuid4().hex}"
+        try:
+            snapshot = self._snapshot_workspace(store_preimages=True)
+        except WorkspaceSnapshotError as exc:
+            return None, "", (
+                f"❌ BLOCKED: Cannot establish command mutation journal: {exc}",
+                False,
+            )
+        return snapshot, transaction_id, None
+
+    def _finish_command_transaction(
+        self,
+        *,
+        name: str,
+        before_snapshot: WorkspaceSnapshot | None,
+        transaction_id: str,
+        success: bool,
+        result: ToolResult,
+    ) -> tuple[list[WorkspaceMutation], tuple[str, bool] | None]:
+        """Reconcile and, on command failure, rollback all partial mutations."""
+        if name not in {"run_command", "run_process"} or before_snapshot is None:
+            return [], None
+        try:
+            after_snapshot = self._snapshot_workspace(store_preimages=False)
+            mutations = self._record_command_mutations(
+                name=name,
+                before_snapshot=before_snapshot,
+                after_snapshot=after_snapshot,
+                transaction_id=transaction_id,
+                append_evidence=success,
+            )
+        except Exception as exc:
+            try:
+                self._workspace_journal().restore(before_snapshot)
+                removed = self._agent.history.discard_transaction(transaction_id)
+                rollback_note = (
+                    "workspace restored to pre-command snapshot; "
+                    f"cleared {removed} partial history record(s)"
+                )
+            except Exception as rollback_exc:
+                rollback_note = f"ROLLBACK FAILED: {rollback_exc}"
+            try:
+                self._agent.evidence.append(
+                    kind="post_mutation_integrity",
+                    claim="Recover from command reconciliation or evidence failure",
+                    status=("verified" if not rollback_note.startswith("ROLLBACK FAILED") else "failed"),
+                    tool=name,
+                    raw_output=f"{type(exc).__name__}: {exc}; {rollback_note}",
+                    metadata={"transaction_id": transaction_id},
+                )
+            except Exception:
+                logger.exception("Unable to persist command integrity failure evidence")
+            return [], (
+                f"❌ POST-COMMAND INTEGRITY FAILURE: {exc}; {rollback_note}",
+                False,
+            )
+
+        if not mutations or success:
+            return mutations, None
+        try:
+            self._workspace_journal().restore(before_snapshot)
+            removed = self._agent.history.discard_transaction(transaction_id)
+            rollback_ok = removed == len(mutations)
+            rollback_output = (
+                f"restored and digest-verified the pre-command workspace; "
+                f"cleared {removed}/{len(mutations)} transaction record(s)"
+            )
+        except WorkspaceSnapshotError as exc:
+            rollback_ok = False
+            rollback_output = f"content-addressed transaction restore failed: {exc}"
+        rollback_artifacts = []
+        if rollback_ok:
+            root = Path(before_snapshot.root)
+            for mutation in mutations:
+                previous = mutation.before
+                rollback_artifacts.append(
+                    {
+                        "path": str(root / mutation.relative_path),
+                        "exists": previous is not None,
+                        "sha256": previous.sha256 if previous else None,
+                        "size": previous.size if previous else 0,
+                        "kind": (
+                            previous.kind
+                            if previous is not None
+                            else (mutation.after.kind if mutation.after else "file")
+                        ),
+                        "link_target": previous.link_target if previous else "",
+                    }
+                )
+        self._agent.evidence.append(
+            kind="post_mutation_integrity",
+            claim="Rollback partial mutations from failed command",
+            status="verified" if rollback_ok else "failed",
+            tool=name,
+            artifacts=rollback_artifacts,
+            raw_output=rollback_output,
+            metadata={
+                "transaction_id": transaction_id,
+                "rolled_back_changes": len(mutations) if rollback_ok else 0,
+                "mutations": [
+                    {
+                        "path": item.relative_path,
+                        "change_type": item.change_type,
+                        "before_sha256": item.before.sha256 if item.before else "",
+                        "after_sha256": item.after.sha256 if item.after else "",
+                    }
+                    for item in mutations
+                ],
+            },
+        )
+        result.output += (
+            "\nRollback "
+            + ("succeeded: " if rollback_ok else "FAILED: ")
+            + rollback_output
+        )
+        if not rollback_ok:
+            result.status = ToolStatus.FAILURE
+            result.error = rollback_output
+        return mutations, None
+
+    def _rollback_post_mutation_failure(
+        self,
+        *,
+        history_start: int,
+        reason: str,
+        tool: str,
+    ) -> tuple[str, bool]:
+        """Restore every file changed by the current tool call before failing."""
+        count = max(0, self._history_count() - history_start)
+        rollback_ok = count == 0
+        rollback_output = "No persisted file changes required rollback."
+        if count:
+            undo = getattr(self._agent.history, "undo_changes", None)
+            if callable(undo):
+                rollback_ok, rollback_output = undo(count)
+            else:
+                rollback_ok = False
+                rollback_output = "History backend does not support rollback."
+        try:
+            self._agent.evidence.append(
+                kind="post_mutation_integrity",
+                claim="Rollback mutations after post-write integrity failure",
+                status="verified" if rollback_ok else "failed",
+                tool=tool,
+                raw_output=f"{reason} | {rollback_output}",
+                metadata={"rolled_back_changes": count},
+            )
+        except Exception:
+            logger.exception("Failed to append post-mutation rollback evidence")
+        status = "succeeded" if rollback_ok else "FAILED"
+        return (
+            f"❌ POST-MUTATION INTEGRITY FAILURE: {reason} "
+            f"Rollback {status}: {rollback_output}",
+            False,
+        )
+
+    def _track_engineering_context(
+        self,
+        *,
+        name: str,
+        args: dict[str, Any],
+        file_path: str,
+        result: ToolResult,
+        success: bool,
+    ) -> None:
+        """Record inspection and verification obligations outside the main dispatcher."""
+        brain = getattr(self._agent, "engineering_brain", None)
+        if not success or brain is None:
+            return
+        if file_path and name in {"read_file", "view_file"}:
+            try:
+                brain.record_inspection([file_path])
+            except (OSError, TypeError, ValueError):
+                logger.debug("Engineering inspection tracking failed for %s", file_path)
+        if name not in {"run_command", "run_process"}:
+            return
+        contract = getattr(brain, "contract", None)
+        if contract is None:
+            return
+        command_value = args.get("argv") if name == "run_process" else args.get("command")
+        profile = analyse_test_command(command_value or "", root=self._agent.working_dir)
+        valid, _detail, _count = validate_test_execution(
+            profile,
+            output=result.output,
+            exit_code=command_exit_code(result.output),
+            root=self._agent.working_dir,
+        )
+        if not valid:
+            return
+        related = [str(path).replace("\\", "/") for path in contract.related_tests]
+        if profile.scope == "full_suite":
+            matched = related
+        else:
+            targets = {target.split("::", 1)[0] for target in profile.targets}
+            matched = [
+                path for path in related
+                if path in targets or any(path == target or path.endswith("/" + target) for target in targets)
+            ]
+        if matched:
+            try:
+                brain.record_verified_files(sorted(set(matched)))
+            except (OSError, TypeError, ValueError):
+                logger.debug("Engineering verification tracking failed")
+
+    def _apply_execution_isolation(self, name: str, args: dict) -> None:
+        """Bind command execution to the agent's explicit isolation capability."""
+        if name not in {"run_command", "run_process", "process_run"}:
+            return
+        require_isolation = bool(self._agent.mode_policy.require_os_isolation)
+        args["require_os_isolation"] = require_isolation
+        args["allow_unisolated_host_process"] = (
+            not require_isolation
+            and bool(getattr(self._agent, "allow_unisolated_host_process", False))
+        )
 
     def _execute_impl(
         self,
@@ -676,8 +1242,8 @@ class ToolExecutionController:
 
         Pipeline: Before Hooks → Safety Check → Execute → Context Track → After Hooks → Reflection
         """
+        from nexus.agent import _is_relative_to
         from nexus.tools import normalize_tool_arguments
-        from nexus.agent import _is_relative_to, _redact_runtime_text
 
         args = normalize_tool_arguments(name, args)
         declaration = self._agent._tool_capabilities.get(name)
@@ -801,6 +1367,14 @@ class ToolExecutionController:
         )
         if not ok:
             return err_res
+
+        # Engineering Brain surgical scope gate.  The model cannot silently
+        # expand the approved mutation surface.
+        scope_ok, scope_error = self._enforce_engineering_scope(
+            name, args, scope_paths, mutation_tools
+        )
+        if not scope_ok and scope_error is not None:
+            return scope_error
 
         # Nova Guardrail checks for mutations
         if name in mutation_tools:
@@ -934,79 +1508,78 @@ class ToolExecutionController:
                 f"{safety_check.details}",
                 False,
             )
-        # Production presets fail closed for every command when no kernel-backed
-        # workspace boundary is available. A merely "safe-looking" command can
-        # still read arbitrary host paths, so danger classification is not a
-        # containment boundary.
-        if (
-            name in ("run_command", "run_process", "process_run")
-            and self._agent.mode_policy.require_os_isolation
-        ):
-            args["require_os_isolation"] = True
+        # A safe-looking command is not a containment boundary. Production
+        # presets require kernel-backed isolation; trusted local qualification
+        # must opt into host execution as a separate capability.
+        self._apply_execution_isolation(name, args)
 
         # ── 5. Execute
-        before_snapshot = None
-        if name in ("run_command", "run_process", "process_run"):
-            before_snapshot = self._snapshot_workspace()
-    
+        before_snapshot, command_transaction_id, journal_error = (
+            self._begin_command_transaction(name)
+        )
+        if journal_error is not None:
+            return journal_error
+
+        history_start = self._history_count()
+        change_set = None
+        change_set_persistence = None
+        if name == "multi_edit":
+            try:
+                change_set, change_set_persistence = self._prepare_multi_edit_change_set(args)
+            except Exception as exc:
+                return f"❌ BLOCKED: Unable to register multi-file transaction before mutation: {exc}", False
+
         result = self._dispatch_tool_execution(name, args)
 
-        # ── Multi-file mutation: record as EngineeringChangeSet ────────────────
-        if name == "multi_edit" and result.output and not result.output.startswith("❌"):
+        if (
+            name == "multi_edit"
+            and change_set is not None
+            and result.status == ToolStatus.SUCCESS
+        ):
             try:
-                from nexus.multifile.contracts import EngineeringChangeSet, PlannedFileChange, TaskType
-                import dataclasses
-                edits = args.get("edits", [])
-                file_changes = [
-                    PlannedFileChange(
-                        path=edit.get("path", ""),
-                        operation="edit",
-                        reason=f"multi_edit via tool_executor",
-                    )
-                    for edit in edits
-                    if edit.get("path")
-                ]
-                run_id = getattr(getattr(self._agent, "run_context", None), "run_id", "") or ""
-                plan_id = getattr(getattr(self._agent, "_active_plan", None), "id", "") or ""
-                cs = EngineeringChangeSet(
-                    run_id=str(run_id),
-                    plan_id=str(plan_id),
-                    objective=f"multi_edit: {len(edits)} file(s)",
-                    task_type=TaskType.FEATURE,
-                    file_changes=file_changes,
+                change_set.applied_file_paths = change_set.file_paths()
+                if change_set_persistence is not None:
+                    change_set_persistence.save_change_set(change_set)
+                logger.debug(
+                    "EngineeringChangeSet registered: %s with %d files",
+                    change_set.change_set_id,
+                    len(change_set.file_changes),
                 )
-                cs.applied_file_paths = [fc.path for fc in file_changes]
-                logger.debug("EngineeringChangeSet registered: %s with %d files", cs.change_set_id, len(file_changes))
-            except Exception as cs_exc:
-                logger.debug("EngineeringChangeSet registration failed (non-fatal): %s", cs_exc)
+            except Exception as exc:
+                return self._rollback_post_mutation_failure(
+                    history_start=history_start,
+                    reason=f"Multi-file change-set finalization failed: {exc}",
+                    tool=name,
+                )
 
-
-        success = not result.output.startswith(("❌", "⏰", "⏸️"))
-        if name in ("api_check", "database_check", "browser_check", "security_scan"):
+        success = result.status == ToolStatus.SUCCESS
+        if name in ("api_check", "database_check", "browser_check", "security_scan") and success:
             try:
-                success = json.loads(result.output).get("status") == "passed"
+                if json.loads(result.output).get("status") != "passed":
+                    result.status = ToolStatus.FAILURE
+                    if not result.error:
+                        result.error = f"{name} did not report passed status"
             except (AttributeError, TypeError, json.JSONDecodeError):
-                success = False
+                result.status = ToolStatus.FAILURE
+                if not result.error:
+                    result.error = f"{name} returned an invalid structured response"
+            success = result.status == ToolStatus.SUCCESS
+        current_workspace_revision = self._current_workspace_revision() if success else ""
 
         if package_warning_text:
             result.output = package_warning_text + "\n" + result.output
 
-        # Reconcile filesystem changes for shell commands
-        if success and name in ("run_command", "run_process", "process_run") and before_snapshot is not None:
-            after_snapshot = self._snapshot_workspace()
-            mutations = self._reconcile_workspace(before_snapshot, after_snapshot)
-            for mutated_file in mutations:
-                self._agent.history.record_change(mutated_file, name, None, f"Mutated implicitly by {name}")
-                verif, det, arts = verify_mutation("edit_file", {"path": mutated_file}, self._agent.working_dir)
-                self._agent.evidence.append(
-                    kind="file_mutation",
-                    claim=f"undeclared mutation detected by {name} in {mutated_file}",
-                    status="verified" if verif else "failed",
-                    tool=name,
-                    artifacts=arts,
-                    raw_output="",
-                    metadata={"verification": det},
-                )
+        # Reconcile synchronous command mutations regardless of exit status.
+        _command_mutations, command_integrity_error = self._finish_command_transaction(
+            name=name,
+            before_snapshot=before_snapshot,
+            transaction_id=command_transaction_id,
+            success=success,
+            result=result,
+        )
+        if command_integrity_error is not None:
+            return command_integrity_error
+
 
         # ── Verified-completion evidence
         if success and name in mutation_tools:
@@ -1055,7 +1628,7 @@ class ToolExecutionController:
                     command="generated-code-validator",
                     exit_code=0 if not code_failures else 1,
                     raw_output="\n".join(check.format() for check in code_checks),
-                    metadata={"check_type": "syntax"},
+                    metadata=self._evidence_metadata("syntax", current_workspace_revision),
                 )
             self._agent.evidence.append(
                 kind="file_mutation",
@@ -1064,7 +1637,9 @@ class ToolExecutionController:
                 tool=name,
                 artifacts=artifacts,
                 raw_output=result.output,
-                metadata={"verification": detail},
+                metadata=self._evidence_metadata(
+                    "mutation", current_workspace_revision, verification=detail
+                ),
             )
             if not verified:
                 return f"❌ WRITE VERIFICATION FAILED: {detail}\nRaw tool output:\n{result.output}", False
@@ -1103,7 +1678,9 @@ class ToolExecutionController:
                 status="verified" if success and probe_status == "passed" else "failed",
                 tool=name,
                 raw_output=result.output,
-                metadata={"probe_status": probe_status},
+                metadata=self._evidence_metadata(
+                    name, current_workspace_revision, probe_status=probe_status
+                ),
             )
         elif name.startswith("git_"):
             self._agent.evidence.append(
@@ -1122,6 +1699,9 @@ class ToolExecutionController:
             if success and name == "read_file" and result:
                 self._agent.context_mgr.track_file_imports(file_path, result.output)
                 self._agent.context_mgr.summarize_file(file_path, result.output)
+        self._track_engineering_context(
+            name=name, args=args, file_path=file_path, result=result, success=success
+        )
 
         # ── 7. Fire AFTER hooks
         if event_after:

@@ -11,27 +11,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from nexus.paths import nexus_home
+from nexus.intelligence.repository.adaptive import AdaptiveContextSelector
+from nexus.intelligence.repository.budget import ContextBudgetManager
+from nexus.intelligence.repository.classification import FileClassifier
+from nexus.intelligence.repository.discovery import RepositoryDiscovery
+from nexus.intelligence.repository.extraction import LanguageExtractor
 from nexus.intelligence.repository.model import (
     ArchitectureBoundary,
     ContextBundle,
-    ContextCandidate,
     ContextRelationship,
     ContextSymbol,
     RepositoryFile,
-    RepositorySnapshot,
     RepositorySymbol,
     RiskAnnotation,
     RiskLevel,
-    TaskIntent,
     TestRelationship,
 )
-from nexus.intelligence.repository.discovery import RepositoryDiscovery
-from nexus.intelligence.repository.classification import FileClassifier
-from nexus.intelligence.repository.extraction import LanguageExtractor
 from nexus.intelligence.repository.ranking import ExplainableContextRanker, TaskIntentClassifier
-from nexus.intelligence.repository.budget import ContextBudgetManager
 from nexus.intelligence.repository.secrets import SecretProtector
+from nexus.paths import nexus_home
 
 GRAPH_SCHEMA_VERSION = "nexus.repograph.v5"
 
@@ -85,13 +83,20 @@ class RepositoryIntelligence:
             except (ValueError, OSError):
                 continue
 
+            try:
+                content_hash = self.discovery.calculate_file_hash(path)
+            except OSError:
+                continue
             prior = self.files.get(rel_path) if not force else None
-            if prior and prior.mtime_ns == stat.st_mtime_ns and prior.size_bytes == stat.st_size:
+            if prior and prior.content_hash == content_hash:
+                # Keep diagnostics fresh without trusting metadata for validity.
+                prior.mtime_ns = stat.st_mtime_ns
+                prior.size_bytes = stat.st_size
                 updated_files[rel_path] = prior
                 reused_count += 1
                 continue
 
-            record = self._index_single_file(path, rel_path, stat)
+            record = self._index_single_file(path, rel_path, stat, content_hash=content_hash)
             updated_files[rel_path] = record
             indexed_count += 1
 
@@ -126,7 +131,8 @@ class RepositoryIntelligence:
 
             try:
                 stat = path.stat()
-                record = self._index_single_file(path, rel_path, stat)
+                content_hash = self.discovery.calculate_file_hash(path)
+                record = self._index_single_file(path, rel_path, stat, content_hash=content_hash)
                 self.files[rel_path] = record
             except OSError:
                 continue
@@ -143,6 +149,8 @@ class RepositoryIntelligence:
         failing_stack_files: list[str] | None = None,
         max_files: int = 12,
         max_total_tokens: int = 24000,
+        max_graph_hops: int = 3,
+        candidate_multiplier: int = 3,
     ) -> ContextBundle:
         """Assemble a typed, explainable ContextBundle for model consumption."""
         if not self.files:
@@ -158,13 +166,22 @@ class RepositoryIntelligence:
             changed_git,
             explicit_user_files=explicit_files,
             failing_stack_files=failing_stack_files,
-            limit=max_files * 2,
+            limit=max_files * max(2, int(candidate_multiplier)),
         )
 
-        # Filter low-relevance candidates if decisive candidates exist
+        # Filter low-relevance candidates if decisive candidates exist.
         if candidates and candidates[0].score >= 20.0:
             top_score = candidates[0].score
             candidates = [c for c in candidates if c.score >= top_score * 0.3]
+
+        adaptive = AdaptiveContextSelector(self.root, self.files).select(
+            query,
+            candidates,
+            explicit_files=explicit_files or (),
+            max_candidates=max(max_files * max(2, int(candidate_multiplier)), 18),
+            max_hops=max(1, min(8, int(max_graph_hops))),
+        )
+        candidates = list(adaptive.candidates)
 
         search_terms = {
             t.lower() for t in query.split() if len(t) > 2
@@ -188,16 +205,30 @@ class RepositoryIntelligence:
             f.path: [f.selection_reason] for f in selected_files
         }
 
+        adaptive_relationships = [
+            ContextRelationship(
+                source=source,
+                target=target,
+                relationship_type=relationship,
+                description="Selected by deterministic repository graph propagation.",
+            )
+            for source, target, relationship in adaptive.relationships
+            if source in self.files and target in self.files
+        ]
+        limitations = list(adaptive.coverage.limitations)
+        confidence = adaptive.coverage.confidence if selected_files else 0.4
         return ContextBundle(
             task_intent=task_intent,
             repository_tree_hash=self.tree_hash,
             files=selected_files,
             symbols=symbols,
+            relationships=adaptive_relationships,
             tests=test_rels,
             constraints=boundaries,
             risks=risks,
             estimated_tokens=token_count,
-            confidence=0.9 if selected_files else 0.4,
+            confidence=confidence,
+            limitations=limitations,
             omitted_candidates=omitted_candidates,
             selection_rationales=rationales,
         )
@@ -207,22 +238,20 @@ class RepositoryIntelligence:
         bundle: ContextBundle,
         reason: str,
         additional_files: list[str] | None = None,
+        *,
+        evidence: object = None,
+        risk_level: str = "medium",
     ) -> ContextBundle:
-        """Evidence-driven context expansion loop when dependencies are missing."""
-        expanded_explicit = [f.path for f in bundle.files]
-        if additional_files:
-            for f in additional_files:
-                if f not in expanded_explicit:
-                    expanded_explicit.append(f)
+        """Expand from concrete failure evidence instead of a fixed file/token increment."""
+        from nexus.intelligence.repository.evidence import EvidenceDrivenContextExpander
 
-        new_bundle = self.context_bundle(
-            query=f"{bundle.task_intent.value} expansion: {reason}",
-            explicit_files=expanded_explicit,
-            max_files=min(24, bundle.files.__len__() + 6),
-            max_total_tokens=bundle.estimated_tokens + 8000,
+        return EvidenceDrivenContextExpander(self).expand(
+            bundle,
+            reason=reason,
+            evidence=evidence,
+            additional_files=additional_files or (),
+            risk_level=risk_level,
         )
-        new_bundle.limitations.append(f"Expanded due to: {reason}")
-        return new_bundle
 
     def find_symbols(self, query: str, limit: int = 50) -> list[RepositorySymbol]:
         needle = query.strip().lower()
@@ -250,6 +279,225 @@ class RepositoryIntelligence:
                     }
                 )
         return sorted(results, key=lambda item: (not item["is_test"], item["path"]))[: max(1, limit)]
+
+    def resolve_import_targets(self, importer_path: str, import_name: str) -> list[str]:
+        """Resolve a repository import to indexed file paths without executing code."""
+        raw = import_name.strip().replace("\\", "/")
+        if not raw:
+            return []
+        importer = Path(importer_path)
+        candidates: list[str] = []
+
+        if raw.startswith("."):
+            dots = len(raw) - len(raw.lstrip("."))
+            remainder = raw[dots:].replace(".", "/")
+            base = importer.parent
+            for _ in range(max(0, dots - 1)):
+                base = base.parent
+            prefix = (base / remainder).as_posix() if remainder else base.as_posix()
+            candidates.extend((prefix, f"{prefix}.py", f"{prefix}/__init__.py"))
+        else:
+            normalized = raw.removeprefix("@/").removeprefix("~/")
+            normalized = normalized.replace(".", "/") if "/" not in normalized else normalized
+            normalized = normalized.lstrip("./")
+            candidates.extend(
+                (
+                    normalized,
+                    f"{normalized}.py",
+                    f"{normalized}.pyi",
+                    f"{normalized}/__init__.py",
+                    f"{normalized}.js",
+                    f"{normalized}.jsx",
+                    f"{normalized}.ts",
+                    f"{normalized}.tsx",
+                    f"{normalized}/index.js",
+                    f"{normalized}/index.ts",
+                    f"{normalized}/index.tsx",
+                )
+            )
+            relative = (importer.parent / raw).as_posix().lstrip("./")
+            candidates.extend(
+                (
+                    relative,
+                    f"{relative}.js",
+                    f"{relative}.jsx",
+                    f"{relative}.ts",
+                    f"{relative}.tsx",
+                    f"{relative}/index.js",
+                    f"{relative}/index.ts",
+                    f"{relative}/index.tsx",
+                )
+            )
+
+        exact = [item for item in dict.fromkeys(candidates) if item in self.files]
+        if exact:
+            return exact
+
+        # Package prefixes are useful for languages whose extractors preserve
+        # package identifiers rather than exact paths. Keep this deterministic
+        # and bounded to avoid fuzzy repository-wide matches.
+        suffixes = tuple(
+            item for item in dict.fromkeys(candidates) if item and len(item) >= 3
+        )
+        return sorted(
+            path
+            for path in self.files
+            if any(path == suffix or path.endswith("/" + suffix) for suffix in suffixes)
+        )[:8]
+
+    def reverse_dependencies(
+        self, paths: Iterable[str | Path], *, limit: int = 500
+    ) -> list[dict[str, Any]]:
+        """Return files that statically import any target path."""
+        targets = {self._relative_key(path) for path in paths}
+        results: list[dict[str, Any]] = []
+        for record in self.files.values():
+            matched_imports: list[str] = []
+            matched_targets: set[str] = set()
+            for import_name in record.imports:
+                resolved = set(self.resolve_import_targets(record.path, import_name))
+                overlap = targets.intersection(resolved)
+                if overlap:
+                    matched_imports.append(import_name)
+                    matched_targets.update(overlap)
+            if matched_targets:
+                results.append(
+                    {
+                        "path": record.path,
+                        "targets": sorted(matched_targets),
+                        "imports": sorted(dict.fromkeys(matched_imports)),
+                        "is_test": record.is_test,
+                        "is_config": record.config_file,
+                        "is_migration": record.migration_file,
+                    }
+                )
+        return sorted(
+            results, key=lambda item: (not item["is_test"], item["path"])
+        )[: max(1, limit)]
+
+    def impact_closure(
+        self,
+        paths: Iterable[str | Path],
+        *,
+        symbols: Iterable[str] = (),
+        max_hops: int = 6,
+        limit: int = 500,
+        include_tests: bool = True,
+        include_configuration: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Compute a bounded transitive impact closure with explicit reasons.
+
+        The closure combines reverse imports, symbol references, impacted tests,
+        and optional migration/configuration surfaces. It is used for completion
+        obligations, not as a claim that every discovered file must be mutated.
+        """
+        seeds = {self._relative_key(path) for path in paths}
+        seeds = {path for path in seeds if path in self.files}
+        discovered: dict[str, dict[str, Any]] = {
+            path: {
+                "path": path,
+                "depth": 0,
+                "reasons": ["seed"],
+                "is_test": self.files[path].is_test,
+                "is_config": self.files[path].config_file,
+                "is_migration": self.files[path].migration_file,
+            }
+            for path in seeds
+        }
+        frontier = set(seeds)
+        visited = set(seeds)
+        symbol_names = {item.strip().split(".")[-1] for item in symbols if item.strip()}
+
+        for depth in range(1, max(1, min(8, int(max_hops))) + 1):
+            if not frontier or len(discovered) >= limit:
+                break
+            next_frontier: set[str] = set()
+            for dependency in self.reverse_dependencies(frontier, limit=limit):
+                path = str(dependency["path"])
+                reason = "reverse_import:" + ",".join(dependency["targets"])
+                entry = discovered.setdefault(
+                    path,
+                    {
+                        "path": path,
+                        "depth": depth,
+                        "reasons": [],
+                        "is_test": bool(dependency["is_test"]),
+                        "is_config": bool(dependency["is_config"]),
+                        "is_migration": bool(dependency["is_migration"]),
+                    },
+                )
+                if reason not in entry["reasons"]:
+                    entry["reasons"].append(reason)
+                if path not in visited and entry["depth"] == depth:
+                    next_frontier.add(path)
+
+            if depth == 1:
+                for symbol in symbol_names:
+                    for caller in self.find_callers(symbol, limit=limit):
+                        path = str(caller["path"])
+                        record = self.files.get(path)
+                        if record is None:
+                            continue
+                        entry = discovered.setdefault(
+                            path,
+                            {
+                                "path": path,
+                                "depth": depth,
+                                "reasons": [],
+                                "is_test": record.is_test,
+                                "is_config": record.config_file,
+                                "is_migration": record.migration_file,
+                            },
+                        )
+                        reason = f"symbol_reference:{symbol}"
+                        if reason not in entry["reasons"]:
+                            entry["reasons"].append(reason)
+                        if path not in visited:
+                            next_frontier.add(path)
+            visited.update(next_frontier)
+            frontier = next_frontier
+
+        if include_tests:
+            for path in self.impacted_tests(discovered, limit=limit):
+                record = self.files[path]
+                entry = discovered.setdefault(
+                    path,
+                    {
+                        "path": path,
+                        "depth": max_hops + 1,
+                        "reasons": [],
+                        "is_test": True,
+                        "is_config": record.config_file,
+                        "is_migration": record.migration_file,
+                    },
+                )
+                if "impacted_test" not in entry["reasons"]:
+                    entry["reasons"].append("impacted_test")
+
+        if include_configuration:
+            for record in self.files.values():
+                if not (record.config_file or record.migration_file):
+                    continue
+                discovered.setdefault(
+                    record.path,
+                    {
+                        "path": record.path,
+                        "depth": max_hops + 1,
+                        "reasons": [
+                            "migration_surface"
+                            if record.migration_file
+                            else "configuration_surface"
+                        ],
+                        "is_test": record.is_test,
+                        "is_config": record.config_file,
+                        "is_migration": record.migration_file,
+                    },
+                )
+
+        return sorted(
+            discovered.values(),
+            key=lambda item: (int(item["depth"]), not bool(item["is_test"]), item["path"]),
+        )[: max(1, limit)]
 
     def impacted_tests(self, paths: Iterable[str | Path], limit: int = 100) -> list[str]:
         changed = {self._relative_key(path) for path in paths}
@@ -357,7 +605,14 @@ class RepositoryIntelligence:
 
     # ── Internal Helpers ──
 
-    def _index_single_file(self, full_path: Path, rel_path: str, stat: os.stat_result) -> RepositoryFile:
+    def _index_single_file(
+        self,
+        full_path: Path,
+        rel_path: str,
+        stat: os.stat_result,
+        *,
+        content_hash: str | None = None,
+    ) -> RepositoryFile:
         classification = FileClassifier.classify(rel_path)
         
         try:
@@ -380,7 +635,7 @@ class RepositoryIntelligence:
             path=rel_path,
             language=classification.get("category"),
             size_bytes=stat.st_size,
-            content_hash=hashlib.sha256(source.encode("utf-8")).hexdigest(),
+            content_hash=content_hash or hashlib.sha256(full_path.read_bytes()).hexdigest(),
             mtime_ns=stat.st_mtime_ns,
             tracked=True,
             generated=classification["is_generated"],

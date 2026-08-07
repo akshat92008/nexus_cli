@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from nexus.planning.engineering_plan import ActionType, EngineeringPlan, PlanStep
-from nexus.planning.task_contract import TaskContract, RiskLevel
-from nexus.planning.validator import DeterministicValidator, ValidationIssue, IssueSeverity
+from nexus.planning.engineering_plan import ActionType, EngineeringPlan
+from nexus.planning.task_contract import TaskContract
+from nexus.planning.validator import DeterministicValidator, IssueSeverity
 
 
 class CritiqueDecision(str, Enum):
@@ -75,8 +75,13 @@ class PlanCritique:
 class PlanCritic:
     """Independent critic that evaluates initial plans against safety, scope, caller, and test requirements."""
 
-    def __init__(self, validator: Optional[DeterministicValidator] = None):
+    def __init__(
+        self,
+        validator: Optional[DeterministicValidator] = None,
+        allowed_tools: Optional[set[str]] = None,
+    ):
         self.validator = validator or DeterministicValidator()
+        self.allowed_tools = set(allowed_tools or ())
 
     def critique(
         self,
@@ -90,7 +95,11 @@ class PlanCritic:
         suggestions: List[str] = []
 
         # 1. Run deterministic validation
-        v_issues = self.validator.validate(plan, task_contract)
+        v_issues = self.validator.validate(
+            plan,
+            task_contract,
+            allowed_tools=self.allowed_tools or None,
+        )
         for vi in v_issues:
             issue = PlanIssue(
                 issue_id=f"VI-{vi.code}",

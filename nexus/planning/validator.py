@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
-from nexus.planning.engineering_plan import EngineeringPlan, PlanStep
-from nexus.planning.task_contract import TaskContract, RiskLevel
+from nexus.planning.engineering_plan import EngineeringPlan
+from nexus.planning.task_contract import RiskLevel, TaskContract
 
 
 class IssueSeverity(str, Enum):

@@ -53,6 +53,7 @@ def test_explicit_confirmation_executes_only_the_pending_call(tmp_path, monkeypa
     old_cwd = os.getcwd()
     try:
         agent = _agent_for_tmp_path(tmp_path, monkeypatch)
+        agent.allow_unisolated_host_process = True
         # This test isolates one-time confirmation semantics; native sandbox
         # enforcement is covered separately and must not depend on CI tooling.
         agent.mode_policy.require_os_isolation = False

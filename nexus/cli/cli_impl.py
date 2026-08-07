@@ -13,6 +13,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shlex
 import sys
 from dataclasses import asdict
@@ -20,12 +21,95 @@ from pathlib import Path
 
 from nexus import __version__, ui
 from nexus.agent import Agent
+from nexus.doctor import run_doctor
 from nexus.memory import ConversationMemory
 from nexus.models import DEFAULT_MODEL, resolve_model
 from nexus.policy import get_mode_policy
 from nexus.run_catalog import RunCatalog
 from nexus.tools import get_history, tool_get_project_structure
 
+_PROOF_REQUEST: dict | None = None
+
+
+def _prepare_fix_command() -> None:
+    """Translate ``nexus fix`` through the canonical Verified Repair contract."""
+    global _PROOF_REQUEST
+    if len(sys.argv) < 2 or sys.argv[1] != "fix":
+        return
+    parser = argparse.ArgumentParser(
+        prog="nexus fix",
+        description="Reproduce, repair, externally verify, and emit a Nexus Proof receipt.",
+    )
+    parser.add_argument("prompt")
+    parser.add_argument("--budget-inr", type=float, default=20.0)
+    parser.add_argument("--model", default="auto")
+    parser.add_argument(
+        "--routing-mode",
+        choices=("cheapest", "private", "fastest", "balanced", "strongest"),
+        default="balanced",
+    )
+    parser.add_argument("--working-dir", "-d", default="")
+    parser.add_argument("--proof", action="store_true")
+    parser.add_argument("--proof-output", default="")
+    parser.add_argument("--no-workspace", action="store_true")
+    parser.add_argument("--max-turns", type=int, default=80)
+    args, extra = parser.parse_known_args(sys.argv[2:])
+
+    from nexus.verified_repair import VerifiedRepairRequest, prepare_verified_repair
+
+    try:
+        request = VerifiedRepairRequest(
+            prompt=args.prompt,
+            budget_inr=args.budget_inr,
+            model=args.model,
+            routing_mode=args.routing_mode,
+            working_dir=args.working_dir,
+            proof=args.proof,
+            proof_output=args.proof_output,
+            workspace=not args.no_workspace,
+            max_turns=args.max_turns,
+            extra_args=tuple(extra),
+        )
+        plan = prepare_verified_repair(request)
+    except ValueError as exc:
+        parser.error(str(exc))
+    sys.argv = [sys.argv[0], *plan.cli_args]
+    _PROOF_REQUEST = {
+        "enabled": request.proof,
+        "output": request.proof_output,
+        "budget_inr": request.budget_inr,
+        "routing_decision": plan.routing_decision,
+    }
+
+def _emit_requested_proof(agent, final_report):
+    if not _PROOF_REQUEST or not _PROOF_REQUEST.get("enabled"):
+        return None
+    from nexus.proof import create_proof_receipt, write_proof_receipt
+
+    output = str(_PROOF_REQUEST.get("output") or "")
+    path = (
+        Path(output)
+        if output
+        else Path(agent.source_working_dir)
+        / ".nexus"
+        / "proofs"
+        / f"{agent.conversation_id}.nexus-proof.json"
+    )
+    if not path.is_absolute():
+        path = Path(agent.source_working_dir) / path
+    receipt = create_proof_receipt(
+        session_id=agent.conversation_id,
+        workspace=agent.working_dir,
+        final_report=final_report,
+        evidence_records=agent.evidence.records(),
+        authorized_budget_inr=float(_PROOF_REQUEST["budget_inr"]),
+        routing_decision=_PROOF_REQUEST.get("routing_decision") or {},
+    )
+    written = write_proof_receipt(receipt, path)
+    print(f"Nexus Proof: {written}")
+    print(f"Proof status: {receipt['status']}")
+    print(f"Proof SHA-256: {receipt['receipt_hash']}")
+    return written
 
 def parse_args():
     parser = argparse.ArgumentParser(
@@ -59,6 +143,11 @@ Environment:
         "--version",
         action="version",
         version=f"NexusAI {__version__}",
+    )
+    parser.add_argument(
+        "--doctor",
+        action="store_true",
+        help="Run installation, provider, workspace, and sandbox diagnostics",
     )
 
     parser.add_argument(
@@ -279,6 +368,46 @@ Environment:
     return parser.parse_args()
 
 
+_KNOWN_TOP_LEVEL_COMMANDS = frozenset({
+    "admin", "approvals", "architecture", "audit", "benchmark", "budget",
+    "budgets", "change", "collaborate", "collaboration", "compliance",
+    "cost", "deploy", "extensions", "fix", "generate-dashboard", "inspect",
+    "intelligence", "mcp", "members", "model", "models", "org",
+    "performance", "plan", "policy", "project", "proof", "release",
+    "replay", "resume", "roles", "rollback", "run", "runs", "sandbox",
+    "secrets", "solve-issue", "workspace",
+})
+
+
+def _reject_unknown_subcommand() -> None:
+    """Fail fast for command-shaped tokens instead of invoking a provider.
+
+    Nexus also supports a legacy one-shot positional prompt.  A single
+    hyphenated token is command-shaped and historically caused an expensive
+    provider invocation for typos such as ``nexus deploy-chek``.  Reject that
+    unambiguously; natural-language prompts remain supported and can always be
+    passed through ``nexus run --prompt``.
+    """
+    if len(sys.argv) != 2:
+        return
+    token = sys.argv[1]
+    if (
+        token in _KNOWN_TOP_LEVEL_COMMANDS
+        or token.startswith(("-", "!"))
+        or "/" in token
+        or "\\" in token
+        or not re.fullmatch(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)+", token)
+    ):
+        return
+    print(
+        f"nexus: unknown command '{token}'. "
+        "Use 'nexus --help' or 'nexus run --prompt <goal>'.",
+        file=sys.stderr,
+    )
+    raise SystemExit(2)
+
+
+
 def _normalize_subcommand_argv() -> None:
     """Support the documented command-oriented UX without breaking legacy flags."""
     if len(sys.argv) < 2:
@@ -471,15 +600,161 @@ def _handle_benchmark() -> bool:
     """Run or validate a versioned public benchmark manifest."""
     if len(sys.argv) < 2 or sys.argv[1] != "benchmark":
         return False
+    if len(sys.argv) >= 3 and sys.argv[2] == "superiority-preflight":
+        parser = argparse.ArgumentParser(
+            prog="nexus benchmark superiority-preflight"
+        )
+        parser.add_argument("--manifest", required=True)
+        parser.add_argument("--output", default="")
+        parser.add_argument("--minimum-tasks", type=int, default=50)
+        parser.add_argument("--minimum-repositories", type=int, default=10)
+        parser.add_argument("--trials", type=int, default=3)
+        args = parser.parse_args(sys.argv[3:])
+        from nexus.competitive_benchmark import CompetitiveDuelRunner
+        from nexus.competitive_qualification import SuperiorityThresholds
+
+        try:
+            report = CompetitiveDuelRunner(args.manifest).superiority_preflight(
+                thresholds=SuperiorityThresholds(
+                    minimum_unique_tasks=max(1, args.minimum_tasks),
+                    minimum_unique_repositories=max(1, args.minimum_repositories),
+                    minimum_trials_per_task=max(1, args.trials),
+                )
+            )
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+        rendered = json.dumps(report, indent=2, sort_keys=True)
+        if args.output:
+            output = Path(args.output).expanduser().resolve()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(rendered + "\n", encoding="utf-8")
+        print(rendered)
+        if not report["ready"]:
+            raise SystemExit(2)
+        return True
+    if len(sys.argv) >= 3 and sys.argv[2] == "duel":
+        parser = argparse.ArgumentParser(prog="nexus benchmark duel")
+        parser.add_argument("--manifest", required=True)
+        parser.add_argument("--output", required=True)
+        parser.add_argument("--seed", type=int, default=370)
+        parser.add_argument("--dry-run", action="store_true")
+        args = parser.parse_args(sys.argv[3:])
+        from nexus.competitive_benchmark import CompetitiveDuelRunner
+        try:
+            report = CompetitiveDuelRunner(args.manifest, seed=args.seed).run(
+                output=args.output, dry_run=args.dry_run
+            )
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        if not args.dry_run and report.summary.get("valid_pairs", 0) == 0:
+            raise SystemExit(2)
+        return True
+    if len(sys.argv) >= 3 and sys.argv[2] == "offline-reliability":
+        parser = argparse.ArgumentParser(prog="nexus benchmark offline-reliability")
+        parser.add_argument("--output", default="")
+        parser.add_argument("--artifact-dir", default="")
+        args = parser.parse_args(sys.argv[3:])
+        from nexus.offline_reliability_benchmark import (
+            run_offline_reliability_benchmark,
+        )
+        report = run_offline_reliability_benchmark(
+            artifact_root=args.artifact_dir or None
+        )
+        rendered = json.dumps(report.to_dict(), indent=2, sort_keys=True)
+        if args.output:
+            output = Path(args.output).expanduser().resolve()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(rendered + "\n", encoding="utf-8")
+        print(rendered)
+        if report.to_dict()["summary"]["failed"]:
+            raise SystemExit(2)
+        return True
+    if len(sys.argv) >= 3 and sys.argv[2] == "superiority-gate":
+        parser = argparse.ArgumentParser(prog="nexus benchmark superiority-gate")
+        parser.add_argument("--report", required=True)
+        parser.add_argument("--output", default="")
+        parser.add_argument("--minimum-tasks", type=int, default=50)
+        parser.add_argument("--minimum-repositories", type=int, default=10)
+        parser.add_argument("--trials", type=int, default=3)
+        args = parser.parse_args(sys.argv[3:])
+        from nexus.competitive_qualification import (
+            SuperiorityThresholds,
+            evaluate_superiority_report,
+        )
+        try:
+            payload = json.loads(Path(args.report).expanduser().read_text(encoding="utf-8"))
+            evaluation = evaluate_superiority_report(
+                payload,
+                thresholds=SuperiorityThresholds(
+                    minimum_unique_tasks=max(1, args.minimum_tasks),
+                    minimum_unique_repositories=max(1, args.minimum_repositories),
+                    minimum_trials_per_task=max(1, args.trials),
+                ),
+            )
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+        rendered = json.dumps(evaluation.to_dict(), indent=2, sort_keys=True)
+        if args.output:
+            output = Path(args.output).expanduser().resolve()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(rendered + "\n", encoding="utf-8")
+        print(rendered)
+        if not evaluation.qualified:
+            raise SystemExit(2)
+        return True
+    if len(sys.argv) >= 3 and sys.argv[2] == "compare-matched":
+        compare_parser = argparse.ArgumentParser(prog="nexus benchmark compare-matched")
+        compare_parser.add_argument("--direct", required=True)
+        compare_parser.add_argument("--nexus", required=True)
+        compare_parser.add_argument("--output", default="")
+        compare_parser.add_argument("--minimum-trials", type=int, default=6)
+        compare_parser.add_argument("--minimum-uplift", type=float, default=1.5)
+        compare_parser.add_argument("--maximum-false-completion-rate", type=float, default=0.01)
+        compare_parser.add_argument("--maximum-regression-rate", type=float, default=0.0)
+        compare_parser.add_argument("--minimum-budget-compliance", type=float, default=0.99)
+        compare_args = compare_parser.parse_args(sys.argv[3:])
+        from nexus.matched_benchmark import (
+            ComparisonThresholds,
+            compare_matched,
+            load_trials,
+        )
+        try:
+            report = compare_matched(
+                load_trials(compare_args.direct),
+                load_trials(compare_args.nexus),
+                thresholds=ComparisonThresholds(
+                    minimum_trials=max(1, compare_args.minimum_trials),
+                    minimum_uplift=max(0.0, compare_args.minimum_uplift),
+                    maximum_false_completion_rate=max(0.0, compare_args.maximum_false_completion_rate),
+                    maximum_regression_rate=max(0.0, compare_args.maximum_regression_rate),
+                    minimum_budget_compliance=min(1.0, max(0.0, compare_args.minimum_budget_compliance)),
+                ),
+            )
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            raise SystemExit(2) from exc
+        rendered = json.dumps(report.to_dict(), indent=2, sort_keys=True)
+        if compare_args.output:
+            output = Path(compare_args.output).expanduser().resolve()
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(rendered + "\n", encoding="utf-8")
+        print(rendered)
+        if not report.passed:
+            raise SystemExit(2)
+        return True
     benchmark_parser = argparse.ArgumentParser(
         prog="nexus benchmark",
         description="Run reproducible Nexus tasks in disposable repository copies.",
     )
     benchmark_parser.add_argument(
         "--manifest",
-        required=True,
-        help="Path to a nexus.benchmark.v1 or nexus.benchmark.v2 JSON manifest",
+        help="Manifest path; omitted uses the self-contained installed core benchmark",
     )
+    benchmark_parser.add_argument("--installed-core", action="store_true")
     benchmark_parser.add_argument(
         "--output",
         help="Optional path for the versioned JSON result",
@@ -502,12 +777,16 @@ def _handle_benchmark() -> bool:
     from nexus.benchmark import BenchmarkRunner, BenchmarkSuite
 
     try:
-        suite = BenchmarkSuite.load(benchmark_args.manifest)
-        report = BenchmarkRunner(
-            suite,
-            artifact_root=benchmark_args.artifact_dir,
-            keep_workspaces=benchmark_args.keep_workspaces,
-        ).run(dry_run=benchmark_args.dry_run)
+        if benchmark_args.manifest and benchmark_args.installed_core:
+            raise ValueError("Choose either --manifest or --installed-core")
+        if benchmark_args.manifest:
+            suite = BenchmarkSuite.load(benchmark_args.manifest)
+            report = BenchmarkRunner(suite, artifact_root=benchmark_args.artifact_dir, keep_workspaces=benchmark_args.keep_workspaces).run(dry_run=benchmark_args.dry_run)
+        else:
+            from nexus.benchmark_resources import installed_core_manifest
+            with installed_core_manifest() as manifest:
+                suite = BenchmarkSuite.load(manifest)
+                report = BenchmarkRunner(suite, artifact_root=benchmark_args.artifact_dir, keep_workspaces=benchmark_args.keep_workspaces).run(dry_run=benchmark_args.dry_run)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
@@ -521,6 +800,27 @@ def _handle_benchmark() -> bool:
     # A dry-run is a release gate, not a best-effort preview. Missing fixture
     # repositories and other blocked tasks must fail with a non-zero status.
     if payload["summary"]["failed"] or not payload["summary"]["tasks"]:
+        raise SystemExit(2)
+    return True
+
+
+def _handle_sandbox_qualification() -> bool:
+    """Behaviorally qualify the host sandbox instead of trusting its name."""
+    if len(sys.argv) < 3 or sys.argv[1:3] != ["sandbox", "qualify"]:
+        return False
+    parser = argparse.ArgumentParser(prog="nexus sandbox qualify")
+    parser.add_argument("--workspace", default=".")
+    parser.add_argument("--output", default="sandbox-qualification.json")
+    parser.add_argument("--require-autonomous", action="store_true")
+    args = parser.parse_args(sys.argv[3:])
+    from nexus.platform.sandbox_qualification import qualify_native_sandbox
+    try:
+        qualification = qualify_native_sandbox(args.workspace, args.output)
+    except (OSError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    print(json.dumps(qualification.to_dict(), indent=2, sort_keys=True))
+    if args.require_autonomous and not qualification.autonomous_ready:
         raise SystemExit(2)
     return True
 
@@ -1170,6 +1470,270 @@ def _handle_autonomy_project() -> bool:
     return True
 
 
+def _handle_proof() -> bool:
+    if len(sys.argv)<2 or sys.argv[1]!="proof": return False
+    parser=argparse.ArgumentParser(prog="nexus proof"); sub=parser.add_subparsers(dest="command",required=True); verify=sub.add_parser("verify"); verify.add_argument("path"); args=parser.parse_args(sys.argv[2:])
+    from nexus.proof import verify_proof_receipt
+    valid,detail=verify_proof_receipt(args.path); print(json.dumps({"valid":valid,"detail":detail},indent=2))
+    if not valid: raise SystemExit(2)
+    return True
+
+
+def _handle_engineering_intelligence() -> bool:
+    """Inspect the repository-aware engineering contract without invoking a model."""
+    if len(sys.argv) < 2 or sys.argv[1] != "intelligence":
+        return False
+    parser = argparse.ArgumentParser(prog="nexus intelligence")
+    sub = parser.add_subparsers(dest="command", required=True)
+    inspect_cmd = sub.add_parser("inspect")
+    inspect_cmd.add_argument("objective")
+    inspect_cmd.add_argument("--working-dir", "-d", default=".")
+    inspect_cmd.add_argument("--strict", action="store_true")
+    inspect_cmd.add_argument("--json", action="store_true", dest="as_json")
+    memory_cmd = sub.add_parser("memory")
+    memory_cmd.add_argument("task_id", nargs="?", default="")
+    memory_cmd.add_argument("--working-dir", "-d", default=".")
+    args = parser.parse_args(sys.argv[2:])
+
+    from nexus.intelligence.engineering import EngineeringBrain, EngineeringMemoryStore
+
+    root = Path(args.working_dir).expanduser().resolve()
+    if args.command == "memory":
+        store = EngineeringMemoryStore(root)
+        memory = store.load(args.task_id) if args.task_id else store.latest()
+        if memory is None:
+            print(json.dumps({"status": "not_found"}, indent=2))
+            raise SystemExit(2)
+        print(json.dumps(memory.to_dict(), indent=2, sort_keys=True))
+        return True
+
+    task_id = "inspect-" + __import__("hashlib").sha256(args.objective.encode()).hexdigest()[:12]
+    try:
+        brain = EngineeringBrain(root)
+        contract = brain.prepare(args.objective, task_id=task_id, strict=args.strict)
+    except (OSError, TypeError, ValueError) as exc:
+        print(json.dumps({"status": "blocked", "error": str(exc)}, indent=2))
+        raise SystemExit(2) from exc
+    payload = contract.to_dict()
+    payload["status"] = (
+        "BLOCKED" if contract.plan_critic.get("blocking_issues") else "READY_TO_PLAN"
+    )
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    if payload["status"] == "BLOCKED" and args.strict:
+        raise SystemExit(2)
+    return True
+
+
+def _require_autonomous_host_qualification(working_dir: str | Path):
+    """Fail closed unless this exact host can contain generated commands."""
+    from nexus.platform.sandbox_qualification import qualify_native_sandbox
+
+    root = Path(working_dir or os.getcwd()).expanduser().resolve()
+    qualification = qualify_native_sandbox(root)
+    if not qualification.autonomous_ready:
+        failed = ", ".join(item.name for item in qualification.probes if not item.passed) or "unknown"
+        raise RuntimeError(
+            "Autonomous mode blocked: native sandbox behavioral qualification failed "
+            f"on backend {qualification.backend!r} (failed probes: {failed}). "
+            "Run `nexus sandbox qualify --workspace <repo> --require-autonomous` "
+            "after fixing host isolation."
+        )
+    return qualification
+
+
+def _handle_deploy_check() -> bool:
+    """Check artifact integrity and host readiness for a selected execution mode."""
+    if len(sys.argv) < 2 or sys.argv[1] != "deploy":
+        return False
+    parser = argparse.ArgumentParser(prog="nexus deploy")
+    sub = parser.add_subparsers(dest="command", required=True)
+    check = sub.add_parser("check")
+    check.add_argument("--working-dir", "-d", default=".")
+    check.add_argument(
+        "--mode",
+        choices=("review", "quality", "autonomous", "ci", "local-only"),
+        default="review",
+    )
+    check.add_argument(
+        "--deep",
+        action="store_true",
+        help="execute the installed offline repair and adversarial reliability suite",
+    )
+    check.add_argument("--output", default="")
+    check.add_argument(
+        "--competitive-report", default="",
+        help="sealed Nexus-vs-Claude Code duel report required for an autonomous production claim",
+    )
+    check.add_argument("--json", action="store_true", dest="as_json")
+    args = parser.parse_args(sys.argv[2:])
+
+    from nexus.architecture_health import run_architecture_health
+    from nexus.benchmark_resources import installed_core_manifest
+    from nexus.intelligence.engineering.integrity import StateAuthenticator
+
+    root = Path(args.working_dir).expanduser().resolve()
+    architecture = run_architecture_health()
+    doctor_ready, doctor_report = run_doctor(str(root), mode=args.mode)
+    benchmark_ready = False
+    benchmark_detail = ""
+    try:
+        with installed_core_manifest() as manifest:
+            benchmark_ready = Path(manifest).is_file()
+            benchmark_detail = str(manifest)
+    except (OSError, ValueError) as exc:
+        benchmark_detail = str(exc)
+
+    state_ready = False
+    state_detail = ""
+    try:
+        authenticator = StateAuthenticator.for_repository(root)
+        probe = {"workspace": str(root), "purpose": "deployment-readiness"}
+        signature = authenticator.sign(probe)
+        state_ready = authenticator.verify(
+            probe,
+            signature,
+            key_id=authenticator.key_id,
+            scheme=authenticator.scheme,
+        )
+        state_detail = f"{authenticator.scheme}:{authenticator.key_id}"
+    except (OSError, RuntimeError, ValueError) as exc:
+        state_detail = str(exc)
+
+    offline_summary: dict[str, Any] = {}
+    offline_ready = not args.deep
+    if args.deep:
+        from nexus.offline_reliability_benchmark import run_offline_reliability_benchmark
+
+        report = run_offline_reliability_benchmark()
+        offline_summary = report.to_dict().get("summary", {})
+        offline_ready = (
+            int(offline_summary.get("failed", 1)) == 0
+            and int(offline_summary.get("real_repository_repairs", 0)) >= 1
+            and int(offline_summary.get("executed_scenarios", 0)) >= 5
+        )
+
+    ready = (
+        architecture.passed
+        and doctor_ready
+        and benchmark_ready
+        and state_ready
+        and offline_ready
+    )
+    supervised_ready = bool(ready and args.deep and args.mode in {"review", "quality", "ci", "autonomous"})
+
+    sandbox_payload: dict[str, Any] = {}
+    sandbox_ready = False
+    if args.mode == "autonomous":
+        from nexus.platform.sandbox_qualification import qualify_native_sandbox
+        try:
+            sandbox_qualification = qualify_native_sandbox(root)
+            sandbox_payload = sandbox_qualification.to_dict()
+            sandbox_ready = bool(sandbox_qualification.autonomous_ready)
+        except (OSError, RuntimeError, ValueError) as exc:
+            sandbox_payload = {"autonomous_ready": False, "error": str(exc)}
+
+    superiority_payload: dict[str, Any] = {}
+    superiority_ready = False
+    if args.competitive_report:
+        from nexus.competitive_qualification import evaluate_superiority_report
+        try:
+            report_path = Path(args.competitive_report).expanduser().resolve()
+            report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+            superiority = evaluate_superiority_report(report_payload)
+            superiority_payload = superiority.to_dict()
+            superiority_ready = bool(superiority.qualified)
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            superiority_payload = {"qualified": False, "error": str(exc)}
+
+    autonomous_ready = bool(
+        ready and args.deep and args.mode == "autonomous" and sandbox_ready and superiority_ready
+    )
+    autonomous_blockers: list[str] = []
+    if args.mode == "autonomous":
+        if not args.deep or not offline_ready:
+            autonomous_blockers.append("deep offline reliability qualification")
+        if not sandbox_ready:
+            autonomous_blockers.append("target-host native sandbox behavioral qualification")
+        if not superiority_ready:
+            autonomous_blockers.append("sealed private Nexus-vs-Claude Code superiority qualification")
+
+    deployment_ready = autonomous_ready if args.mode == "autonomous" else ready
+    payload = {
+        "status": "READY" if deployment_ready else "NOT_READY",
+        "deployment_classification": (
+            "AUTONOMOUS_PRODUCTION_READY"
+            if autonomous_ready
+            else "SUPERVISED_PRODUCTION_READY"
+            if supervised_ready
+            else "LOCAL_SMOKE_READY"
+            if ready
+            else "NOT_READY"
+        ),
+        "mode": args.mode,
+        "deep": args.deep,
+        "architecture": architecture.to_dict(),
+        "doctor_ready": doctor_ready,
+        "doctor_report": doctor_report,
+        "authenticated_state_ready": state_ready,
+        "authenticated_state_detail": state_detail,
+        "installed_benchmark_ready": benchmark_ready,
+        "installed_benchmark_detail": benchmark_detail,
+        "offline_reliability_ready": offline_ready,
+        "offline_reliability_summary": offline_summary,
+        "supervised_production_ready": supervised_ready,
+        "autonomous_production_ready": autonomous_ready,
+        "autonomous_blockers": autonomous_blockers,
+        "sandbox_qualification": sandbox_payload,
+        "competitive_superiority": superiority_payload,
+        "production_claim": bool(supervised_ready or autonomous_ready),
+        "production_claim_scope": (
+            "autonomous generated-command execution on this qualified host with sealed competitive evidence"
+            if autonomous_ready
+            else "supervised isolated Verified Repair deployments with mandatory human review"
+            if supervised_ready
+            else "none"
+        ),
+    }
+    encoded = json.dumps(payload, indent=2, sort_keys=True)
+    if args.output:
+        target = Path(args.output).expanduser().resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(encoded + "\n", encoding="utf-8")
+    print(encoded)
+    if not deployment_ready:
+        raise SystemExit(2)
+    return True
+
+
+def _handle_architecture_health() -> bool:
+    """Run the machine-enforced canonical-runtime and package-integrity gate."""
+    if len(sys.argv) < 2 or sys.argv[1] != "architecture":
+        return False
+    parser = argparse.ArgumentParser(prog="nexus architecture")
+    sub = parser.add_subparsers(dest="command", required=True)
+    check = sub.add_parser("check", help="validate canonical runtime and package imports")
+    check.add_argument("--json", action="store_true", dest="as_json")
+    check.add_argument("--root", default="", help="source/release root to validate")
+    args = parser.parse_args(sys.argv[2:])
+
+    from nexus.architecture_health import run_architecture_health
+
+    report = run_architecture_health(args.root or None)
+    if args.as_json:
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+    else:
+        print("Nexus Architecture Health")
+        print(f"status: {'PASS' if report.passed else 'FAIL'}")
+        print(f"imports: {report.imported_modules}/{report.package_modules}")
+        for item in report.checks:
+            print(f"[{'PASS' if item.passed else 'FAIL'}] {item.name}: {item.detail}")
+            for failure in item.failures:
+                print(f"  - {failure}")
+    if not report.passed:
+        raise SystemExit(2)
+    return True
+
+
 def _handle_performance_and_release() -> bool:
     if len(sys.argv) < 2 or sys.argv[1] not in {"performance", "release"}:
         return False
@@ -1187,6 +1751,19 @@ def _handle_performance_and_release() -> bool:
         qualify = sub.add_parser("qualify")
         qualify.add_argument("--version", required=True)
         qualify.add_argument("--output", default="")
+        qualify.add_argument(
+            "--channel",
+            choices=("private-alpha", "controlled-beta", "release-candidate"),
+            default="private-alpha",
+        )
+        qualify.add_argument(
+            "--evidence",
+            default="",
+            help="JSON evidence containing test_results/security_results and optional rollback metadata",
+        )
+        qualify.add_argument("--artifact", action="append", default=[])
+        qualify.add_argument("--rollback-version", default="")
+        qualify.add_argument("--downgrade-tested", action="store_true")
     args = parser.parse_args(sys.argv[2:])
 
     if top == "performance":
@@ -1207,11 +1784,14 @@ def _handle_performance_and_release() -> bool:
         print(json.dumps(report.to_dict() | {"regressions": failures}, indent=2))
         return True
 
+    from nexus.architecture_health import run_architecture_health, scan_source_secrets
     from nexus.release.qualification import (
         DEFAULT_RELEASE_SCOPE,
+        ChannelPolicy,
         ReleaseQualification,
         RollbackPlan,
         build_supply_chain_evidence,
+        source_tree_sha256,
     )
 
     if args.command == "scope":
@@ -1220,18 +1800,142 @@ def _handle_performance_and_release() -> bool:
         else:
             print(json.dumps(asdict(DEFAULT_RELEASE_SCOPE), indent=2))
         return True
-    requirements = Path("requirements.txt")
-    dependency_lines = tuple(requirements.read_text(encoding="utf-8").splitlines()) if requirements.is_file() else ()
+
+    root = Path(__file__).resolve().parents[2]
+    requirements = root / "requirements.txt"
+    dependency_lines = (
+        tuple(requirements.read_text(encoding="utf-8").splitlines())
+        if requirements.is_file()
+        else ()
+    )
+    evidence: dict = {}
+    evidence_path: Path | None = None
+    if args.evidence:
+        evidence_path = Path(args.evidence).expanduser().resolve()
+        try:
+            evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(json.dumps({"status": "fail", "failures": [f"invalid_evidence:{exc}"]}, indent=2))
+            raise SystemExit(2)
+        if not isinstance(evidence, dict):
+            print(json.dumps({"status": "fail", "failures": ["invalid_evidence:not_an_object"]}, indent=2))
+            raise SystemExit(2)
+
+    architecture = run_architecture_health(root)
+    secret_scan_passed, secret_findings = scan_source_secrets(root)
+    test_results = dict(evidence.get("test_results") or {})
+    security_results = dict(evidence.get("security_results") or {})
+    test_results["architecture_health"] = architecture.passed
+    test_results["package_imports"] = architecture.package_modules == architecture.imported_modules
+    security_results["source_secret_scan"] = secret_scan_passed
+
+    rollback_evidence = evidence.get("rollback_plan") or {}
+    rollback_version = args.rollback_version or str(rollback_evidence.get("safe_version") or "")
+    downgrade_tested = bool(args.downgrade_tested or rollback_evidence.get("downgrade_tested", False))
+    instructions = tuple(str(item) for item in rollback_evidence.get("instructions", ()))
+
+    policies = {
+        "private-alpha": ChannelPolicy(
+            name="private-alpha",
+            required_test_names=("architecture_health", "package_imports"),
+            required_security_names=("source_secret_scan",),
+        ),
+        "controlled-beta": ChannelPolicy(
+            name="controlled-beta",
+            require_test_evidence=True,
+            require_security_evidence=True,
+            require_artifact_evidence=True,
+            require_bound_evidence=True,
+            required_test_names=(
+                "architecture_health",
+                "package_imports",
+                "full_test_suite",
+                "wheel_install_smoke",
+                "benchmark_manifest_validation",
+            ),
+            required_security_names=(
+                "source_secret_scan",
+                "security_adversarial_suite",
+                "sandbox_fail_closed",
+            ),
+            required_report_names=(
+                "junit",
+                "coverage",
+                "benchmark",
+                "offline_reliability",
+                "sbom",
+                "deploy_check",
+            ),
+        ),
+        "release-candidate": ChannelPolicy(
+            name="release-candidate",
+            require_test_evidence=True,
+            require_security_evidence=True,
+            require_artifact_evidence=True,
+            require_bound_evidence=True,
+            required_test_names=(
+                "architecture_health",
+                "package_imports",
+                "full_test_suite",
+                "wheel_install_smoke",
+                "benchmark_manifest_validation",
+                "offline_reliability_benchmark",
+                "software_bill_of_materials",
+                "live_provider_long_horizon",
+                "cross_platform_ci",
+                "hidden_task_benchmark",
+                "repeatability_benchmark",
+                "false_verification_gate",
+                "prohibited_change_gate",
+            ),
+            required_security_names=(
+                "source_secret_scan",
+                "security_adversarial_suite",
+                "sandbox_fail_closed",
+            ),
+            required_report_names=(
+                "junit",
+                "coverage",
+                "benchmark",
+                "offline_reliability",
+                "sbom",
+                "deploy_check",
+            ),
+        ),
+    }
+    provenance = [
+        f"architecture_modules={architecture.imported_modules}/{architecture.package_modules}",
+        f"secret_findings={len(secret_findings)}",
+    ]
     qualification = ReleaseQualification(
         version=args.version,
         scope=DEFAULT_RELEASE_SCOPE,
-        supply_chain=build_supply_chain_evidence(dependency_lines=dependency_lines),
-        rollback_plan=RollbackPlan(safe_version=args.version, downgrade_tested=True),
+        supply_chain=build_supply_chain_evidence(
+            dependency_lines=dependency_lines,
+            secret_scan_passed=secret_scan_passed,
+            artifact_paths=args.artifact,
+            provenance_notes=provenance,
+        ),
+        rollback_plan=RollbackPlan(
+            safe_version=rollback_version,
+            downgrade_tested=downgrade_tested,
+            instructions=instructions,
+        ),
+        test_results=test_results,
+        security_results=security_results,
+        channel_policy=policies[args.channel],
+        evidence_binding=dict(evidence.get("provenance") or {}),
+        expected_source_sha256=source_tree_sha256(root),
+        evidence_root=str(Path(args.evidence).expanduser().resolve().parent) if args.evidence else "",
     )
-    payload = asdict(qualification) | {"evaluation": qualification.evaluate()}
+    payload = qualification.to_dict()
+    payload["architecture_health"] = architecture.to_dict()
+    payload["secret_scan_findings"] = list(secret_findings)
     if args.output:
         Path(args.output).write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     print(json.dumps(payload, indent=2, sort_keys=True))
+    if payload["evaluation"]["status"] != "pass":
+        raise SystemExit(2)
     return True
 
 
@@ -1773,7 +2477,7 @@ def exit_code_for_outcome(outcome: str) -> int:
         "FAILED": 1,
         "INTERNAL_ERROR": 1,
         "PARTIALLY_VERIFIED": 2,
-        "BLOCKED": 3,
+        "BLOCKED": 2,
         "BUDGET_EXHAUSTED": 4,
         "SECURITY_POLICY_DENIED": 5,
         "CONFIGURATION_ERROR": 6,
@@ -1805,13 +2509,10 @@ def _configure_output_streams(streams=None) -> None:
 def _handle_plan_commands() -> bool:
     if len(sys.argv) < 2 or sys.argv[1] != "plan":
         return False
-    
+
     subcmd = sys.argv[2] if len(sys.argv) > 2 else ""
-    from nexus.planning.engine import PlanningEngine
-    from nexus.planning.validator import DeterministicValidator
-    from nexus.planning.engineering_plan import EngineeringPlan
     from nexus.paths import nexus_home
-    import json
+    from nexus.planner import PlanningEngine
 
     engine = PlanningEngine()
 
@@ -1821,40 +2522,32 @@ def _handle_plan_commands() -> bool:
         plan_file = next(run_dir.glob("plan-v*.json"), None) if run_dir.exists() else None
         if not plan_file or not plan_file.exists():
             print(f"No plan artifact found for run ID '{run_id}'")
-            sys.exit(1)
+            raise SystemExit(1)
         print(plan_file.read_text(encoding="utf-8"))
-        sys.exit(0)
+        raise SystemExit(0)
 
-    elif subcmd == "validate":
+    if subcmd == "validate":
         plan_path = sys.argv[3] if len(sys.argv) > 3 else ""
         if not plan_path or not Path(plan_path).exists():
             print(f"Error: plan file '{plan_path}' not found")
-            sys.exit(1)
-        data = json.loads(Path(plan_path).read_text(encoding="utf-8"))
-        plan = EngineeringPlan.from_dict(data)
-        validator = DeterministicValidator()
-        issues = validator.validate(plan)
+            raise SystemExit(1)
+        try:
+            data = json.loads(Path(plan_path).read_text(encoding="utf-8"))
+            issues = engine.validate_canonical_plan_payload(data)
+        except (OSError, ValueError, TypeError, KeyError) as exc:
+            print(f"Error: invalid plan artifact: {exc}")
+            raise SystemExit(1)
         print(f"Validation completed with {len(issues)} issues:")
         for issue in issues:
-            print(f"  [{issue.severity}] {issue.code}: {issue.message}")
-        sys.exit(0 if not any(i.severity == "ERROR" for i in issues) else 1)
+            print(f"  [{issue['severity']}] {issue['code']}: {issue['message']}")
+        raise SystemExit(
+            1 if any(issue["severity"] == "ERROR" for issue in issues) else 0
+        )
 
-    else:
-        # nexus plan "<task>"
-        task = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "Task plan generation"
-        contract = engine.interpret_task(task)
-        plan = engine.create_engineering_plan(contract)
-        critique, exec_contract = engine.critique_and_finalize(plan, contract)
-        
-        output = {
-            "task_contract": contract.to_dict(),
-            "engineering_plan": plan.to_dict(),
-            "critique": critique.to_dict(),
-            "execution_contract": exec_contract.to_dict() if exec_contract else None,
-        }
-        print(json.dumps(output, indent=2))
-        sys.exit(0)
-    return True
+    task = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else "Task plan generation"
+    output = engine.create_canonical_bundle(task)
+    print(json.dumps(output, indent=2))
+    raise SystemExit(0)
 
 
 def _handle_recovery_commands() -> bool:
@@ -1868,6 +2561,7 @@ def _handle_recovery_commands() -> bool:
 
     import json
     from pathlib import Path
+
     from nexus.recovery import (
         RollbackDecisionEngine,
         SessionResumptionEngine,
@@ -1925,7 +2619,8 @@ def _handle_change_commands():
         return False
 
     import argparse
-    from nexus.cli_change import handle_change_command, add_change_subparsers
+
+    from nexus.cli_change import add_change_subparsers, handle_change_command
 
     parser = argparse.ArgumentParser(prog="nexus")
     subparsers = parser.add_subparsers(dest="subcommand")
@@ -1943,16 +2638,17 @@ def _handle_collaboration_commands() -> bool:
     if sub not in ("collaborate", "collaboration"):
         return False
 
+    import asyncio
     import json
     import uuid
-    import asyncio
     from pathlib import Path
+
     from nexus.collaboration import (
-        LeadOrchestrator,
         AgentAssignment,
         AgentRole,
-        CollaborationPolicyProfile,
         AssignmentScope,
+        CollaborationPolicyProfile,
+        LeadOrchestrator,
         WorkerBudget,
     )
     from nexus.collaboration.persistence import CollaborationPersistence
@@ -2065,6 +2761,7 @@ def _handle_collaboration_commands() -> bool:
 
 def main():
     _configure_output_streams()
+    _prepare_fix_command()
     if _handle_collaboration_commands():
         return
     if _handle_change_commands():
@@ -2083,6 +2780,14 @@ def main():
         return
     if _handle_autonomy_project():
         return
+    if _handle_proof():
+        return
+    if _handle_engineering_intelligence():
+        return
+    if _handle_deploy_check():
+        return
+    if _handle_architecture_health():
+        return
     if _handle_performance_and_release():
         return
     if _handle_run_management():
@@ -2091,11 +2796,25 @@ def main():
         return
     if _handle_generate_dashboard():
         return
+    if _handle_sandbox_qualification():
+        return
     if _handle_benchmark():
         return
     _solve_issue_prompt()
+    _reject_unknown_subcommand()
     _normalize_subcommand_argv()
     args = parse_args()
+
+    if args.doctor:
+        if args.output_format == "json":
+            from nexus.doctor import doctor_report
+
+            success, payload = doctor_report(args.working_dir, mode=args.mode)
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        else:
+            success, report = run_doctor(args.working_dir, mode=args.mode)
+            print(report)
+        raise SystemExit(0 if success else 2)
 
     resume_snapshot = None
     if args.resume_run:
@@ -2151,12 +2870,19 @@ def main():
         ui.print_error("Additional directories do not exist: " + ", ".join(invalid_dirs))
         sys.exit(1)
 
+    if args.mode == "autonomous":
+        try:
+            _require_autonomous_host_qualification(args.working_dir or os.getcwd())
+        except (OSError, RuntimeError, ValueError) as exc:
+            ui.print_error(str(exc))
+            sys.exit(2)
+
     # Sprint 9 Subcommands: nexus models, nexus model ..., nexus budget ..., nexus cost ...
     if len(sys.argv) >= 2 and sys.argv[1].lower() in ("models", "model", "budget", "cost"):
         sub = sys.argv[1].lower()
-        from nexus.models import model_registry
-        from nexus.model_doctor import model_doctor
         from nexus.cost_accounting import cost_ledger
+        from nexus.model_doctor import model_doctor
+        from nexus.models import model_registry
 
         if sub == "models":
             descriptors = model_registry.list_all()
@@ -2238,6 +2964,10 @@ def main():
                 workspace_isolation=False,
                 tools_enabled=False,
                 plugins_enabled=False,
+                # The leading ``!`` is an explicit user request to execute on
+                # the local host. It grants only this direct-command agent the
+                # otherwise-disabled trusted-host capability.
+                allow_unisolated_host_process=True,
             )
             result, success = agent._execute_tool_with_safety(
                 "run_process", {"argv": argv, "cwd": agent.working_dir},
@@ -2399,8 +3129,10 @@ def main():
         status = final_report.get("status")
         if status in {"FAILED", "PARTIALLY_VERIFIED", "UNVERIFIED"}:
             exit_code = 2
-        elif status in {"AWAITING_APPROVAL", "BLOCKED"}:
+        elif status == "AWAITING_APPROVAL":
             exit_code = 3
+        elif status == "BLOCKED":
+            exit_code = 2
         elif status == "VERIFIED":
             exit_code = 0
         if args.output_format in {"json", "jsonl", "stream-json"}:
@@ -2432,8 +3164,10 @@ def main():
             status = final_report.get("status")
             if status in {"FAILED", "PARTIALLY_VERIFIED", "UNVERIFIED"}:
                 exit_code = 2
-            elif status in {"AWAITING_APPROVAL", "BLOCKED"}:
+            elif status == "AWAITING_APPROVAL":
                 exit_code = 3
+            elif status == "BLOCKED":
+                exit_code = 2
             elif status == "VERIFIED":
                 exit_code = 0
             if args.output_format == "json":
@@ -2472,6 +3206,7 @@ def main():
                     print(FinalReportGenerator.generate(final_report_path))
                 except ImportError:
                     pass
+            _emit_requested_proof(agent, final_report)
             _close_and_exit(agent, exit_code)
         else:
             if getattr(agent, "worktree", None) and agent.worktree.info:
@@ -2483,8 +3218,10 @@ def main():
             final_report = agent.export_final_report()
             status = final_report.get("status", "UNVERIFIED")
             exit_code = 2
-            if status in {"AWAITING_APPROVAL", "BLOCKED"}:
+            if status == "AWAITING_APPROVAL":
                 exit_code = 3
+            elif status == "BLOCKED":
+                exit_code = 2
             elif status == "VERIFIED":
                 exit_code = 0
 

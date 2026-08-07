@@ -13,7 +13,7 @@ Provides:
 from __future__ import annotations
 
 import logging
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Iterator
 

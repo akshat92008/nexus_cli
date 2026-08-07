@@ -1,3 +1,38 @@
+# Nexus and Claude Code — evidence boundary
+
+## Version 3.8.2 competitive contract
+
+The product goal remains to outperform Claude Code. Version 3.8.2 retains the 3.8.0 competitive gate and converts that goal into a fail-closed qualification contract rather than lowering it or declaring success from internal smoke tests.
+
+Nexus now requires a sealed three-way campaign:
+
+1. Nexus with the selected underlying model.
+2. The same underlying model with only a direct baseline tool loop.
+3. A real Claude Code executable.
+
+Qualification requires at least 50 private unseen tasks across 10 repositories, all seven hard-task categories, at least three trials per task, identical repository revisions/prompts/oracles/budgets, withheld oracles, zero post-selection task changes, complete cost/latency/intervention data, distinct executable provenance, category-level wins, an aggregate verified-completion margin, same-model uplift, and an Ed25519 signature from the independent evaluator. Editing any signed result invalidates the report.
+
+**The goal is not compromised, but the claim remains unproven until that external campaign passes.** Local tests prove the runtime and the qualification machinery; they cannot substitute for real Claude Code executions or private unseen repositories.
+
+Version 3.8.2 additionally hardens the internal truth boundary: a command cannot become test evidence merely because it exits successfully or contains a runner name; broad failures remain blocking until an equal or broader validated suite passes against the final workspace revision. This strengthens benchmark integrity but is not itself evidence of parity.
+
+Campaign flow:
+
+```bash
+cp benchmarks/superiority.example.json private-superiority.json
+# Replace every placeholder and add the full sealed private task set.
+nexus benchmark duel --manifest private-superiority.json --output unsigned-report.json
+python scripts/sign_superiority_report.py \
+  --report unsigned-report.json \
+  --private-key /secure/evaluator-ed25519.key \
+  --evaluator-id independent-lab \
+  --output signed-report.json
+nexus benchmark superiority-gate --report signed-report.json
+```
+
+The private evaluator key must never be stored in the Nexus repository or its product CI.
+
+
 # NEXUS local-agent parity audit
 
 Research date: 2026-07-29. Source of truth: Anthropic's official [Claude Code documentation index](https://code.claude.com/docs/llms.txt), [tools reference](https://code.claude.com/docs/en/tools-reference), [extension overview](https://code.claude.com/docs/en/features-overview), [checkpointing guide](https://code.claude.com/docs/en/checkpointing), and [CLI reference](https://code.claude.com/docs/en/cli-reference).

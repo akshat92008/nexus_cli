@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 
 from nexus.recovery.controller import RecoveryController
 from nexus.recovery.records import FailureKind
-from nexus.runtime.kernel import classify_failure
 
 if TYPE_CHECKING:
     from nexus.agent import Agent
@@ -35,6 +34,7 @@ class RepairAttempt:
     duration_ms: int = 0
     evidence_ids: list[str] = field(default_factory=list)
     output: str = ""
+    context_expansion: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -161,12 +161,26 @@ class RepairLoop:
 
             t_start = time.monotonic()
 
+            brain = getattr(self._agent, "engineering_brain", None)
+            context_files: list[str] = []
+            repository_paths: list[str] = []
+            if brain is not None:
+                context_bundle = getattr(brain, "context_bundle", None)
+                if context_bundle is not None:
+                    context_files = [item.path for item in context_bundle.files]
+                repository = getattr(brain, "repository", None)
+                if repository is not None:
+                    repository_paths = list(getattr(repository, "files", {}))
+
             # Route through canonical RecoveryController
             strategy, diagnosis, terminal = self.recovery_controller.handle_failure(
                 current_failure,
                 source_component="RepairLoop",
                 phase="repair",
                 plan_version=1,
+                objective=original_prompt,
+                context_files=context_files,
+                repository_paths=repository_paths,
             )
 
             if terminal and terminal not in ("CONTINUE", "RETRY"):
@@ -174,7 +188,27 @@ class RepairLoop:
                 break
 
             fk_val = diagnosis.primary_failure.kind.value
-            failure_kind = FailureKind(fk_val) if fk_val in FailureKind.__members__.values() else FailureKind.UNKNOWN
+            try:
+                failure_kind = FailureKind(fk_val)
+            except ValueError:
+                failure_kind = FailureKind.UNKNOWN
+
+            context_expansion: dict[str, Any] = {}
+            if brain is not None and getattr(brain, "contract", None) is not None:
+                try:
+                    context_expansion = brain.expand_context_from_failure(
+                        f"repair iteration {iteration}: {strategy.strategy_type.value}",
+                        {
+                            "failure": current_failure,
+                            "recovery_context": self.recovery_controller.last_evidence_context,
+                        },
+                    )
+                except (OSError, TypeError, ValueError) as exc:
+                    logger.warning("Evidence-driven context expansion failed: %s", exc)
+                    context_expansion = {
+                        "expanded": False,
+                        "reason": f"context expansion error: {exc}",
+                    }
 
             repair_prompt = self._build_repair_prompt(
                 original_prompt=original_prompt,
@@ -182,6 +216,7 @@ class RepairLoop:
                 failure_kind=failure_kind,
                 iteration=iteration,
                 strategy_name=strategy.strategy_type.value,
+                context_expansion=context_expansion,
             )
 
             logger.info(
@@ -232,6 +267,7 @@ class RepairLoop:
                 duration_ms=duration_ms,
                 evidence_ids=[e.get("id", "") for e in [*mutations, *checks]],
                 output=(response + "\n\n" + verification_output)[:2000],
+                context_expansion=context_expansion,
             )
             report.attempts.append(attempt)
 
@@ -259,6 +295,7 @@ class RepairLoop:
         failure_kind: FailureKind,
         iteration: int,
         strategy_name: str = "",
+        context_expansion: dict[str, Any] | None = None,
     ) -> str:
         template = self._TEMPLATES.get(failure_kind, self._TEMPLATES[FailureKind.UNKNOWN])
         body = template.format(
@@ -267,8 +304,19 @@ class RepairLoop:
             iteration=iteration,
         )
         graph_context = ""
-        repo_graph = getattr(self._agent, "repo_graph", None)
-        if repo_graph is not None:
+        brain = getattr(self._agent, "engineering_brain", None)
+        if brain is not None and getattr(brain, "context_prompt", ""):
+            graph_context = str(brain.context_prompt)
+            max_context_chars = 180_000
+            if len(graph_context) > max_context_chars:
+                graph_context = (
+                    graph_context[:140_000]
+                    + "\n\n[CONTEXT TRUNCATED AT SAFE PROMPT BUDGET]\n\n"
+                    + graph_context[-40_000:]
+                )
+        else:
+            repo_graph = getattr(self._agent, "repo_graph", None)
+        if not graph_context and repo_graph is not None:
             try:
                 graph_context = repo_graph.context_bundle(
                     f"{original_prompt}\n{failure_context}",
@@ -278,6 +326,16 @@ class RepairLoop:
                 )
             except (OSError, TypeError, ValueError):
                 graph_context = ""
+
+        expansion_summary = ""
+        if context_expansion:
+            expansion_summary = (
+                "Evidence-driven context revision:\n"
+                f"- Expanded: {bool(context_expansion.get('expanded'))}\n"
+                f"- Added files: {', '.join(context_expansion.get('added_paths', [])) or 'none'}\n"
+                f"- Failure signals: {', '.join(context_expansion.get('failure_kinds', [])) or 'unclassified'}\n"
+                f"- Task profile: {context_expansion.get('task_profile', {}).get('kind', 'unchanged')}\n\n"
+            )
 
         return (
             f"[REPAIR ITERATION {iteration}/{self._max_iterations} | STRATEGY: {strategy_name}]\n\n"
@@ -290,6 +348,7 @@ class RepairLoop:
             "4. Apply a minimal coherent patch.\n"
             "5. Run the narrow failing check first, then applicable project checks.\n"
             "6. Do not claim success while any check is failing.\n\n"
+            f"{expansion_summary}"
             f"{graph_context}"
         )
 

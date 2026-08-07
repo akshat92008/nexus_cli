@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import importlib.util
+import json
 import os
 import shutil
 import subprocess
@@ -13,6 +14,9 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+
+from nexus.provenance import resolve_source_identity
+from nexus.qualification_environment import qualify_environment
 
 REPO = Path(__file__).resolve().parents[1]
 PROVIDER_SECRET_PREFIXES = (
@@ -39,34 +43,8 @@ _SOURCE_HASH_IGNORED_PARTS = {
 
 
 def source_revision(repo: Path = REPO) -> str:
-    """Return Git provenance or a deterministic source-archive fingerprint."""
-    try:
-        commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
-            cwd=repo,
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-    except (OSError, subprocess.CalledProcessError):
-        digest = hashlib.sha256()
-        for path in sorted(repo.rglob("*")):
-            if not path.is_file():
-                continue
-            relative = path.relative_to(repo)
-            if any(part in _SOURCE_HASH_IGNORED_PARTS for part in relative.parts):
-                continue
-            if path.suffix in {".pyc", ".whl", ".gz", ".zip"} or path.name.endswith(
-                ".egg-info"
-            ):
-                continue
-            digest.update(relative.as_posix().encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(path.read_bytes())
-            digest.update(b"\0")
-        return f"archive:{digest.hexdigest()}"
-    if not commit:
-        raise RuntimeError("git returned an empty source revision")
-    return f"git:{commit}"
+    """Return the exact Git or deterministic archive revision for qualification."""
+    return resolve_source_identity(repo).revision
 
 
 def deterministic_env(base: dict[str, str] | None = None) -> dict[str, str]:
@@ -249,9 +227,18 @@ def run_pytest_shards(
 
 def main() -> int:
     python = sys.executable
-    revision = source_revision()
+    identity = resolve_source_identity(REPO)
+    revision = identity.revision
     offline_env = deterministic_env()
     assert_dependency_mirror()
+
+    environment = qualify_environment(REPO)
+    if not environment.passed:
+        failed = [item.requirement for item in environment.dependencies if not item.passed]
+        raise RuntimeError(
+            "release environment violates pyproject/pip dependency contract: "
+            f"failed={failed}; pip_check={environment.pip_check_output!r}"
+        )
     run([python, "-m", "ruff", "check", "nexus", "tests", "scripts"], env=offline_env)
     
     test_count, skipped_count = run_pytest_shards(
@@ -265,6 +252,49 @@ def main() -> int:
             f"release gate collected only {test_count} passing tests; expected at least {minimum_tests}"
         )
     run([python, "-m", "compileall", "-q", "nexus", "tests"], env=offline_env)
+
+    with tempfile.TemporaryDirectory(prefix="nexus-runtime-qualification-") as runtime_temp:
+        runtime_root = Path(runtime_temp)
+        shared_report = runtime_root / "shared-process.json"
+        run(
+            [
+                python,
+                "scripts/qualify_shared_process.py",
+                "--timeout",
+                os.environ.get("NEXUS_SHARED_PROCESS_TIMEOUT", "1200"),
+                "--output",
+                str(shared_report),
+            ],
+            env=offline_env,
+        )
+        shared_payload = json.loads(shared_report.read_text(encoding="utf-8"))
+        if not shared_payload.get("source_tree_stable"):
+            raise RuntimeError("shared-process qualification changed the source tree")
+        if shared_payload.get("clean_exit_observed") is not True:
+            raise RuntimeError("shared-process qualification did not observe a clean interpreter exit")
+
+        sandbox_workspace = runtime_root / "sandbox-workspace"
+        sandbox_report = runtime_root / "sandbox-qualification.json"
+        run(
+            [
+                python,
+                "scripts/qualify_native_sandbox.py",
+                "--workspace",
+                str(sandbox_workspace),
+                "--output",
+                str(sandbox_report),
+            ],
+            env=offline_env,
+        )
+        sandbox_payload = json.loads(sandbox_report.read_text(encoding="utf-8"))
+        supported_mode = str(sandbox_payload.get("supported_mode") or "blocked")
+        autonomous_ready = sandbox_payload.get("autonomous_ready") is True
+        if supported_mode == "blocked":
+            raise RuntimeError("host sandbox qualification blocks all execution modes")
+        if os.environ.get("NEXUS_RELEASE_REQUIRE_AUTONOMOUS") == "1" and not autonomous_ready:
+            raise RuntimeError(
+                "autonomous release requested but native sandbox qualification did not pass"
+            )
 
     with tempfile.TemporaryDirectory(prefix="nexus-release-gate-") as temp:
         root = Path(temp)
@@ -349,22 +379,20 @@ def main() -> int:
             env=smoke_env,
         )
         run([python, "-m", "nexus", "--version"], cwd=root, env=smoke_env)
-        manifests = [REPO / "benchmark-manifest.json"]
-        manifests.extend((REPO / "benchmarks").glob("*.json"))
-        for manifest in manifests:
-            run(
-                [
-                    python,
-                    "-m",
-                    "nexus",
-                    "benchmark",
-                    "--manifest",
-                    str(manifest),
-                    "--dry-run",
-                ],
-                cwd=root,
-                env=smoke_env,
-            )
+        run([python,"-m","nexus","benchmark","--installed-core","--dry-run","--output",str(root/"installed-benchmark.json")],cwd=root,env=smoke_env)
+        run(
+            [
+                python,
+                "-m",
+                "nexus",
+                "benchmark",
+                "offline-reliability",
+                "--output",
+                str(root / "installed-offline-reliability.json"),
+            ],
+            cwd=root,
+            env=smoke_env,
+        )
 
         doctor_env = dict(smoke_env)
         doctor_env["NVIDIA_API_KEY"] = "nvapi-release-smoke"
@@ -386,7 +414,9 @@ def main() -> int:
         )
 
         provenance_str = (
-            f"source={revision} wheel={wheels[0].name} sha256={wheel_sha256} "
+            f"source={revision} tree={identity.source_tree_sha256} "
+            f"lock={identity.dependency_lock_sha256 or 'none'} "
+            f"wheel={wheels[0].name} sha256={wheel_sha256} "
             f"packaged_source_files={len(expected_members)}"
         )
         print(f"\nRelease provenance: {provenance_str}", flush=True)
@@ -399,10 +429,16 @@ def main() -> int:
 ## Automated Release Gates
 - **Tests Passed**: {test_count}
 - **Tests Skipped**: {skipped_count}
+- **Shared-process clean exit**: yes
+- **Dependency contract**: passed (`pip check` + declared ranges)
+- **Sandbox supported mode**: {supported_mode}
+- **Autonomous sandbox ready**: {autonomous_ready}
 - **Provenance**: {provenance_str}
 
 ## Status
-All offline scenarios, sandbox constraints, and critical test coverages passed.
+Deterministic software, packaging, lifecycle, and supervised execution gates passed.
+Autonomous execution is qualified only when **Autonomous sandbox ready** is `True`;
+model-intelligence or Claude Code parity requires separate live unseen-task evidence.
 """
         readiness_file.write_text(readiness_content, encoding="utf-8")
 

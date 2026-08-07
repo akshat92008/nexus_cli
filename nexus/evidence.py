@@ -144,12 +144,34 @@ class EvidenceTrail:
             discrepancies: list[str] = []
             checked_artifact = False
             for artifact in record.get("artifacts", []):
+                if not isinstance(artifact, dict) or not artifact.get("path"):
+                    discrepancies.append("malformed artifact evidence")
+                    continue
                 expected = artifact.get("sha256")
-                if not expected:
+                expected_exists = artifact.get("exists")
+                if expected is None and expected_exists is None:
                     continue
                 checked_artifact = True
-                current = file_fingerprint(artifact["path"])
-                if current.get("sha256") != expected:
+                artifact_path = Path(artifact["path"]).expanduser().resolve()
+                if artifact.get("kind") == "symlink" and artifact_path.is_symlink():
+                    target = os.readlink(artifact_path)
+                    current = {
+                        "path": str(artifact_path),
+                        "exists": True,
+                        "sha256": sha256_bytes(
+                            target.encode("utf-8", errors="surrogateescape")
+                        ),
+                        "size": len(target.encode("utf-8", errors="surrogateescape")),
+                    }
+                else:
+                    current = file_fingerprint(artifact_path)
+                if expected_exists is not None and current.get("exists") != expected_exists:
+                    discrepancies.append(
+                        f"{artifact['path']}: expected exists={expected_exists}, "
+                        f"got exists={current.get('exists')}"
+                    )
+                    continue
+                if expected is not None and current.get("sha256") != expected:
                     discrepancies.append(
                         f"{artifact['path']}: expected {expected}, got {current.get('sha256')}"
                     )

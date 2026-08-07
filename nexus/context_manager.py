@@ -6,14 +6,12 @@ import hashlib
 import json
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
-from nexus.paths import nexus_home
 from nexus.intelligence.repository.engine import RepositoryIntelligence
-from nexus.intelligence.repository.model import FileContext, ArchitectureMap, RiskLevel
+from nexus.intelligence.repository.model import ArchitectureMap, FileContext
+from nexus.paths import nexus_home
 
 
 class ContextManager:
@@ -199,16 +197,19 @@ class ContextManager:
 
     def _refresh_stale_contexts(self) -> None:
         to_delete = []
+        index_refresh: list[str] = []
         for path in list(self._file_contexts.keys()):
             p = Path(path)
             if not p.exists():
                 to_delete.append(path)
+                index_refresh.append(path)
             else:
                 try:
                     stat = p.stat()
                     ctx = self._file_contexts[path]
                     if ctx.modified_ns != stat.st_mtime_ns:
                         ctx.modified_ns = stat.st_mtime_ns
+                        index_refresh.append(path)
                         content = p.read_text(encoding="utf-8", errors="replace")
                         self.summarize_file(path, content)
                         self.track_file_imports(path, content)
@@ -220,6 +221,10 @@ class ContextManager:
             self._dependency_graph.pop(path, None)
             for deps in self._dependency_graph.values():
                 deps.discard(path)
+
+        if index_refresh:
+            self.engine.update_paths(index_refresh)
+            self._save_cache()
 
     def _save_cache(self) -> None:
         try:

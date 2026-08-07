@@ -6,10 +6,14 @@ so the user can review what changed and revert if needed.
 """
 
 import difflib
+import hashlib
 import json
+import os
 import shutil
+import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from nexus.paths import nexus_home
 
@@ -42,10 +46,43 @@ class FileHistory:
             except (json.JSONDecodeError, OSError):
                 self.changes = []
 
-    def _save_changes(self):
-        """Persist changes list to disk."""
-        with open(self._changes_file(), "w") as f:
-            json.dump(self.changes, f, indent=2)
+    def _save_changes(self, changes: list[dict] | None = None) -> None:
+        """Atomically persist change metadata without exposing a partial JSON file."""
+        payload = self.changes if changes is None else changes
+        destination = self._changes_file()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = destination.with_name(
+            f".{destination.name}.{uuid.uuid4().hex}.tmp"
+        )
+        try:
+            with temporary.open("w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _remove_path(path: Path) -> None:
+        """Remove any filesystem object occupying *path* without following links."""
+        if path.is_symlink() or path.is_file():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+
+    def discard_transaction(self, transaction_id: str) -> int:
+        """Drop records after the matching transaction was restored independently."""
+        if not transaction_id:
+            return 0
+        retained = [
+            item for item in self.changes if item.get("transaction_id") != transaction_id
+        ]
+        removed = len(self.changes) - len(retained)
+        if removed:
+            self._save_changes(retained)
+            self.changes = retained
+        return removed
 
     def snapshot_before_write(self, filepath: str) -> str | None:
         """
@@ -65,24 +102,89 @@ class FileHistory:
         except (OSError, shutil.SameFileError):
             return None
 
+    @staticmethod
+    def _build_change_entry(
+        filepath: str,
+        tool_name: str,
+        snapshot_path: str | None = None,
+        description: str = "",
+        *,
+        is_new_file: bool | None = None,
+        change_type: str = "modified",
+        before_sha256: str = "",
+        after_sha256: str = "",
+        before_mode: int | None = None,
+        after_mode: int | None = None,
+        before_kind: str = "file",
+        before_link_target: str = "",
+        transaction_id: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "filepath": str(Path(filepath).expanduser().resolve()),
+            "tool": tool_name,
+            "snapshot_path": snapshot_path,
+            "description": description,
+            "is_new_file": snapshot_path is None if is_new_file is None else bool(is_new_file),
+            "change_type": change_type,
+            "before_sha256": before_sha256,
+            "after_sha256": after_sha256,
+            "before_mode": before_mode,
+            "after_mode": after_mode,
+            "before_kind": before_kind,
+            "before_link_target": before_link_target,
+            "transaction_id": transaction_id,
+            "metadata": metadata or {},
+        }
+
     def record_change(
         self,
         filepath: str,
         tool_name: str,
         snapshot_path: str | None = None,
         description: str = "",
-    ):
-        """Record a file change in the history."""
-        entry = {
-            "timestamp": datetime.now().isoformat(),
-            "filepath": str(Path(filepath).expanduser().resolve()),
-            "tool": tool_name,
-            "snapshot_path": snapshot_path,
-            "description": description,
-            "is_new_file": snapshot_path is None,
-        }
-        self.changes.append(entry)
-        self._save_changes()
+        *,
+        is_new_file: bool | None = None,
+        change_type: str = "modified",
+        before_sha256: str = "",
+        after_sha256: str = "",
+        before_mode: int | None = None,
+        after_mode: int | None = None,
+        before_kind: str = "file",
+        before_link_target: str = "",
+        transaction_id: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Record one file change using an atomic metadata commit."""
+        entry = self._build_change_entry(
+            filepath,
+            tool_name,
+            snapshot_path,
+            description,
+            is_new_file=is_new_file,
+            change_type=change_type,
+            before_sha256=before_sha256,
+            after_sha256=after_sha256,
+            before_mode=before_mode,
+            after_mode=after_mode,
+            before_kind=before_kind,
+            before_link_target=before_link_target,
+            transaction_id=transaction_id,
+            metadata=metadata,
+        )
+        candidate = [*self.changes, entry]
+        self._save_changes(candidate)
+        self.changes = candidate
+
+    def record_changes_batch(self, changes: list[dict[str, Any]]) -> None:
+        """Commit a command's complete mutation set in one durable metadata write."""
+        if not changes:
+            return
+        entries = [self._build_change_entry(**change) for change in changes]
+        candidate = [*self.changes, *entries]
+        self._save_changes(candidate)
+        self.changes = candidate
 
     def get_last_change(self) -> dict | None:
         """Get the most recent file change."""
@@ -104,30 +206,47 @@ class FileHistory:
         filepath = last["filepath"]
         snapshot = last.get("snapshot_path")
 
+        target = Path(filepath)
         if last["is_new_file"]:
-            # File was newly created — delete it
+            # File/symlink was newly created — remove it.
             try:
-                p = Path(filepath)
-                if p.exists():
-                    p.unlink()
+                self._remove_path(target)
                 self.changes.pop()
                 self._save_changes()
-                return True, f"Deleted newly created file: {filepath}"
+                return True, f"Deleted newly created path: {filepath}"
             except OSError as e:
                 return False, f"Failed to delete {filepath}: {e}"
-        elif snapshot and Path(snapshot).exists():
-            # Restore from snapshot
-            try:
-                shutil.copy2(snapshot, filepath)
-                self.changes.pop()
-                self._save_changes()
-                return True, f"Restored {Path(filepath).name} to previous version"
-            except OSError as e:
-                return False, f"Failed to restore {filepath}: {e}"
-        else:
-            self.changes.pop()
-            self._save_changes()
-            return False, "Snapshot not available — change record removed but file not restored."
+
+        before_kind = str(last.get("before_kind") or "file")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._remove_path(target)
+            if before_kind == "symlink":
+                link_target = str(last.get("before_link_target") or "")
+                if not link_target:
+                    return False, f"Symlink preimage missing for {filepath}"
+                target.symlink_to(link_target)
+            elif snapshot and Path(snapshot).exists():
+                shutil.copyfile(snapshot, target)
+                before_mode = last.get("before_mode")
+                if before_mode is not None:
+                    os.chmod(target, int(before_mode))
+                expected = str(last.get("before_sha256") or "")
+                if expected:
+                    digest = hashlib.sha256(target.read_bytes()).hexdigest()
+                    if digest != expected:
+                        return False, f"Rollback digest mismatch for {filepath}"
+            else:
+                return False, f"Snapshot not available for {filepath}; rollback refused."
+        except OSError as e:
+            return False, f"Failed to restore {filepath}: {e}"
+
+        self.changes.pop()
+        self._save_changes()
+        return True, (
+            f"Restored {target.name} to previous version "
+            "(digest-verified pre-command state)"
+        )
 
     def undo_changes(self, count: int = 1) -> tuple[bool, str]:
         """Undo up to *count* operations, newest first, with a complete result list."""
@@ -179,7 +298,16 @@ class FileHistory:
         snapshot = last.get("snapshot_path")
 
         current_path = Path(filepath)
-        if not current_path.exists():
+        if not current_path.exists() and not current_path.is_symlink():
+            if snapshot and Path(snapshot).exists():
+                try:
+                    old_lines = Path(snapshot).read_text(encoding="utf-8", errors="replace").splitlines(True)
+                    diff = difflib.unified_diff(
+                        old_lines, [], fromfile=f"a/{current_path.name}", tofile="/dev/null", lineterm=""
+                    )
+                    return "\n".join(diff) or f"Deleted file: {filepath}"
+                except OSError:
+                    return f"File no longer exists: {filepath}"
             return f"File no longer exists: {filepath}"
 
         if last["is_new_file"]:

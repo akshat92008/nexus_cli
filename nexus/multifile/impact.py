@@ -27,9 +27,7 @@ from nexus.multifile.contracts import (
     ImpactCategory,
     ImpactReport,
     ImpactTarget,
-    Reference,
     Risk,
-    SymbolReference,
     TestTarget,
 )
 
@@ -305,7 +303,7 @@ def _is_dynamic_reference(symbol: str, content: str) -> bool:
         rf'importlib\.import_module\([^)]*{re.escape(symbol)}',
         rf'globals\(\)\[["\']?{re.escape(symbol)}["\']?\]',
         rf'locals\(\)\[["\']?{re.escape(symbol)}["\']?\]',
-        rf'["\']' + re.escape(symbol) + r'["\']',  # string reference
+        r'["\']' + re.escape(symbol) + r'["\']',  # string reference
     ]
     for pat in dynamic_patterns:
         if re.search(pat, content):

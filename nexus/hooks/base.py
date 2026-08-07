@@ -84,6 +84,8 @@ class HookResult:
     blocked: bool = False  # If True, the triggering operation should be cancelled
     modified_content: str = ""  # If non-empty, use this instead of original content
     failure_policy: HookFailurePolicy = HookFailurePolicy.WARN
+    network_access: bool = False
+    require_native_isolation: bool = True
 
 
 def validate_hook_path(path: str, workspace_root: str) -> bool:
@@ -132,6 +134,8 @@ class BaseHook:
     priority: int = 50  # 0 = lowest, 100 = highest
     file_pattern: str = ""  # Glob pattern to filter by file (e.g., "*.py")
     failure_policy: HookFailurePolicy = HookFailurePolicy.WARN
+    network_access: bool = False
+    require_native_isolation: bool = True
 
     def should_fire(self, context: HookContext) -> bool:
         """Determine if this hook should fire for the given context."""
@@ -185,4 +189,6 @@ class BaseHook:
             "priority": self.priority,
             "file_pattern": self.file_pattern,
             "failure_policy": self.failure_policy.value,
+            "network_access": self.network_access,
+            "require_native_isolation": self.require_native_isolation,
         }

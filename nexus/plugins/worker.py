@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from nexus.process_io import filtered_subprocess_env, readline_with_timeout
+from nexus.runtime.process_state import ProcessStateRegistry
 from nexus.sandbox import CommandSpec, SandboxRunner
 
 logger = logging.getLogger(__name__)
@@ -317,6 +318,7 @@ class PluginWorker:
                 env=env,
                 cwd=str(cwd_path),
             )
+            ProcessStateRegistry.register_process(self._process)
 
             line = readline_with_timeout(self._process.stdout, self.timeout)
             if line is None:
@@ -387,6 +389,7 @@ class PluginWorker:
                     self._process.wait(timeout=2)
             except (OSError, subprocess.TimeoutExpired):
                 pass
+            ProcessStateRegistry.unregister_process(self._process)
             self._process = None
 
         if self._cleanup_path:

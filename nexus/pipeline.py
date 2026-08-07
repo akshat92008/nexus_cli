@@ -18,15 +18,13 @@ Usage::
 from __future__ import annotations
 
 import logging
-import shlex
-import sys
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from nexus.planner import TaskStatus
+from nexus.planner import TaskStatus, TaskType, get_task_type
 from nexus.recovery.controller import RecoveryController
 from nexus.recovery.records import FailureRecord
 from nexus.run_state import RunStatus
@@ -152,27 +150,32 @@ class ExecutionPipeline:
         Returns:
             PipelineResult with response, events and stage metrics.
         """
-        import sys
-        print("Starting pipeline.run...", file=sys.stderr, flush=True)
         pipeline_start = time.monotonic()
         result = PipelineResult(user_input=user_input)
         stage_results = result.stage_results
 
         # ── Stage 1: Repo Understanding ───────────────────────────────────────
-        print("Stage 1...", file=sys.stderr, flush=True)
         stage_results.append(self._stage_repo_understanding())
 
         # ── Stage 2: Planning ─────────────────────────────────────────────────
-        print("Stage 2...", file=sys.stderr, flush=True)
         analysis, plan, planning_result = self._stage_planning(user_input)
         stage_results.append(planning_result)
+        if analysis.get("engineering_hard_block"):
+            self._agent._begin_managed_run(user_input, analysis, plan)
+            response = "BLOCKED: repository intelligence could not establish a safe mutation scope."
+            report = self._agent._run_finalizer.finish(
+                response, [], status_override=RunStatus.BLOCKED
+            )
+            result.response = response
+            result.status = report.get("status", RunStatus.BLOCKED.value)
+            result.outcome = report.get("outcome", "BLOCKED")
+            result.total_duration_ms = int((time.monotonic() - pipeline_start) * 1000)
+            return result
 
         # ── Stage 3: Context Selection ────────────────────────────────────────
-        print("Stage 3...", file=sys.stderr, flush=True)
         stage_results.append(self._stage_context_selection(user_input))
 
         # ── Stage 4: Model Routing ────────────────────────────────────────────
-        print("Stage 4...", file=sys.stderr, flush=True)
         routing_mode = self._stage_model_routing(analysis)
         stage_results.append(
             StageResult(
@@ -183,13 +186,34 @@ class ExecutionPipeline:
         )
 
         self._agent._begin_managed_run(user_input, analysis, plan)
+        horizon = getattr(getattr(self._agent, "engineering_brain", None), "long_horizon", None)
+        if horizon is not None:
+            try:
+                from nexus.intelligence.engineering import LongHorizonPhase
+                if horizon.state.phase == LongHorizonPhase.PLAN:
+                    horizon.transition(
+                        LongHorizonPhase.IMPLEMENT,
+                        summary="Approved engineering plan entered bounded implementation.",
+                    )
+            except Exception as exc:
+                self._logger.error("Long-horizon state transition failed closed: %s", exc)
+                response = (
+                    "BLOCKED: long-horizon engineering state could not enter the "
+                    "implementation phase safely."
+                )
+                report = self._agent._run_finalizer.finish(
+                    response, [], status_override=RunStatus.BLOCKED
+                )
+                result.response = response
+                result.status = report.get("status", RunStatus.BLOCKED.value)
+                result.outcome = report.get("outcome", "BLOCKED")
+                result.total_duration_ms = int((time.monotonic() - pipeline_start) * 1000)
+                return result
 
         # ── Stage 5: Execution ────────────────────────────────────────────────
-        print("Stage 5...", file=sys.stderr, flush=True)
         exec_result = self._stage_execution(
             user_input, analysis, plan, routing_mode, interactive=interactive, emit_ui=emit_ui
         )
-        print("Stage 5 complete", file=sys.stderr, flush=True)
         stage_results.append(exec_result["stage_result"])
         if not exec_result["stage_result"].success:
             result.response = exec_result.get("response", "❌ Execution failed.")
@@ -236,9 +260,27 @@ class ExecutionPipeline:
                 stage_results.append(review_result)
 
         # ── Stage 9: Evidence ─────────────────────────────────────────────────
-        stage_results.append(self._stage_evidence())
+        semantic_result = self._stage_semantic_verification(review_result)
+        evidence_stage = self._stage_evidence()
+        evidence_stage.metadata["semantic_verification"] = semantic_result.metadata
+        stage_results.append(evidence_stage)
 
-        report = self._agent._run_finalizer.finish(response, events)
+        semantic_status = str(semantic_result.metadata.get("status", ""))
+        status_override = (
+            RunStatus.FAILED
+            if semantic_status == RunStatus.FAILED.value
+            else None
+        )
+        report = self._agent._run_finalizer.finish(
+            response, events, status_override=status_override
+        )
+        if (
+            semantic_status == RunStatus.PARTIALLY_VERIFIED.value
+            and report.get("status") == RunStatus.VERIFIED.value
+        ):
+            report = self._agent._run_finalizer.finish(
+                response, events, status_override=RunStatus.PARTIALLY_VERIFIED
+            )
 
         # ── Stage 10: Completion ──────────────────────────────────────────────
         result.response = response
@@ -296,6 +338,10 @@ class ExecutionPipeline:
     def _stage_planning(self, user_input: str) -> tuple[dict[str, Any], Any, StageResult]:
         """Classify intent and generate or retrieve the execution plan."""
         t = time.monotonic()
+        strict_mode = (
+            user_input.lstrip().startswith("[NEXUS VERIFIED REPAIR]")
+            or bool(getattr(getattr(self._agent, "mode_policy", None), "require_review", False))
+        )
         try:
             resume_analysis = getattr(self._agent, "_resume_analysis_override", None)
             resume_plan = getattr(self._agent, "_resume_plan_override", None)
@@ -322,6 +368,53 @@ class ExecutionPipeline:
                 )
             analysis = self._agent.planner.analyze(user_input)
             plan = None
+            brain_contract = None
+            intent = analysis.get("intent")
+            requires_engineering_contract = (
+                intent is not None and get_task_type(intent) != TaskType.READ_ONLY
+            )
+            if (
+                requires_engineering_contract
+                and getattr(self._agent, "engineering_brain", None)
+            ):
+                brain_contract = self._agent.engineering_brain.prepare(
+                    user_input,
+                    task_id=self._agent.conversation_id,
+                    strict=strict_mode,
+                )
+                self._agent._engineering_contract = brain_contract
+                analysis["engineering_contract"] = brain_contract.to_dict()
+                self._agent.engineering_brain.record_decision(
+                    "Use repository-intelligence-selected files as the initial mutation boundary",
+                    rationale=(
+                        f"Selected {len(brain_contract.decisive_files)} decisive files and "
+                        f"{len(brain_contract.related_tests)} related tests at "
+                        f"confidence {brain_contract.context_confidence:.2f}."
+                    ),
+                )
+                horizon = self._agent.engineering_brain.long_horizon
+                if horizon is not None and horizon.state.phase.value == "RESEARCH":
+                    from nexus.intelligence.engineering import LongHorizonPhase
+                    horizon.transition(
+                        LongHorizonPhase.PLAN,
+                        summary="Repository context and initial engineering contract established.",
+                    )
+                if brain_contract.plan_critic.get("blocking_issues") and strict_mode:
+                    analysis["engineering_hard_block"] = True
+                    return (
+                        analysis,
+                        None,
+                        StageResult(
+                            stage=PipelineStage.PLANNING,
+                            success=False,
+                            duration_ms=int((time.monotonic() - t) * 1000),
+                            metadata={
+                                "hard_block": True,
+                                "issues": brain_contract.plan_critic.get("blocking_issues", []),
+                            },
+                            error="; ".join(brain_contract.plan_critic.get("blocking_issues", [])),
+                        ),
+                    )
             if analysis.get("plan_type") == "planned":
                 repo_summary = (
                     self._agent.repo_graph.summary()
@@ -340,8 +433,22 @@ class ExecutionPipeline:
                     analysis["intent"],
                     verification,
                 )
+                if brain_contract is not None:
+                    approved_files = list(dict.fromkeys([
+                        *brain_contract.decisive_files,
+                        *brain_contract.related_tests,
+                    ]))
+                    plan.permitted_files = list(dict.fromkeys([*plan.permitted_files, *approved_files]))
+                    plan.acceptance_criteria = list(dict.fromkeys([
+                        *plan.acceptance_criteria,
+                        "Every changed file is justified by repository impact evidence",
+                        "No prohibited or unrelated area is modified",
+                        "External verification and independent semantic review support completion",
+                    ]))
                 for step in plan.steps:
                     step.acceptance_criteria = list(plan.acceptance_criteria)
+                    if brain_contract is not None:
+                        step.permitted_files = list(plan.permitted_files)
                     if step.checks:
                         step.checks = list(verification)
             return (
@@ -358,7 +465,26 @@ class ExecutionPipeline:
                 ),
             )
         except Exception as exc:
-            self._logger.warning("Planning stage error (continuing): %s", exc)
+            if strict_mode:
+                self._logger.error("Planning control-plane failure (blocked): %s", exc)
+                return (
+                    {
+                        "intent": "unknown",
+                        "plan_type": "direct",
+                        "skills_needed": [],
+                        "engineering_hard_block": True,
+                        "engineering_control_error": str(exc),
+                    },
+                    None,
+                    StageResult(
+                        stage=PipelineStage.PLANNING,
+                        success=False,
+                        duration_ms=int((time.monotonic() - t) * 1000),
+                        metadata={"hard_block": True, "control_plane_error": type(exc).__name__},
+                        error=str(exc),
+                    ),
+                )
+            self._logger.warning("Planning stage error (degraded read/review path): %s", exc)
             return (
                 {"intent": "unknown", "plan_type": "direct", "skills_needed": []},
                 None,
@@ -378,7 +504,13 @@ class ExecutionPipeline:
             if not self._agent._context_gathered:  # noqa: SLF001
                 self._agent._gather_context()  # noqa: SLF001
             relevant = []
-            if getattr(self._agent, "repo_graph", None):
+            contract = getattr(self._agent, "_engineering_contract", None)
+            if contract is not None:
+                relevant = [
+                    {"path": path, "reasons": ["selected by Engineering Brain"]}
+                    for path in contract.decisive_files
+                ]
+            elif getattr(self._agent, "repo_graph", None):
                 relevant = self._agent.repo_graph.relevant_files(user_input, limit=16)
             return StageResult(
                 stage=PipelineStage.CONTEXT_SELECTION,
@@ -437,9 +569,15 @@ class ExecutionPipeline:
                 )
         except Exception as exc:
             self._logger.exception("Execution failed")
+            brain = getattr(self._agent, "engineering_brain", None)
+            if brain is not None:
+                try:
+                    brain.record_failure(category="execution", phase="execution", summary=str(exc))
+                except (OSError, TypeError, ValueError) as learning_exc:
+                    self._logger.debug("Failure lesson persistence failed: %s", learning_exc)
             # Route through RecoveryController before giving up
             failure_record = FailureRecord(raw={"error": str(exc), "phase": "execution"})
-            recovery_ctrl = RecoveryController(
+            recovery_ctrl = getattr(self._agent, "recovery_controller", None) or RecoveryController(
                 run_id=getattr(self._agent, "conversation_id", None),
                 working_dir=getattr(self._agent, "working_dir", "."),
                 budget=getattr(self._agent, "budget", None),
@@ -558,7 +696,6 @@ class ExecutionPipeline:
             )
             agent._enforce_plan_tool_contract = True  # noqa: SLF001
             try:
-                print(f"Calling agent._run_hosted_turn for step {current.id}", file=sys.stderr, flush=True)
                 response, events = agent._run_hosted_turn(  # noqa: SLF001
                     step_prompt,
                     analysis,
@@ -567,10 +704,6 @@ class ExecutionPipeline:
                     emit_ui=emit_ui,
                     max_turns_override=step_budget,
                 )
-                print(f"Returned from agent._run_hosted_turn for step {current.id}", file=sys.stderr, flush=True)
-            except Exception as e:
-                print(f"agent._run_hosted_turn raised: {e}", file=sys.stderr, flush=True)
-                raise
             finally:
                 agent._enforce_plan_tool_contract = False  # noqa: SLF001
             responses.append(response)
@@ -597,8 +730,74 @@ class ExecutionPipeline:
                 seen.add(fingerprint)
                 can_retry = current.attempts <= current.retry_limit and turns_used < agent.max_turns
                 if can_retry:
+                    from nexus.intelligence.repository.evidence import (  # noqa: PLC0415
+                        FailureEvidenceExtractor,
+                    )
+
+                    brain = getattr(agent, "engineering_brain", None)
+                    repository_paths: list[str] = []
+                    context_files: list[str] = []
+                    if brain is not None:
+                        repository_paths = list(getattr(brain.repository, "files", {}))
+                        context_bundle = getattr(brain, "context_bundle", None)
+                        if context_bundle is not None:
+                            context_files = [item.path for item in context_bundle.files]
+                    signals = FailureEvidenceExtractor.extract(
+                        failure,
+                        repository_paths=repository_paths,
+                    )
+                    evidence_payload = {
+                        "source_type": "plan_step_failure",
+                        "summary": failure[:1000],
+                        "context_files": context_files,
+                        "failing_stack_files": list(signals.paths),
+                        "failing_tests": list(signals.tests),
+                        "unresolved_symbols": list(signals.symbols),
+                        "missing_dependencies": list(signals.modules),
+                        "failure_kinds": list(signals.failure_kinds),
+                        "concurrency_terms": list(signals.concurrency_terms),
+                        "migration_terms": list(signals.migration_terms),
+                        "hypothesis_contradicted": repeated,
+                        "root_cause_invalidated": repeated,
+                    }
+                    context_revision: dict[str, Any] = {}
+                    if brain is not None and getattr(brain, "contract", None) is not None:
+                        try:
+                            context_revision = brain.expand_context_from_failure(
+                                f"plan step {current.id} failed",
+                                {"failure": failure, "signals": evidence_payload},
+                            )
+                            evidence_payload["additional_files"] = context_revision.get(
+                                "added_paths", []
+                            )
+                            evidence_payload["task_profile"] = context_revision.get(
+                                "task_profile", {}
+                            )
+                        except (OSError, TypeError, ValueError) as exc:
+                            self._logger.warning(
+                                "Plan-step context expansion failed: %s", exc
+                            )
+                    canonical_replanned = agent.planner.revise_canonical_plan(
+                        plan,
+                        trigger_reason=failure,
+                        failed_step_id=current.id,
+                        evidence=evidence_payload,
+                    )
                     retry_contexts[current.id] = (
                         failure
+                        + (
+                            "\nNexus structurally revised the canonical engineering plan from "
+                            "this failure evidence. Follow the inserted investigation and targeted "
+                            "verification obligations before editing again."
+                            if canonical_replanned
+                            else ""
+                        )
+                        + (
+                            "\nRepository context expanded with: "
+                            + ", ".join(context_revision.get("added_paths", []))
+                            if context_revision.get("added_paths")
+                            else ""
+                        )
                         + (
                             "\nThe same failure repeated. Re-evaluate the root-cause assumption and "
                             "inspect callers, tests, and dependency contracts before another edit."
@@ -616,6 +815,8 @@ class ExecutionPipeline:
                             "retry_limit": current.retry_limit,
                             "repeated_failure": repeated,
                             "failure": failure[:4000],
+                            "canonical_replanned": canonical_replanned,
+                            "context_revision": context_revision,
                         },
                     )
                     agent.planner.retry_step(current.id, failure)
@@ -676,6 +877,19 @@ class ExecutionPipeline:
                     },
                 )
             verified = verified_mutations and verified_checks
+            horizon = getattr(getattr(self._agent, "engineering_brain", None), "long_horizon", None)
+            if horizon is not None and verified:
+                try:
+                    from nexus.intelligence.engineering import LongHorizonPhase
+                    ids = [str(item.get("id")) for item in [*mutations, *checks] if item.get("id")]
+                    if ids and horizon.state.phase == LongHorizonPhase.IMPLEMENT:
+                        horizon.transition(
+                            LongHorizonPhase.VERIFY,
+                            summary="Mutation evidence and deterministic verification passed.",
+                            evidence_ids=ids,
+                        )
+                except ValueError as exc:
+                    self._logger.debug("Long-horizon verification transition skipped: %s", exc)
             return StageResult(
                 stage=PipelineStage.VERIFICATION,
                 success=verified,
@@ -707,6 +921,21 @@ class ExecutionPipeline:
         """Attempt autonomous repair when verification fails."""
         t = time.monotonic()
         try:
+            brain = getattr(self._agent, "engineering_brain", None)
+            if brain is not None:
+                brain.record_failure(
+                    category="verification",
+                    phase="verification",
+                    summary=ver_result.error or "Deterministic verification failed.",
+                )
+                horizon = brain.long_horizon
+                if horizon is not None:
+                    from nexus.intelligence.engineering import LongHorizonPhase
+                    if horizon.state.phase in {LongHorizonPhase.VERIFY, LongHorizonPhase.REVIEW}:
+                        horizon.transition(
+                            LongHorizonPhase.IMPLEMENT,
+                            summary="Verification/review failed; returning to bounded implementation.",
+                        )
             from nexus.repair import RepairLoop  # noqa: PLC0415
 
             loop = RepairLoop(
@@ -793,6 +1022,100 @@ class ExecutionPipeline:
                 duration_ms=int((time.monotonic() - t) * 1000),
                 error=f"Independent review failed closed: {exc}",
             )
+
+    def _stage_semantic_verification(self, review_result: StageResult) -> StageResult:
+        """Verify requirement satisfaction, scope discipline, and external evidence."""
+        t = time.monotonic()
+        brain = getattr(self._agent, "engineering_brain", None)
+        if brain is None or getattr(brain, "contract", None) is None:
+            return StageResult(
+                stage=PipelineStage.EVIDENCE,
+                success=False,
+                applicable=False,
+                duration_ms=int((time.monotonic() - t) * 1000),
+                metadata={"status": RunStatus.PARTIALLY_VERIFIED.value},
+                error="Engineering contract unavailable.",
+            )
+        evidence = self._agent.evidence.records()[
+            getattr(self._agent, "_turn_evidence_start", 0) :
+        ]
+        changed_files = []
+        for item in self._agent.history.changes[getattr(self._agent, "_run_history_start", 0) :]:
+            raw = item.get("filepath", "")
+            if not raw:
+                continue
+            try:
+                changed_files.append(Path(raw).resolve().relative_to(Path(self._agent.working_dir).resolve()).as_posix())
+            except ValueError:
+                changed_files.append(str(raw))
+        criteria = []
+        plan = getattr(self._agent, "_active_plan", None)
+        if plan is not None:
+            criteria = list(getattr(plan, "acceptance_criteria", []) or [])
+        result = brain.semantic_verify(
+            evidence=evidence,
+            changed_files=changed_files,
+            acceptance_criteria=criteria,
+            review_required=bool(self._agent.mode_policy.require_review),
+        )
+        horizon = brain.long_horizon
+        if horizon is not None:
+            try:
+                from nexus.intelligence.engineering import LongHorizonPhase
+                semantic_ids = [str(item.get("id")) for item in evidence if item.get("id")]
+                if review_result.success and horizon.state.phase == LongHorizonPhase.VERIFY and semantic_ids:
+                    horizon.transition(
+                        LongHorizonPhase.REVIEW,
+                        summary="Independent review completed after deterministic verification.",
+                        evidence_ids=semantic_ids,
+                    )
+                if result.satisfied and horizon.state.phase == LongHorizonPhase.REVIEW and semantic_ids:
+                    horizon.transition(
+                        LongHorizonPhase.COMPLETE,
+                        summary="Semantic acceptance and scope checks passed.",
+                        evidence_ids=semantic_ids,
+                    )
+                elif not result.satisfied and horizon.state.phase not in {LongHorizonPhase.COMPLETE, LongHorizonPhase.FAILED}:
+                    horizon.transition(
+                        LongHorizonPhase.BLOCKED,
+                        summary="Semantic acceptance remained incomplete.",
+                        error="; ".join(item.message for item in result.findings),
+                    )
+            except Exception as exc:
+                from nexus.intelligence.engineering import LongHorizonIntegrityError
+                if isinstance(exc, LongHorizonIntegrityError):
+                    self._agent.evidence.append(
+                        kind="engineering_state_integrity",
+                        claim="Long-horizon state remained intact during semantic completion",
+                        status="failed",
+                        raw_output=str(exc),
+                    )
+                    return StageResult(
+                        stage=PipelineStage.EVIDENCE,
+                        success=False,
+                        duration_ms=int((time.monotonic() - t) * 1000),
+                        metadata={"status": RunStatus.FAILED.value, "integrity_error": str(exc)},
+                        error=str(exc),
+                    )
+                self._logger.debug("Long-horizon completion transition skipped: %s", exc)
+        self._agent.evidence.append(
+            kind="semantic_verification",
+            claim="Engineering Brain evaluated objective, scope, and acceptance evidence",
+            status=(
+                "verified"
+                if result.satisfied
+                else ("failed" if result.status == RunStatus.FAILED.value else "unverified")
+            ),
+            raw_output=str(result.to_dict()),
+            metadata=result.to_dict(),
+        )
+        return StageResult(
+            stage=PipelineStage.EVIDENCE,
+            success=result.satisfied,
+            duration_ms=int((time.monotonic() - t) * 1000),
+            metadata=result.to_dict(),
+            error="" if result.satisfied else "; ".join(item.message for item in result.findings),
+        )
 
     def _stage_evidence(self) -> StageResult:
         """Snapshot evidence and finalize the run record."""

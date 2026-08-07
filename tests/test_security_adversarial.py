@@ -13,18 +13,16 @@ Covers 10 attack vectors:
 10. Resource Exhaustion Attacks
 """
 
-import tempfile
-from pathlib import Path
 import pytest
 
 from nexus.security.audit_logger import AuditIntegrityVerifier, AuditLogger
-from nexus.security.command_policy import CommandPolicy, CommandRisk
+from nexus.security.command_policy import CommandPolicy
 from nexus.security.filesystem_security import FilesystemSecurity
 from nexus.security.network_guard import NetworkGuard, NetworkMode
 from nexus.security.plugin_mcp_guard import PluginMCPGuard
-from nexus.security.policy_engine import PolicyDecision, PolicyEngine, PolicyOutcome, SecurityAction
+from nexus.security.policy_engine import PolicyEngine, PolicyOutcome, SecurityAction
 from nexus.security.prompt_defense import PromptDefense
-from nexus.security.secret_protection import SecretRedactor, SecretScanner
+from nexus.security.secret_protection import SecretRedactor
 from nexus.security.supply_chain_guard import SupplyChainGuard
 
 

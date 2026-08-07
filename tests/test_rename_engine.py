@@ -1,10 +1,11 @@
 """Tests for SymbolRenameEngine (Sprint 8)."""
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
 
-from nexus.multifile.rename import SymbolRenameEngine, RenameKind
+import pytest
+
+from nexus.multifile.rename import SymbolRenameEngine
 
 
 def _write(path: Path, content: str) -> None:

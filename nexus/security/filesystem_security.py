@@ -6,11 +6,9 @@ null byte rejection, and protected credential path boundaries.
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from typing import Sequence
-
 
 PROTECTED_PATH_PATTERNS = (
     r".*\.env.*",

@@ -146,31 +146,35 @@ def test_active_round_robin_key_rotation():
 
 def test_cloud_api_exhaustion_falls_back_to_local_nova():
     """Verify that when all cloud APIs fail, agent.run falls back to local Nova turn."""
-    from nexus.agent import Agent
-
     import sys
-    print("Setting up agent...", file=sys.stderr, flush=True)
-    agent = Agent(api_key="nvapi-test", model_key="deepseek-v4", enable_nova_fallback=True)
-    agent.local_intern_enabled = True
-    agent.repo_graph = MagicMock()
-    agent.repo_graph.context_bundle.return_value = "Mocked Graph Context"
 
-    print("Patching client...", file=sys.stderr, flush=True)
-    # Mock client.stream to simulate cloud rate limit exhaustion on a chat query
-    with patch.object(
-        agent.client, "stream", side_effect=RuntimeError("Rate limited after multiple retries")
-    ), patch.object(
-        agent.client, "chat", side_effect=RuntimeError("Rate limited after multiple retries")
-    ):
+    from nexus.agent import Agent
+    print("Setting up agent...", file=sys.stderr, flush=True)
+    with Agent(
+        api_key="nvapi-test",
+        model_key="deepseek-v4",
+        enable_nova_fallback=True,
+    ) as agent:
+        agent.local_intern_enabled = True
+        agent.repo_graph = MagicMock()
+        agent.repo_graph.context_bundle.return_value = "Mocked Graph Context"
+
+        print("Patching client...", file=sys.stderr, flush=True)
+        # Mock client.stream to simulate cloud rate limit exhaustion on a chat query.
         with patch.object(
-            agent, "_run_nova_turn", return_value=("Local Nova fallback response", [])
-        ) as mock_nova:
-            print("Calling agent.run...", file=sys.stderr, flush=True)
-            res = agent.run("hello, explain binary search trees")
-            print(f"agent.run finished with result: {res}", file=sys.stderr, flush=True)
-            assert res == "Local Nova fallback response"
-            mock_nova.assert_called_once()
-            print("Test passed.", file=sys.stderr, flush=True)
+            agent.client, "stream", side_effect=RuntimeError("Rate limited after multiple retries")
+        ), patch.object(
+            agent.client, "chat", side_effect=RuntimeError("Rate limited after multiple retries")
+        ):
+            with patch.object(
+                agent, "_run_nova_turn", return_value=("Local Nova fallback response", [])
+            ) as mock_nova:
+                print("Calling agent.run...", file=sys.stderr, flush=True)
+                res = agent.run("hello, explain binary search trees")
+                print(f"agent.run finished with result: {res}", file=sys.stderr, flush=True)
+                assert res == "Local Nova fallback response"
+                mock_nova.assert_called_once()
+                print("Test passed.", file=sys.stderr, flush=True)
 
 
 def test_round_robin_key_pool():
@@ -239,3 +243,57 @@ def test_timed_out_ceiling_transport_cannot_block_process_shutdown():
         release.set()
         for thread in transports:
             thread.join(timeout=0.5)
+
+
+def test_hosted_client_owns_and_closes_cached_transports(monkeypatch):
+    created = []
+
+    class FakeTransport:
+        def __init__(self, **kwargs):
+            self.base_url = kwargs["base_url"]
+            self.timeout = kwargs["timeout"]
+            self.closed = 0
+            created.append(self)
+
+        def close(self):
+            self.closed += 1
+
+    monkeypatch.setattr("nexus.api.OpenAI", FakeTransport)
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-lifecycle")
+    monkeypatch.setenv("GROQ_API_KEY", "gsk-lifecycle")
+    monkeypatch.setattr("nexus.api._load_env_file", lambda: None)
+
+    client = NvidiaClient()
+    first = client._get_nvidia_client("nvapi-lifecycle")
+    assert first is client._get_nvidia_client("nvapi-lifecycle")
+    groq = client._get_groq_client("gsk-lifecycle")
+    assert len(created) == 2
+
+    client.close()
+    client.close()
+
+    assert first.closed == 1
+    assert groq.closed == 1
+    with pytest.raises(RuntimeError, match="closed"):
+        client._get_nvidia_client("nvapi-lifecycle")
+
+
+def test_observed_stream_close_finalizes_cancelled_once():
+    from nexus.api import _ObservedStream
+
+    statuses = []
+
+    class Stream:
+        def __init__(self):
+            self.closed = 0
+
+        def close(self):
+            self.closed += 1
+
+    stream = Stream()
+    observed = _ObservedStream(stream, lambda status, _metadata: statuses.append(status))
+    observed.close()
+    observed.close()
+
+    assert statuses == ["cancelled"]
+    assert stream.closed == 1

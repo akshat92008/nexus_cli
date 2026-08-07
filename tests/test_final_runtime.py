@@ -52,6 +52,8 @@ def test_sandbox_uses_typed_argv_and_reports_unenforced_network(tmp_path, monkey
             [sys.executable, "-c", "print('typed-ok')"],
             tmp_path,
             timeout_seconds=10,
+            require_os_isolation=False,
+            allow_unisolated_host_process=True,
         )
     )
     assert result.success

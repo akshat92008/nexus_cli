@@ -7,12 +7,12 @@ from __future__ import annotations
 
 import os
 import subprocess
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping
 
-from nexus.sandbox import CommandSpec, SandboxRunner, CommandResult, PreparedCommand
+from nexus.runtime.process_state import ProcessStateRegistry
+from nexus.sandbox import CommandResult, CommandSpec, PreparedCommand, SandboxRunner
 
 
 @dataclass(frozen=True)
@@ -67,6 +67,7 @@ class ManagedProcess:
         self._process = process
         self.prepared = prepared
         self.pid = process.pid
+        ProcessStateRegistry.register_process(process)
 
     @property
     def stdout(self):
@@ -84,11 +85,14 @@ class ManagedProcess:
         return self._process.poll()
 
     def wait(self, timeout: float | None = None) -> int:
-        return self._process.wait(timeout=timeout)
+        code = self._process.wait(timeout=timeout)
+        ProcessStateRegistry.unregister_process(self._process)
+        return code
 
     def terminate(self) -> None:
         """Safely terminate the process and its process group."""
         if self._process.poll() is not None:
+            ProcessStateRegistry.unregister_process(self._process)
             return
         try:
             if os.name == "posix":
@@ -101,6 +105,8 @@ class ManagedProcess:
                 )
         except OSError:
             pass
+        finally:
+            ProcessStateRegistry.unregister_process(self._process)
 
     def kill(self) -> None:
         """Force kill the process and its process group."""
@@ -117,13 +123,19 @@ class ManagedProcess:
                 )
         except OSError:
             pass
+        finally:
+            ProcessStateRegistry.unregister_process(self._process)
 
 class ProcessExecutionGateway:
     """The central authority for executing processes in Nexus."""
 
     @classmethod
     def _build_sandbox_spec(cls, request: ProcessRequest) -> CommandSpec:
-        require_os_isolation = request.isolation_policy == "required"
+        policy = request.isolation_policy.strip().lower().replace("-", "_")
+        if policy not in {"required", "optional", "trusted_host"}:
+            raise ValueError(f"Unknown isolation policy: {request.isolation_policy!r}")
+        require_os_isolation = policy == "required"
+        allow_unisolated_host_process = policy in {"optional", "trusted_host"}
         network = request.network_policy == "allow"
         
         env = dict(request.env_additions)
@@ -138,6 +150,7 @@ class ProcessExecutionGateway:
             env=env,
             max_output_bytes=request.output_limit_bytes,
             require_os_isolation=require_os_isolation,
+            allow_unisolated_host_process=allow_unisolated_host_process,
             allowed_sensitive_env_keys=request.allowed_sensitive_env_keys,
         )
 
@@ -163,9 +176,9 @@ class ProcessExecutionGateway:
         
         if os.name == "posix":
             popen_kwargs.setdefault("start_new_session", True)
-            popen_kwargs.setdefault("preexec_fn", SandboxRunner._resource_limits_factory(spec))
         elif os.name == "nt":
             popen_kwargs.setdefault("creationflags", getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 512))
             
         process = subprocess.Popen(list(prepared.argv), **popen_kwargs)
+        SandboxRunner.apply_resource_limits(process.pid, spec)
         return ManagedProcess(process, prepared)

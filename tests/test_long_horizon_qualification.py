@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,7 +18,7 @@ from nexus.planner import (
     TaskStatus,
 )
 from nexus.run_state import RunLedger
-from nexus.sandbox import SandboxBackend, SandboxRunner
+from nexus.sandbox import SandboxBackend
 
 
 def test_long_horizon_manifest_is_valid_and_dry_runnable():
@@ -129,8 +127,8 @@ def test_benchmark_automatically_resumes_same_run_until_verified(tmp_path, monke
     agent_commands = []
 
 
-    from nexus.sandbox import CommandResult, SandboxBackend
     import nexus.process_gateway
+    from nexus.sandbox import CommandResult
     agent_commands = []
     
     def fake_gateway_run(req):

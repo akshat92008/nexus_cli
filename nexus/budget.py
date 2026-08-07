@@ -250,6 +250,17 @@ class BudgetedClient:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._wrapped_client, name)
 
+    def close(self) -> None:
+        closer = getattr(self._wrapped_client, "close", None)
+        if callable(closer):
+            closer()
+
+    def __enter__(self) -> "BudgetedClient":
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.close()
+
     @property
     def attempt_telemetry_enabled(self) -> bool:
         return bool(getattr(self._wrapped_client, "attempt_telemetry_enabled", False))

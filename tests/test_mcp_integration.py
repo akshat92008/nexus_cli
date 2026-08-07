@@ -60,6 +60,7 @@ for line in sys.stdin:
         command=[sys.executable, str(server_script)],
         workspace=str(tmp_path),
         require_os_isolation=False,
+        allow_unisolated_host_process=True,
     )
     conn = MCPConnection(config)
 

@@ -9,11 +9,10 @@ before mutating the repository.
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
-
 
 # ---------------------------------------------------------------------------
 # Enumerations

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import subprocess
 from pathlib import Path
 from typing import Iterable
 
@@ -13,6 +12,7 @@ IGNORED_DIRECTORIES = {
     ".hg",
     ".svn",
     ".nexusai",
+    ".nexus",
     ".pytest_cache",
     ".ruff_cache",
     ".mypy_cache",
@@ -123,14 +123,33 @@ class RepositoryDiscovery:
 
         return sorted(discovered)
 
+    @staticmethod
+    def calculate_file_hash(filepath: Path) -> str:
+        """Hash actual bytes using a stable read, never metadata alone."""
+        path = Path(filepath)
+        for _attempt in range(3):
+            before = path.stat()
+            data = path.read_bytes()
+            after = path.stat()
+            if (
+                before.st_mtime_ns == after.st_mtime_ns
+                and before.st_size == after.st_size
+                and len(data) == after.st_size
+            ):
+                return hashlib.sha256(data).hexdigest()
+        raise OSError(f"File changed repeatedly while hashing: {path}")
+
     def calculate_tree_hash(self, files: Iterable[Path]) -> str:
-        """Calculate a deterministic snapshot tree hash based on file paths and modification times."""
+        """Calculate an immutable repository snapshot hash from paths and bytes."""
         hasher = hashlib.sha256()
         for filepath in sorted(files):
             try:
                 rel_path = filepath.relative_to(self.root).as_posix()
-                stat = filepath.stat()
-                hasher.update(f"{rel_path}:{stat.st_mtime_ns}:{stat.st_size}".encode("utf-8"))
+                content_hash = self.calculate_file_hash(filepath)
+                hasher.update(rel_path.encode("utf-8"))
+                hasher.update(b"\0")
+                hasher.update(content_hash.encode("ascii"))
+                hasher.update(b"\n")
             except (ValueError, OSError):
                 continue
-        return hasher.hexdigest()[:16]
+        return hasher.hexdigest()

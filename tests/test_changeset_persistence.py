@@ -1,7 +1,6 @@
 """Tests for ChangeSetPersistence (Sprint 8)."""
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
 
 from nexus.multifile.contracts import (

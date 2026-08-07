@@ -25,7 +25,6 @@ import re
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from nexus.multifile.contracts import (
     ChangeType,
@@ -33,7 +32,6 @@ from nexus.multifile.contracts import (
     ContractChange,
     ContractScope,
     ContractType,
-    ImpactCategory,
     PlannedFileChange,
     Reference,
     SymbolReference,

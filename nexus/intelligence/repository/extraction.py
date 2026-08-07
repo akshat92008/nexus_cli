@@ -7,7 +7,7 @@ import json
 import re
 from pathlib import Path
 
-from nexus.intelligence.repository.model import RepositorySymbol, SymbolReference
+from nexus.intelligence.repository.model import RepositorySymbol
 
 
 class LanguageExtractor:

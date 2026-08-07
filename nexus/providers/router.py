@@ -192,3 +192,25 @@ class FallbackRouter(Provider):
 
     def count_tokens(self, text: str) -> int:
         return self._active_provider.count_tokens(text)
+
+    def close(self) -> None:
+        """Close every unique provider owned by the router."""
+
+        errors: list[BaseException] = []
+        seen: set[int] = set()
+        for provider in [self._primary, *self._fallbacks]:
+            if id(provider) in seen:
+                continue
+            seen.add(id(provider))
+            closer = getattr(provider, "close", None)
+            if not callable(closer):
+                continue
+            try:
+                closer()
+            except BaseException as exc:
+                errors.append(exc)
+        if errors:
+            raise RuntimeError(
+                "Failed to close provider router resources: "
+                + "; ".join(f"{type(exc).__name__}: {exc}" for exc in errors)
+            )

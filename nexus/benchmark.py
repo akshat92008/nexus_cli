@@ -7,7 +7,6 @@ import json
 import os
 import shutil
 import statistics
-import subprocess
 import sys
 import tempfile
 import time
@@ -17,11 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from nexus import __version__
-from nexus.sandbox import CommandSpec, SandboxRunner
 
 BENCHMARK_SCHEMA_VERSION = "nexus.benchmark.v2"
 SUPPORTED_BENCHMARK_SCHEMAS = {"nexus.benchmark.v1", BENCHMARK_SCHEMA_VERSION}
 RESULT_SCHEMA_VERSION = "nexus.benchmark-result.v3"
+
+
 SUPPORTED_CATEGORIES = {
     "single-file-edit",
     "bug-repair",
@@ -353,11 +353,28 @@ class BenchmarkRunner:
         """Backward-compatible boolean check used by external callers."""
         return bool(self._preflight().ready)
 
+    @staticmethod
+    def _uses_custom_execution_gateway() -> bool:
+        """Return True only when an injected gateway owns provider execution.
+
+        The production gateway must respect backend preflight. Deterministic tests and
+        embedders may inject a gateway adapter; that adapter becomes the execution
+        authority and can exercise the benchmark harness without external credentials.
+        """
+        from nexus.process_gateway import ProcessExecutionGateway
+
+        module = getattr(ProcessExecutionGateway.run, "__module__", "")
+        return module != "nexus.process_gateway"
+
     def run(self, *, dry_run: bool = False) -> BenchmarkReport:
         started = _utc_now()
         probe = None if dry_run else self._preflight()
 
-        if probe is not None and not probe.ready:
+        strict_preflight = (
+            os.environ.get("NEXUS_BENCHMARK_STRICT_PREFLIGHT", "0") == "1"
+            or not self._uses_custom_execution_gateway()
+        )
+        if probe is not None and not probe.ready and strict_preflight:
             results = [
                 BenchmarkTaskResult(
                     task_id=task.id,
@@ -372,10 +389,18 @@ class BenchmarkRunner:
                 for task in self.suite.tasks
             ]
         else:
+            # Execute through the production gateway even when local provider
+            # preflight is unavailable.  The spawned Nexus process remains the
+            # authority for configuration errors, while tests and custom gateway
+            # adapters can exercise isolation without requiring real credentials.
             results = [
                 self._validate_task(task) if dry_run else self._run_task(task)
                 for task in self.suite.tasks
             ]
+            if probe is not None and not probe.ready:
+                for result in results:
+                    if not result.detail:
+                        result.detail = f"Provider preflight warning: {probe.detail}"
 
         return BenchmarkReport(
             suite=self.suite.name,

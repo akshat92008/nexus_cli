@@ -14,19 +14,17 @@ from nexus.planning.cost import CostEstimator
 from nexus.planning.critic import CritiqueDecision, PlanCritic, PlanCritique
 from nexus.planning.engineering_plan import ActionType, EngineeringPlan, Hypothesis, PlanStep
 from nexus.planning.execution_contract import ExecutionContract, ExecutionContractGenerator
-from nexus.planning.graph import PlanDependencyGraph
-from nexus.planning.policies import PlanningPolicyRegistry
 from nexus.planning.replanner import PlanReplanner
 from nexus.planning.risk import RiskAssessor, RiskLevel
 from nexus.planning.scope import ScopeEstimator
 from nexus.planning.task_contract import (
-    Constraint,
     Requirement,
     RequirementSource,
     TaskContract,
     TaskType,
 )
-from nexus.planning.validator import DeterministicValidator, ValidationIssue
+from nexus.planning.validator import DeterministicValidator
+from nexus.tools import TOOL_DEFINITIONS
 
 
 class PlanningEngine:
@@ -42,7 +40,8 @@ class PlanningEngine:
         self.risk_assessor = RiskAssessor()
         self.cost_estimator = CostEstimator()
         self.validator = DeterministicValidator(root_dir=str(self.root_dir))
-        self.critic = PlanCritic(self.validator)
+        self.allowed_tools = {definition.name for definition in TOOL_DEFINITIONS}
+        self.critic = PlanCritic(self.validator, allowed_tools=self.allowed_tools)
         self.contract_generator = ExecutionContractGenerator()
         self.replanner = PlanReplanner()
 
@@ -64,8 +63,33 @@ class PlanningEngine:
 
         lower_req = raw_request.lower()
 
-        # Classify task type
-        if "fix" in lower_req or "bug" in lower_req or "error" in lower_req or "fail" in lower_req:
+        # Classify the primary requested action before considering subject-matter
+        # keywords.  "Build an auth service" is a feature; "Fix auth" is repair.
+        import re
+
+        if re.search(r"^\s*(?:please\s+)?(?:fix|debug|repair|patch|resolve)\b", lower_req):
+            ttype = TaskType.BUG_REPAIR
+        elif re.search(r"^\s*(?:please\s+)?(?:build|create|implement|add|develop|write)\b", lower_req):
+            ttype = TaskType.FEATURE_IMPLEMENTATION
+        elif re.search(r"^\s*(?:please\s+)?(?:refactor|restructure|simplify|extract)\b", lower_req):
+            ttype = TaskType.REFACTOR
+        elif re.search(r"^\s*(?:please\s+)?(?:migrate|port|convert|upgrade)\b", lower_req):
+            ttype = TaskType.MIGRATION
+        elif re.search(r"^\s*(?:please\s+)?(?:test|add tests|write tests)\b", lower_req):
+            ttype = TaskType.TEST_CREATION
+        elif re.search(r"^\s*(?:please\s+)?(?:secure|harden|remediate)\b", lower_req):
+            ttype = TaskType.SECURITY_REMEDIATION
+        elif re.search(r"^\s*(?:please\s+)?(?:optimize|speed up|improve performance)\b", lower_req):
+            ttype = TaskType.PERFORMANCE_OPTIMIZATION
+        elif re.search(r"^\s*(?:please\s+)?(?:configure|set up|setup)\b", lower_req):
+            ttype = TaskType.CONFIGURATION_CHANGE
+        elif re.search(r"^\s*(?:please\s+)?(?:document|write docs|update docs)\b", lower_req):
+            ttype = TaskType.DOCUMENTATION
+        elif re.search(r"^\s*(?:please\s+)?(?:explain|describe)\b", lower_req):
+            ttype = TaskType.CODE_EXPLANATION
+        elif re.search(r"^\s*(?:please\s+)?(?:investigate|review|analyze|analyse|audit)\b", lower_req):
+            ttype = TaskType.INVESTIGATION
+        elif "fix" in lower_req or "bug" in lower_req or "error" in lower_req or "fail" in lower_req:
             ttype = TaskType.BUG_REPAIR
         elif "refactor" in lower_req or "clean" in lower_req:
             ttype = TaskType.REFACTOR
@@ -73,7 +97,7 @@ class PlanningEngine:
             ttype = TaskType.MIGRATION
         elif "security" in lower_req or "auth" in lower_req:
             ttype = TaskType.SECURITY_REMEDIATION
-        elif "upgrade" in lower_req or "dep" in lower_req:
+        elif "upgrade" in lower_req or "dependency" in lower_req:
             ttype = TaskType.DEPENDENCY_UPGRADE
         elif "test" in lower_req:
             ttype = TaskType.TEST_CREATION
@@ -144,7 +168,7 @@ class PlanningEngine:
                 action_type=ActionType.INSPECT,
                 dependencies=[],
                 intended_targets=targets[:3],
-                allowed_tools=["read_file", "view_file"],
+                allowed_tools=["read_file", "search_code", "repo_symbols"],
                 expected_outcome="Confirmed code context and baseline test state",
                 completion_condition="Target files inspected and relevant symbols located",
                 verification_method="Context check",
@@ -161,7 +185,7 @@ class PlanningEngine:
                 action_type=ActionType.MUTATE,
                 dependencies=["step-1"],
                 intended_targets=targets[:5],
-                allowed_tools=["replace_file_content", "write_to_file", "write_file"],
+                allowed_tools=["edit_file", "patch_file", "write_file", "multi_edit"],
                 mutation_scope=scope.allowed_paths,
                 expected_outcome="Code modification matching requirements",
                 completion_condition="Code edits applied cleanly",
@@ -181,7 +205,7 @@ class PlanningEngine:
                 action_type=ActionType.VERIFY,
                 dependencies=["step-2"],
                 intended_targets=[test_file],
-                allowed_tools=["run_command"],
+                allowed_tools=["run_process"],
                 expected_outcome="All tests pass cleanly",
                 completion_condition="Test command exits with code 0",
                 verification_method=f"python3 -m pytest {test_file}",
@@ -189,10 +213,40 @@ class PlanningEngine:
             )
         )
 
+        hypotheses: List[Hypothesis] = []
+        if task_contract.task_type in {TaskType.BUG_REPAIR, TaskType.TEST_REPAIR, TaskType.SECURITY_REMEDIATION}:
+            hypotheses = [
+                Hypothesis(
+                    hypothesis_id="hyp-1",
+                    statement=(
+                        "The reported failure is caused by an invariant violation in the "
+                        "repository paths selected by impact analysis, not by the tests themselves."
+                    ),
+                    confidence=0.45,
+                    validation_action=(
+                        "Reproduce the failure, trace the canonical call path, and collect "
+                        "symbol/caller evidence before mutation."
+                    ),
+                ),
+                Hypothesis(
+                    hypothesis_id="hyp-2",
+                    statement=(
+                        "A dependent caller or compatibility contract outside the initially "
+                        "reported file contributes to the failure."
+                    ),
+                    confidence=0.30,
+                    validation_action=(
+                        "Inspect callers, impacted tests, and public contracts; expand scope only "
+                        "with repository evidence."
+                    ),
+                ),
+            ]
+
         plan = EngineeringPlan(
             task_contract_id=task_contract.task_id,
             repository_snapshot_id=task_contract.repository_snapshot_id,
             objective=task_contract.normalized_objective,
+            root_cause_hypotheses=hypotheses,
             affected_scope=scope.allowed_paths,
             steps=steps,
             acceptance_criteria=[c.to_dict() for c in criteria],

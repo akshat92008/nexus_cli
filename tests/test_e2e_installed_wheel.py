@@ -52,7 +52,8 @@ def test_installed_cli_version():
     result = _nexus("--version")
     assert result.returncode == 0, f"stderr: {result.stderr}"
     assert "NexusAI" in result.stdout or "NexusAI" in result.stderr
-    assert "3.2" in result.stdout or "3.2" in result.stderr
+    from nexus import __version__
+    assert __version__ in result.stdout or __version__ in result.stderr
 
 
 def test_installed_cli_list_models():
@@ -79,7 +80,8 @@ def test_installed_cli_doctor_exits_cleanly():
 def test_installed_cli_doctor_shows_version():
     """Doctor report must include the installed version."""
     result = _nexus("--doctor")
-    assert "3.2" in result.stdout
+    from nexus import __version__
+    assert __version__ in result.stdout
 
 
 def test_installed_cli_doctor_shows_sandbox_status():

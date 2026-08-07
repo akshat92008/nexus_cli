@@ -2,11 +2,16 @@
 
 NexusAI is an open-source, multi-provider coding CLI focused on verification, worktree safety, and extensibility. A hosted model plans and reviews difficult work; local Nova V11 executes suitable atomic changes through Ollama. Nexus owns repository understanding, permissions, workspaces, tools, tests, repair, evidence, budgets, rollback, and recovery.
 
-Version 3.2.1 is the launch-hardening runtime described by the product
-specification:
+Version 3.8.3 is the lifecycle/provenance remediation release built on the 3.8.0 repository-intelligence offensive. It replaces fixed context expansion and near-duplicate retries with evidence-directed graph expansion, operational hard-task profiles, structural replanning, concurrency triage, and a persistent completion ledger. Native command isolation now fails closed by default, while trusted host execution is a separate explicit capability. A strict three-way superiority gate compares Nexus, the same underlying model without Nexus, and real Claude Code on private unseen repositories; no smoke or self-authored result can authorize a competitive claim.
 
 - requests become acceptance criteria and dependency-aware execution
   contracts with risk, file scope, checks, retries, and budgets;
+- the Engineering Brain builds a repository-aware contract containing decisive files, callers, related tests, architecture constraints, explicit non-goals, and a plan-critic decision before mutation;
+- persistent task memory and long-horizon phase state are atomically written, HMAC-authenticated with repository-external keys, sequence checked, and rejected on signature failure or stale concurrent writes;
+- a typed constraint compiler turns natural-language prohibitions into executable file, schema, dependency, API, authentication, and compatibility policies; surgical editing enforces those policies, optimistic concurrency, changed-file ceilings, changed-line ceilings, and authority-separated evidence-backed scope expansion beneath the model layer;
+- semantic acceptance rejects model prose and stale checks, then requires criterion-specific typed evidence, exact source revisions, verified mutations, external behavioral checks, scope compliance, and independent review;
+- the matched benchmark gate compares the identical task, model, content-hashed repository revision, and sealed budget directly versus Nexus and measures verified uplift, false completion, regressions, budget compliance, cost, tokens, latency, and intervention;
+- a superiority-campaign preflight rejects duplicated repositories/tasks, model-identity mismatches, missing private oracles, placeholder environment declarations, and underpowered category coverage before any paid benchmark run;
 - modifying sessions open an isolated Git worktree, or a persistent temporary
   copy for non-Git projects, unless the user explicitly opts out;
 - commands support shell-free argv execution, filtered environments, timeouts,
@@ -24,6 +29,10 @@ specification:
   preserving completed steps and retrying only unfinished work;
 - SDK contracts, skills, hooks, plugins, subagents, MCP, CI mode, issue
   solving, and a versioned benchmark harness are included.
+
+## Release status
+
+Nexus 3.8.3 is **launch-ready for repository analysis, planning, and supervised Verified Repair with mandatory human diff review** when installed under `release-constraints.txt`, and `nexus deploy check --deep` and `nexus sandbox qualify` pass on the target host. Autonomous generated-command execution remains fail-closed until the exact deployment host passes native filesystem, process, and network isolation qualification. It does not claim universal Claude Code parity or unattended production autonomy. The included three-way duel and superiority gate make that goal measurable. A better-than-Claude-Code claim is emitted only after real Claude Code executions on private unseen repositories satisfy every predeclared quality, safety, cost, latency, intervention, and provenance threshold.
 
 See [CAPABILITIES.md](CAPABILITIES.md) for the measured capability boundary,
 [ROADMAP.md](ROADMAP.md) for the complete long-term product contract, and
@@ -109,6 +118,11 @@ and escalation runtime needed for Nova v11 output.
 # Interactive hosted mode
 nexus
 
+# Flagship bounded repair with a hard rupee budget and Nexus Proof receipt
+nexus fix \
+  "Fix the refresh-token regression without changing the database schema" \
+  --budget-inr 20 --model auto --proof
+
 # One prompt with structured automation-friendly output
 nexus run --prompt "add a health endpoint and tests" --mode autonomous --output json
 
@@ -149,6 +163,35 @@ nexus --version
 nexus --doctor
 nexus --list-models
 nexus --help
+
+# Inspect the repository-aware contract without invoking a model
+nexus intelligence inspect "Fix calculator.py without changing README.md" --strict --json
+
+# Fast artifact and host smoke check
+nexus deploy check --mode review --json
+
+# Execute the real installed repair/adversarial gate and qualify only the supervised deployment scope
+nexus deploy check --mode review --deep --output deploy-readiness.json --json
+
+# Execute one real offline repair plus four adversarial truth-integrity scenarios
+nexus benchmark offline-reliability --output offline-reliability.json
+
+# Enforce a matched direct-versus-Nexus evaluation contract
+nexus benchmark compare-matched --direct direct.json --nexus nexus.json
+
+# Run a blind matched-repository Nexus-versus-Claude duel manifest
+nexus benchmark duel --manifest competitive.json --output duel-report.json
+
+# Produce behavioral sandbox evidence for this exact host
+nexus sandbox qualify --workspace . --output sandbox-qualification.json
+
+# Run the sealed three-way private campaign, sign it in the evaluator environment,
+# then fail closed unless every category and aggregate threshold is satisfied.
+nexus benchmark duel --manifest private-superiority.json --output unsigned-report.json
+python scripts/sign_superiority_report.py --report unsigned-report.json \
+  --private-key /secure/evaluator-ed25519.key --evaluator-id independent-lab \
+  --output signed-report.json
+nexus benchmark superiority-gate --report signed-report.json
 ```
 
 An optional currency ceiling requires explicit prices so Nexus never invents
@@ -270,7 +313,7 @@ The public benchmark manifest is versioned and shell-free:
 ```bash
 nexus benchmark --manifest benchmarks/core.json --dry-run
 nexus benchmark --manifest benchmarks/core.json \
-  --output benchmarks/results/nexus-3.2.1.json
+  --output benchmarks/results/nexus-3.4.0.json
 
 # Validate the large single-prompt product contract without spending credits
 nexus benchmark --manifest benchmarks/long_horizon.json --dry-run

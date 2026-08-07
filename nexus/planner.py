@@ -151,6 +151,7 @@ class ExecutionPlan:
     canonical_plan: dict = field(default_factory=dict)
     canonical_critique: dict = field(default_factory=dict)
     canonical_execution_contract: dict = field(default_factory=dict)
+    canonical_planning_error: str = ""
     retry_policy: dict[str, int] = field(
         default_factory=lambda: {"per_task": 2, "total_repairs": 5}
     )
@@ -350,10 +351,26 @@ _INTENT_PATTERNS: dict[IntentType, list[str]] = {
 }
 
 
+_PRIMARY_INTENT_PATTERNS: tuple[tuple[IntentType, str], ...] = (
+    (IntentType.FIX, r"^\s*(?:please\s+)?(?:fix|debug|repair|patch|resolve)\b"),
+    (IntentType.REFACTOR, r"^\s*(?:please\s+)?(?:refactor|restructure|simplify|extract)\b"),
+    (IntentType.MIGRATE, r"^\s*(?:please\s+)?(?:migrate|port|upgrade|convert)\b"),
+    (IntentType.SECURITY, r"^\s*(?:please\s+)?(?:secure|harden|audit security)\b"),
+    (IntentType.TEST, r"^\s*(?:please\s+)?(?:test|add tests|write tests)\b"),
+    (IntentType.BUILD, r"^\s*(?:please\s+)?(?:build|create|implement|add|develop|write)\b"),
+)
+
+
 def classify_intent(user_input: str) -> IntentType:
     """Classify the user's intent based on keyword patterns."""
     scores: dict[IntentType, int] = {}
     text = user_input.lower()
+
+    # The explicit leading action is authoritative.  This prevents requests
+    # such as "fix X and add regression tests" from being misclassified as BUILD.
+    for intent, pattern in _PRIMARY_INTENT_PATTERNS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return intent
 
     for intent, patterns in _INTENT_PATTERNS.items():
         score = 0
@@ -369,7 +386,24 @@ def classify_intent(user_input: str) -> IntentType:
             return IntentType.CHAT
         return IntentType.UNKNOWN
 
-    return max(scores, key=scores.get)
+    priority = (
+        IntentType.FIX,
+        IntentType.SECURITY,
+        IntentType.MIGRATE,
+        IntentType.REFACTOR,
+        IntentType.OPTIMIZE,
+        IntentType.DEPLOY,
+        IntentType.TEST,
+        IntentType.BUILD,
+        IntentType.CONFIGURE,
+        IntentType.DOCS,
+        IntentType.REVIEW,
+        IntentType.EXPLAIN,
+        IntentType.SEARCH,
+    )
+    best = max(scores.values())
+    tied = {intent for intent, score in scores.items() if score == best}
+    return next((intent for intent in priority if intent in tied), next(iter(tied)))
 
 
 def estimate_difficulty(user_input: str, intent: IntentType) -> Difficulty:
@@ -420,17 +454,44 @@ def estimate_difficulty(user_input: str, intent: IntentType) -> Difficulty:
         return Difficulty.TRIVIAL
 
 
-def should_plan(difficulty: Difficulty, intent: IntentType) -> PlanType:
-    """Decide if a request needs a plan or can be executed directly."""
-    # Always direct for simple intents
+def should_plan(
+    difficulty: Difficulty,
+    intent: IntentType,
+    user_input: str = "",
+) -> PlanType:
+    """Decide if a request needs an explicit engineering plan.
+
+    Risk dominates prompt length: concurrency, authentication, public APIs,
+    persistence, migrations and multi-file work never bypass planning merely
+    because the request is concise.
+    """
     if intent in (IntentType.CHAT, IntentType.EXPLAIN, IntentType.SEARCH):
         return PlanType.DIRECT
 
-    # Plan for complex tasks
+    risky_signal = re.search(
+        r"\b(concurr(?:ency|ent|ently)?|race(?: condition)?|deadlock|thread|async|auth|"
+        r"authentication|authorization|public api|backward compat|database|schema|"
+        r"migration|transaction|security|credential|dependency|multi[- ]file|"
+        r"across .*files?|rollback|production)\b",
+        user_input,
+        re.IGNORECASE,
+    )
+    if risky_signal and intent not in (IntentType.DOCS, IntentType.REVIEW):
+        return PlanType.PLANNED
+
     if difficulty in (Difficulty.COMPLEX, Difficulty.MASSIVE):
         return PlanType.PLANNED
 
-    # Research for uncertain intents
+    if difficulty == Difficulty.MODERATE and intent in {
+        IntentType.FIX,
+        IntentType.SECURITY,
+        IntentType.MIGRATE,
+        IntentType.REFACTOR,
+        IntentType.OPTIMIZE,
+        IntentType.DEPLOY,
+    }:
+        return PlanType.PLANNED
+
     if intent == IntentType.UNKNOWN and difficulty == Difficulty.MODERATE:
         return PlanType.RESEARCH
 
@@ -632,6 +693,9 @@ class PlanningEngine:
         PLANS_DIR.mkdir(parents=True, exist_ok=True)
         self.current_plan: ExecutionPlan | None = None
         self._plan_counter = 0
+        from nexus.planning.replanner import PlanReplanner
+
+        self._canonical_replanner = PlanReplanner(max_revisions=8)
 
     def analyze(self, user_input: str) -> dict:
         """
@@ -642,7 +706,7 @@ class PlanningEngine:
         """
         intent = classify_intent(user_input)
         difficulty = estimate_difficulty(user_input, intent)
-        plan_type = should_plan(difficulty, intent)
+        plan_type = should_plan(difficulty, intent, user_input)
         skills = detect_skills_needed(user_input)
 
         return {
@@ -651,6 +715,41 @@ class PlanningEngine:
             "plan_type": plan_type,
             "skills_needed": skills,
         }
+
+    def create_canonical_bundle(
+        self, goal: str, repo_summary: dict | None = None
+    ) -> dict:
+        """Create the canonical task, engineering-plan, critique and execution contracts.
+
+        All production entry points use this adapter so the richer planning package is
+        an internal implementation detail rather than a second runtime.
+        """
+        from nexus.planning.engine import PlanningEngine as EngineeringPlanningEngine
+
+        engine = EngineeringPlanningEngine()
+        repository = repo_summary or {}
+        contract = engine.interpret_task(goal, repository)
+        engineering_plan = engine.create_engineering_plan(contract, repository)
+        critique, execution_contract = engine.critique_and_finalize(
+            engineering_plan, contract, repository
+        )
+        return {
+            "task_contract": contract.to_dict(),
+            "engineering_plan": engineering_plan.to_dict(),
+            "critique": critique.to_dict(),
+            "execution_contract": (
+                execution_contract.to_dict() if execution_contract else None
+            ),
+        }
+
+    @staticmethod
+    def validate_canonical_plan_payload(data: dict) -> list[dict]:
+        """Validate a serialized engineering plan through the canonical validator."""
+        from nexus.planning.engineering_plan import EngineeringPlan
+        from nexus.planning.validator import DeterministicValidator
+
+        plan = EngineeringPlan.from_dict(data)
+        return [issue.to_dict() for issue in DeterministicValidator().validate(plan)]
 
     def create_plan(
         self, goal: str, analysis: dict, repo_summary: dict | None = None
@@ -667,6 +766,30 @@ class PlanningEngine:
         intent = analysis["intent"]
         difficulty = analysis["difficulty"]
         skills = analysis.get("skills_needed", [])
+        canonical: dict | None = None
+        canonical_error = ""
+        try:
+            canonical = self.create_canonical_bundle(goal, repo_summary)
+            canonical_type = str(canonical["task_contract"].get("task_type", ""))
+            canonical_intents = {
+                "bug_repair": IntentType.FIX,
+                "test_repair": IntentType.FIX,
+                "security_remediation": IntentType.SECURITY,
+                "refactor": IntentType.REFACTOR,
+                "migration": IntentType.MIGRATE,
+                "dependency_upgrade": IntentType.MIGRATE,
+                "test_creation": IntentType.TEST,
+                "performance_optimization": IntentType.OPTIMIZE,
+                "configuration_change": IntentType.CONFIGURE,
+                "documentation": IntentType.DOCS,
+                "code_explanation": IntentType.EXPLAIN,
+                "investigation": IntentType.REVIEW,
+                "feature_implementation": IntentType.BUILD,
+            }
+            intent = canonical_intents.get(canonical_type, intent)
+        except Exception as exc:
+            canonical_error = f"{type(exc).__name__}: {exc}"
+
         blueprint = (
             self._build_system_blueprint(goal, skills)
             if intent == IntentType.BUILD and difficulty == Difficulty.MASSIVE
@@ -752,20 +875,13 @@ class PlanningEngine:
             },
         )
 
-        try:
-            from nexus.planning.engine import PlanningEngine as CanonicalPlanningEngine
-            canonical_engine = CanonicalPlanningEngine()
-            contract = canonical_engine.interpret_task(goal, repo_summary or {})
-            eng_plan = canonical_engine.create_engineering_plan(contract, repo_summary or {})
-            critique, exec_contract = canonical_engine.critique_and_finalize(eng_plan, contract, repo_summary or {})
-
-            plan.canonical_contract = contract.to_dict()
-            plan.canonical_plan = eng_plan.to_dict()
-            plan.canonical_critique = critique.to_dict()
-            if exec_contract:
-                plan.canonical_execution_contract = exec_contract.to_dict()
-        except Exception:
-            pass
+        if canonical is not None:
+            plan.canonical_contract = canonical["task_contract"]
+            plan.canonical_plan = canonical["engineering_plan"]
+            plan.canonical_critique = canonical["critique"]
+            plan.canonical_execution_contract = canonical["execution_contract"] or {}
+        else:
+            plan.canonical_planning_error = canonical_error
 
         self.current_plan = plan
         self._save_plan(plan)
@@ -1478,6 +1594,100 @@ class PlanningEngine:
             }
         )
         self._save_plan(self.current_plan)
+        return True
+
+    def revise_canonical_plan(
+        self,
+        plan: ExecutionPlan,
+        *,
+        trigger_reason: str,
+        failed_step_id: int | None = None,
+        evidence: dict | None = None,
+    ) -> bool:
+        """Structurally revise the canonical plan from new runtime evidence.
+
+        The legacy execution plan remains the runtime scheduler, while the
+        canonical engineering plan records the changed investigation,
+        hypothesis, scope and targeted verification strategy. Duplicate
+        evidence is rejected by :class:`PlanReplanner`.
+        """
+        if not plan.canonical_plan:
+            return False
+
+        from nexus.planning.engineering_plan import EngineeringPlan
+
+        try:
+            canonical = EngineeringPlan.from_dict(plan.canonical_plan)
+        except (KeyError, TypeError, ValueError):
+            return False
+
+        canonical_failed_step_id: str | None = None
+        if failed_step_id is not None and canonical.steps:
+            legacy_step = next((item for item in plan.steps if item.id == failed_step_id), None)
+            if legacy_step is not None:
+                legacy_terms = {
+                    term
+                    for term in re.findall(
+                        r"[a-z0-9_]+",
+                        f"{legacy_step.title} {legacy_step.description}".lower(),
+                    )
+                    if len(term) > 3
+                }
+                ranked: list[tuple[int, str]] = []
+                for item in canonical.steps:
+                    canonical_terms = set(
+                        re.findall(
+                            r"[a-z0-9_]+",
+                            f"{item.title} {item.objective}".lower(),
+                        )
+                    )
+                    ranked.append((len(legacy_terms.intersection(canonical_terms)), item.step_id))
+                ranked.sort(reverse=True)
+                if ranked and ranked[0][0] > 0:
+                    canonical_failed_step_id = ranked[0][1]
+            if canonical_failed_step_id is None:
+                canonical_failed_step_id = canonical.steps[
+                    min(max(int(failed_step_id), 0), len(canonical.steps) - 1)
+                ].step_id
+
+        revised, accepted = self._canonical_replanner.revise_plan(
+            canonical,
+            trigger_reason,
+            failed_step_id=canonical_failed_step_id,
+            new_evidence=evidence or {},
+        )
+        if not accepted:
+            return False
+
+        plan.canonical_plan = revised.to_dict()
+        plan.revision += 1
+        record = {
+            "revision": plan.revision,
+            "canonical_version": revised.version,
+            "step_id": failed_step_id,
+            "canonical_step_id": canonical_failed_step_id,
+            "failed_at": datetime.now().isoformat(),
+            "evidence": trigger_reason[:4000],
+            "evidence_payload": dict(evidence or {}),
+            "required_action": (
+                "Execute the revised evidence-inspection step, invalidate the old causal "
+                "assumption when contradicted, then run targeted verification before retrying."
+            ),
+            "structural_replan": True,
+        }
+        plan.failure_replans.append(record)
+        plan.canonical_critique = {
+            **dict(plan.canonical_critique),
+            "decision": "REVISED_AFTER_RUNTIME_FAILURE",
+            "latest_runtime_replan": record,
+        }
+        plan.canonical_execution_contract = {
+            **dict(plan.canonical_execution_contract),
+            "engineering_plan_version": revised.version,
+            "requires_reverification": True,
+        }
+        self.current_plan = plan
+        self._save_plan(plan)
         return True
 
     def get_plan_context(self) -> str:

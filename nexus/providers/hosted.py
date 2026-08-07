@@ -7,7 +7,7 @@ from typing import Any
 
 # Temporarily alias NvidiaClient until it's fully migrated out of api.py
 from nexus.api import NvidiaClient
-from nexus.providers.base import ChatRequest, Provider, ProviderCapabilities, ModelProvider
+from nexus.providers.base import ChatRequest, ModelProvider, ProviderCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -149,3 +149,6 @@ class HostedProvider(ModelProvider):
 
     def estimate_cost(self, prompt_tokens: int, completion_tokens: int) -> float:
         return (prompt_tokens + completion_tokens) * 0.00001
+
+    def close(self) -> None:
+        self._client.close()

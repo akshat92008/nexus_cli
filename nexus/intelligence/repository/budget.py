@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+
 from nexus.intelligence.repository.model import ContextCandidate, ContextFile, RepositoryFile
 from nexus.intelligence.repository.secrets import SecretProtector
 

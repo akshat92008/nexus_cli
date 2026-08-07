@@ -12,6 +12,7 @@ from pathlib import Path
 from nexus.benchmark import BenchmarkRunner, BenchmarkSuite
 from nexus.models import resolve_model
 from nexus.preflight import configured_hosted_credentials, probe_model
+from nexus.provenance import resolve_source_identity, sha256_file
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -142,9 +143,17 @@ def main() -> int:
         )
     run_to_run_consistent = all(len(set(statuses)) == 1 for statuses in grouped_statuses.values())
 
+    source_identity = resolve_source_identity(REPO)
+    manifest_path = Path(args.manifest).expanduser().resolve()
     summary = {
-        "schema_version": "nexus.live-provider-qualification.v2",
+        "schema_version": "nexus.live-provider-qualification.v3",
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "source_identity": source_identity.to_dict(),
+        "manifest": str(manifest_path),
+        "manifest_sha256": sha256_file(manifest_path),
+        "qualification_scope": "live-provider regression suite",
+        "unseen_external_campaign": False,
+        "claude_code_parity_claim": False,
         "model": args.model,
         "model_id": args.model_id,
         "suite": suite.name,

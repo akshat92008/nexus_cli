@@ -46,11 +46,13 @@ class LSPClient:
         *,
         command: tuple[str, ...] | None = None,
         timeout_seconds: float = 10.0,
+        network: bool = False,
     ):
         self.root = Path(root).expanduser().resolve()
         self.language = language.lower()
         self.command = command or self.discover(self.language)
         self.timeout_seconds = max(0.1, float(timeout_seconds))
+        self.network = bool(network)
         self.process: subprocess.Popen[bytes] | None = None
         self._messages: queue.Queue[dict[str, Any]] = queue.Queue()
         self._pending: dict[int, queue.Queue[dict[str, Any]]] = {}
@@ -74,7 +76,9 @@ class LSPClient:
             purpose="language_server",
             command=list(self.command),
             workspace=self.root,
-            network_policy="allow", # LSPs sometimes need network
+            # Language servers can read large portions of the repository.
+            # Keep outbound access denied unless a caller explicitly opts in.
+            network_policy="allow" if self.network else "deny",
         )
         self.process = ProcessExecutionGateway.popen(
             request,

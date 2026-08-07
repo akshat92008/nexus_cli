@@ -7,12 +7,11 @@ and outbound URL destination allowlisting.
 from __future__ import annotations
 
 import ipaddress
-import re
 import urllib.parse
 from enum import Enum
 from typing import Sequence
 
-from nexus.network_policy import NetworkPolicy, NetworkViolation
+from nexus.network_policy import NetworkPolicy
 
 
 class NetworkMode(str, Enum):

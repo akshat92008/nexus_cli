@@ -317,3 +317,27 @@ def test_autonomy_performance_release_cli(tmp_path):
 
     result = run_cli("release", "--json", "scope", "cli_core", cwd=tmp_path)
     assert result.stdout.strip() == "stable"
+
+
+def test_release_candidate_requires_live_and_cross_platform_evidence(tmp_path):
+    from nexus.release.qualification import ChannelPolicy
+
+    qualification = ReleaseQualification(
+        version="3.3.0",
+        supply_chain=build_supply_chain_evidence(
+            secret_scan_passed=True,
+            artifact_paths=(tmp_path / "missing.whl",),
+        ),
+        rollback_plan=RollbackPlan(safe_version="uninstalled", downgrade_tested=True),
+        test_results={"architecture_health": True},
+        security_results={"source_secret_scan": True},
+        channel_policy=ChannelPolicy(
+            name="release-candidate",
+            require_artifact_evidence=True,
+            required_test_names=("live_provider_long_horizon", "cross_platform_ci"),
+        ),
+    )
+    failures = qualification.evaluate()["failures"]
+    assert "test_evidence_missing:live_provider_long_horizon" in failures
+    assert "test_evidence_missing:cross_platform_ci" in failures
+    assert any(item.startswith("artifact_missing:") for item in failures)

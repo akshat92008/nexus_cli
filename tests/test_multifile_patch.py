@@ -1,8 +1,9 @@
 """Tests for MultiFilePatchManager (Sprint 8)."""
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
+
+import pytest
 
 from nexus.multifile.contracts import ChangeType, EngineeringChangeSet, PlannedFileChange
 from nexus.multifile.patch import MultiFilePatchManager, PatchApplicationStatus

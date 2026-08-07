@@ -1,11 +1,9 @@
-import pytest
-import os
-from nexus.session import AgentSession
-from nexus.context_selector import ContextSelector
-from nexus.mutation import MutationController
-from nexus.events import EventBus, EventType
 from nexus.config.core import NexusConfig, get_config
-from nexus.providers.base import ModelProvider
+from nexus.context_selector import ContextSelector
+from nexus.events import EventBus, EventType
+from nexus.mutation import MutationController
+from nexus.session import AgentSession
+
 
 def test_config_system():
     config = get_config()

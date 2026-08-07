@@ -17,12 +17,10 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
 from nexus.multifile.contracts import (
     ChangeType,
     PlannedFileChange,
-    Reference,
 )
 
 logger = logging.getLogger(__name__)

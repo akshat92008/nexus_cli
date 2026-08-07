@@ -1,13 +1,9 @@
-import os
-import shutil
 import tempfile
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 from nexus.benchmark import BenchmarkRunner, BenchmarkTask
-from tests.support.global_state import reset_global_state
+
 
 def test_benchmark_does_not_execute_shadowed_module():
     """Verify that benchmark runs in a trusted working directory and prevents module shadowing."""

@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from nexus.intelligence.repository.engine import RepositoryIntelligence
-from nexus.intelligence.repository.model import RepositorySymbol, RepositoryFile, RiskLevel
 
 
 @dataclass

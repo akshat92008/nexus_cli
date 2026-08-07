@@ -49,3 +49,41 @@ nexus_cli_v*_release_bundle.zip
 
 # Node (if any)
 node_modules/
+
+# Nexus runtime and qualification outputs
+/.nexus/
+/release_evidence/
+/release-artifacts/
+
+# Legacy local working tree artifacts (not part of project source)
+/calculator.py
+/database.db
+/expense-tracker/
+/fix_indent.py
+/guardrail_events.jsonl
+/legacy/
+/nexus.sh
+/nexus/agent.py
+/nexus/cli.py
+/nexus/doctor.py
+/nexus/tools.py
+/src/
+/test_script.py
+/v12/
+/coding_agent/
+*.log
+*.db
+/amaura/
+/patch_test*.py
+/rewrite_*.py
+/restore_*.py
+/refactor_*.py
+/scratch_*.py
+/scratch/
+/bakeoff/
+/demos/
+/training/
+/inference/
+/data/
+/runs/
+/bin/

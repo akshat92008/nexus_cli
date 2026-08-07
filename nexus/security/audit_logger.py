@@ -1,7 +1,8 @@
-"""Append-only tamper-evident audit logger for Nexus CLI.
+"""Append-only corruption-evident audit logger for Nexus CLI.
 
-Records all security decisions, policy evaluations, secret redactions, and approvals.
-Employs SHA-256 hash-chaining to detect local audit log tampering.
+Records security decisions, policy evaluations, secret redactions, and approvals.
+The local SHA-256 chain detects accidental or unsophisticated modification; it is not
+an adversarial signature unless the log is anchored outside the writable workspace.
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ import json
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 from nexus.security.secret_protection import SecretRedactor
 

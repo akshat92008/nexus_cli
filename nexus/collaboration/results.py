@@ -12,8 +12,7 @@ from __future__ import annotations
 import ast
 import uuid
 from decimal import Decimal
-from pathlib import Path
-from typing import Optional, Sequence, Tuple
+from typing import Optional, Tuple
 
 from nexus.collaboration.models import (
     AgentAssignment,

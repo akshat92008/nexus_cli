@@ -2,18 +2,18 @@
 from __future__ import annotations
 
 import pytest
-from pathlib import Path
 
-from nexus.multifile.contracts import ChangeType, ChangeDependency, PlannedFileChange
+from nexus.multifile.consistency import ChangeSetConsistencyValidator
+from nexus.multifile.contracts import (
+    ChangeType,
+    EngineeringChangeSet,
+    PlannedFileChange,
+)
 from nexus.multifile.graph import (
     ChangeDependencyGraph,
     DependencyCycleError,
-    DependencyConflictError,
     build_graph,
 )
-from nexus.multifile.consistency import ChangeSetConsistencyValidator
-from nexus.multifile.contracts import EngineeringChangeSet
-
 
 # ---------------------------------------------------------------------------
 # Helpers

@@ -34,6 +34,7 @@ from nexus.hooks.builtin import create_builtin_hooks
 
 # Phase 3: Hooks, MCP & Plugins
 from nexus.hooks.runner import HookRunner
+from nexus.intelligence.engineering import EngineeringBrain
 from nexus.mcp.client import MCPClient
 from nexus.memory import ConversationMemory, compact_messages
 from nexus.models import DEFAULT_MODEL, MODELS, resolve_model, resolve_model_key
@@ -47,6 +48,7 @@ from nexus.policy import ModePolicy, PolicyLoader, get_mode_policy
 from nexus.project_memory import ProjectMemory
 from nexus.providers.hosted import HostedProvider
 from nexus.providers.nova import NovaProvider
+from nexus.recovery.controller import RecoveryController
 from nexus.reflection import ReflectionEngine, ReflectionVerdict
 from nexus.repo_graph import RepoGraph
 from nexus.run_catalog import RunCatalog
@@ -55,12 +57,12 @@ from nexus.run_state import RunLedger, RunStatus
 from nexus.runtime.events import EventType
 from nexus.runtime.session import ExecutionSession
 from nexus.safety import SafetyCheck, SafetyLayer
-from nexus.tool_executor import ToolExecutionController
 
 # Phase 2: Skills & Subagents
 from nexus.skills.loader import SkillLoader, SkillRegistry
 from nexus.subagents.orchestrator import SubagentOrchestrator
 from nexus.subagents.templates import create_subagent
+from nexus.tool_executor import ToolExecutionController
 from nexus.tools import (
     RAW_TOOL_DEFINITIONS,
     tool_get_project_structure,
@@ -69,6 +71,13 @@ from nexus.tools import (
 from nexus.trust import TrustStore
 from nexus.user_memory import UserMemory
 from nexus.verification import CheckStatus, CheckType, VerificationEngine
+from nexus.verification_evidence import (
+    analyse_test_command,
+    command_fingerprint,
+    effective_verification_evidence,
+    test_origin_for_profile,
+    validate_test_execution,
+)
 from nexus.workspace import GitWorktreeSession, WorktreeError
 
 logger = logging.getLogger(__name__)
@@ -102,13 +111,7 @@ def _effective_evidence(evidence: list[dict[str, Any]], kind: str) -> list[dict[
 
     matching = [item for item in evidence if item.get("kind") == kind]
     if kind == "verification_check":
-        latest: dict[str, dict[str, Any]] = {}
-        for item in matching:
-            identity = str(
-                item.get("metadata", {}).get("check_type") or item.get("command") or item.get("id")
-            )
-            latest[identity] = item
-        return list(latest.values())
+        return effective_verification_evidence(matching)
     if kind == "file_mutation":
         latest_by_path: dict[str, dict[str, Any]] = {}
         pathless: list[dict[str, Any]] = []
@@ -268,9 +271,14 @@ class Agent:
         enable_nova_fallback: bool = False,
         plugins_enabled: bool = False,
         tools_enabled: bool = True,
+        allow_unisolated_host_process: bool = False,
         cancel_event: Any = None,
     ):
         self.cancel_event = cancel_event
+        # Deliberately not derived from mode policy. Host execution is a separate,
+        # explicit capability for trusted tests/fixtures and must never be enabled
+        # merely because a caller disabled the isolation requirement.
+        self.allow_unisolated_host_process = bool(allow_unisolated_host_process)
         self.routing_mode = routing_mode
         self.ask_before_frontier = ask_before_frontier
         if budget_inr is not None and max_cost_usd is None:
@@ -366,6 +374,7 @@ class Agent:
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.permission_mode = permission_mode
+        self._closed = False
         self.allowed_tools = set(allowed_tools or [])
         self.disallowed_tools = set(disallowed_tools or [])
         self.additional_dirs = [
@@ -432,12 +441,20 @@ class Agent:
         self.reflector = ReflectionEngine()
         self.context_mgr = ContextManager(self.working_dir)
         self.repo_graph = RepoGraph(self.working_dir)
+        self.engineering_brain = EngineeringBrain(self.working_dir)
+        self._engineering_contract = None
         self.safety = SafetyLayer()
         self.project_mem = ProjectMemory(self.working_dir)
         self.user_mem = UserMemory()
+        self.recovery_controller = RecoveryController(
+            run_id=self.conversation_id,
+            working_dir=self.working_dir,
+            budget=self.budget,
+        )
         self.verifier = VerificationEngine(
             self.working_dir,
             require_os_isolation=self.mode_policy.require_os_isolation,
+            allow_unisolated_host_process=self.allow_unisolated_host_process,
         )
         self._tool_controller = ToolExecutionController(self)
 
@@ -650,6 +667,7 @@ class Agent:
                     self.working_dir,
                     custom_cmds,
                     require_os_isolation=self.mode_policy.require_os_isolation,
+                    allow_unisolated_host_process=self.allow_unisolated_host_process,
                 )
         except (FileNotFoundError, json.JSONDecodeError, OSError) as exc:
             logging.getLogger(__name__).debug("Failed to load project rules: %s", exc)
@@ -929,6 +947,20 @@ class Agent:
         self._resume_objective_override = None
         self._active_analysis = dict(analysis)
         self._active_plan = plan
+        if self._engineering_contract is None:
+            try:
+                self._engineering_contract = self.engineering_brain.prepare(
+                    self._active_objective,
+                    task_id=self.conversation_id,
+                    strict=(
+                        self._active_objective.lstrip().startswith("[NEXUS VERIFIED REPAIR]")
+                        or bool(self.mode_policy.require_review)
+                    ),
+                )
+                self._active_analysis["engineering_contract"] = self._engineering_contract.to_dict()
+            except (OSError, TypeError, ValueError) as exc:
+                logger.warning("Engineering Brain preparation degraded: %s", exc)
+                self._active_analysis["engineering_brain_warning"] = str(exc)
         self._run_history_start = len(self.history.changes)
         self._turn_evidence_start = len(self.evidence.records())
         self._permissions_used = {f"permission_mode:{self.permission_mode}"}
@@ -1184,6 +1216,11 @@ class Agent:
 
         import hashlib
         diff_sha256 = hashlib.sha256(diff.encode("utf-8")).hexdigest()
+        try:
+            from nexus.intelligence.repository.snapshot import workspace_revision
+            review_revision = workspace_revision(self.working_dir)
+        except (OSError, ValueError):
+            review_revision = ""
         summary = "\n".join(summaries)
         self.evidence.append(
             kind="independent_review",
@@ -1198,6 +1235,9 @@ class Agent:
                 "reviewed_diff_sha256": diff_sha256,
                 "chunks": len(chunks),
                 "findings": all_findings,
+                "workspace_revision": review_revision,
+                "producer_type": "independent_reviewer",
+                "independently_validated": True,
             },
         )
         return all_approved, summary
@@ -1329,6 +1369,12 @@ class Agent:
             if item
         )
         graph_context = ""
+        engineering_context = ""
+        if getattr(self, "engineering_brain", None):
+            try:
+                engineering_context = self.engineering_brain.prompt_context()
+            except (OSError, TypeError, ValueError) as exc:
+                logger.debug("Engineering Brain prompt context unavailable: %s", exc)
         if graph_query and getattr(self, "repo_graph", None):
             try:
                 graph_context = self.repo_graph.context_bundle(
@@ -1349,6 +1395,7 @@ class Agent:
                 + plan_context
                 + reflection_context
                 + ("\n" + active_context if active_context else "")
+                + ("\n\n" + engineering_context if engineering_context else "")
                 + ("\n\n" + graph_context if graph_context else "")
             ),
         }
@@ -1426,12 +1473,24 @@ class Agent:
         """Release transports and optionally archive/discard the isolated workspace."""
 
         report: dict[str, Any] = {
+            "already_closed": self._closed,
+            "provider_closed": False,
             "mcp_disconnected": False,
             "background_processes_stopped": [],
             "workspace_discarded": False,
             "recovery_patch": "",
             "errors": [],
         }
+        if self._closed:
+            return report
+        self._closed = True
+        try:
+            closer = getattr(self.client, "close", None)
+            if callable(closer):
+                closer()
+            report["provider_closed"] = True
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            report["errors"].append(f"Provider cleanup failed: {exc}")
         try:
             self.mcp.disconnect_all()
             report["mcp_disconnected"] = True
@@ -1465,6 +1524,14 @@ class Agent:
             except (LookupError, OSError, TypeError, ValueError) as exc:
                 report["errors"].append(f"Workspace cleanup failed: {exc}")
         return report
+
+    def __enter__(self) -> "Agent":
+        if self._closed:
+            raise RuntimeError("Agent is already closed")
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.close(discard_workspace=not getattr(self, "keep_workspace", False))
 
     # ── Tool Execution (with safety, hooks, reflection) ──────────────────
 
@@ -2182,11 +2249,13 @@ class Agent:
         }
         return self.run_non_interactive(resume_prompt)
 
-    def _run_two_node_turn(
-    ) -> tuple[str, list[dict]]:
-        raise NotImplementedError("Moved to ModelProvider")
+    def _run_two_node_turn(self, user_input: str, analysis: dict | None = None, emit_ui: bool = True) -> tuple[str, list[dict]]:
+        from nexus.pipeline import ExecutionPipeline
+        return ExecutionPipeline(self)._run_two_node_turn(user_input, analysis or {}, emit_ui=emit_ui)
+
     def _run_nova_turn(self, user_input: str, emit_ui: bool = True) -> tuple[str, list[dict]]:
-        raise NotImplementedError("Moved to ModelProvider")
+        from nexus.pipeline import ExecutionPipeline
+        return ExecutionPipeline(self)._run_nova_turn(user_input, emit_ui=emit_ui)
 
     def spawn_subagent(self, template_name: str, task: str) -> str:
         """Spawn a subagent from a template and execute its task."""
@@ -2246,6 +2315,13 @@ class Agent:
         report = self._record_verification_report(self.verifier.run_all(check_types))
         return report.format_report()
 
+    def _test_origin_for_command(self, command: str) -> str:
+        """Classify test provenance from exact planning-time content hashes."""
+        brain = getattr(self, "engineering_brain", None)
+        expected = getattr(brain, "_expected_file_hashes", {}) if brain is not None else {}
+        profile = analyse_test_command(command, root=self.working_dir)
+        return test_origin_for_profile(profile, expected, root=self.working_dir)
+
     def _run_declared_test_command(
         self,
         command: str,
@@ -2253,15 +2329,38 @@ class Agent:
         source: str,
         emit_ui: bool = False,
     ) -> tuple[str, bool, str]:
-        """Execute a model-declared test through normal policy and persist test evidence."""
+        """Execute a declared test only when it is a structured test invocation."""
+        profile = analyse_test_command(command, root=self.working_dir)
         if emit_ui:
             ui.print_info(f"Running {source}-declared acceptance test: {command}")
-        output, success = self._execute_tool_with_safety(
-            "run_command",
-            {"command": command, "cwd": self.working_dir},
-        )
-        exit_code = command_exit_code(output)
-        verified = bool(success and exit_code == 0)
+
+        if not profile.valid:
+            output = f"Rejected test evidence: {profile.reason or 'unrecognised test command'}"
+            exit_code = None
+            verified = False
+            observed_count = None
+            validation_detail = profile.reason or "unrecognised test command"
+        else:
+            output, success = self._execute_tool_with_safety(
+                "run_command",
+                {"command": command, "cwd": self.working_dir},
+            )
+            exit_code = command_exit_code(output)
+            verified, validation_detail, observed_count = validate_test_execution(
+                profile,
+                output=output,
+                exit_code=exit_code if success else exit_code,
+                root=self.working_dir,
+            )
+
+        try:
+            from nexus.intelligence.repository.snapshot import workspace_revision
+            current_revision = workspace_revision(self.working_dir)
+        except (OSError, ValueError):
+            current_revision = ""
+        brain = getattr(self, "engineering_brain", None)
+        expected = getattr(brain, "_expected_file_hashes", {}) if brain is not None else {}
+        origin = test_origin_for_profile(profile, expected, root=self.working_dir)
         record = self.evidence.append(
             kind="verification_check",
             claim=f"{source}-declared acceptance test",
@@ -2270,7 +2369,23 @@ class Agent:
             command=command,
             exit_code=exit_code,
             raw_output=output,
-            metadata={"check_type": "test", "source": source},
+            metadata={
+                "check_type": "test",
+                "source": source,
+                "test_origin": origin,
+                "workspace_revision": current_revision,
+                "producer_type": "deterministic_tool",
+                "independently_validated": bool(verified),
+                "runner_valid": profile.valid,
+                "verification_valid": bool(verified),
+                "test_runner": profile.runner,
+                "verification_scope": profile.scope,
+                "test_targets": list(profile.targets),
+                "project_gate": profile.project_gate,
+                "observed_test_count": observed_count,
+                "validation_detail": validation_detail,
+                "command_fingerprint": command_fingerprint(profile.normalized_command or command),
+            },
         )
         if self.run_ledger.turn_dir:
             self.run_ledger.store_artifact(
@@ -2279,7 +2394,10 @@ class Agent:
                 (
                     f"command: {command}\n"
                     f"status: {'passed' if verified else 'failed'}\n"
-                    f"exit_code: {exit_code}\n\n{output}\n"
+                    f"exit_code: {exit_code}\n"
+                    f"runner: {profile.runner or 'unrecognised'}\n"
+                    f"scope: {profile.scope}\n"
+                    f"validation: {validation_detail}\n\n{output}\n"
                 ),
             )
         return output, verified, record.id
@@ -2313,24 +2431,67 @@ class Agent:
         return report
 
     def _record_verification_report(self, report):
-        """Mirror deterministic project checks into the evidence trail."""
+        """Mirror deterministic checks into the trail with structured provenance."""
+        try:
+            from nexus.intelligence.repository.snapshot import workspace_revision
+            current_revision = workspace_revision(self.working_dir)
+        except (OSError, ValueError):
+            current_revision = ""
+        brain = getattr(self, "engineering_brain", None)
+        expected = getattr(brain, "_expected_file_hashes", {}) if brain is not None else {}
+
         for index, check in enumerate(report.checks, 1):
-            status = "verified" if check.passed else "failed"
-            exit_code = 0 if check.passed else 1
+            is_test = check.check_type.value in {"test", "tests"}
+            profile = analyse_test_command(check.command, root=self.working_dir) if is_test else None
+            inherited = check.status.value == "inherited_failure"
+            if is_test and profile is not None:
+                verification_valid, validation_detail, observed_count = validate_test_execution(
+                    profile,
+                    output=check.output,
+                    exit_code=0 if check.status == CheckStatus.PASSED else 1,
+                    root=self.working_dir,
+                )
+                verified = bool(check.status == CheckStatus.PASSED and verification_valid)
+                origin = test_origin_for_profile(profile, expected, root=self.working_dir)
+            else:
+                verified = bool(check.passed and not inherited)
+                verification_valid = verified
+                validation_detail = "non-test deterministic check"
+                observed_count = None
+                origin = "not_applicable"
+
+            metadata = {
+                "duration_ms": check.duration_ms,
+                "check_status": check.status.value,
+                "check_type": check.check_type.value,
+                "test_origin": origin,
+                "inherited_baseline_failure": inherited,
+                "workspace_revision": current_revision,
+                "producer_type": "deterministic_tool",
+                "independently_validated": bool(verified),
+                "verification_valid": bool(verification_valid),
+                "command_fingerprint": command_fingerprint(check.command),
+            }
+            if profile is not None:
+                metadata.update({
+                    "runner_valid": profile.valid,
+                    "test_runner": profile.runner,
+                    "verification_scope": profile.scope,
+                    "test_targets": list(profile.targets),
+                    "project_gate": profile.project_gate,
+                    "observed_test_count": observed_count,
+                    "validation_detail": validation_detail,
+                })
+
             self.evidence.append(
                 kind="verification_check",
                 claim=f"project verification: {check.check_type.value}",
-                status=status,
+                status="verified" if verified else "failed",
                 tool="verification_engine",
                 command=check.command,
-                exit_code=exit_code,
+                exit_code=0 if verified else 1,
                 raw_output=check.output,
-                metadata={
-                    "duration_ms": check.duration_ms,
-                    "check_status": check.status.value,
-                    "check_type": check.check_type.value,
-                    "inherited_baseline_failure": check.status.value == "inherited_failure",
-                },
+                metadata=metadata,
             )
             if self.run_ledger.turn_dir:
                 self.run_ledger.store_artifact(
@@ -2338,8 +2499,10 @@ class Agent:
                     f"{index:02d}-{check.check_type.value}.txt",
                     (
                         f"command: {check.command}\n"
-                        f"status: {check.status.value}\n"
-                        f"duration_ms: {check.duration_ms}\n\n"
+                        f"status: {'verified' if verified else 'failed'}\n"
+                        f"engine_status: {check.status.value}\n"
+                        f"duration_ms: {check.duration_ms}\n"
+                        f"validation: {validation_detail}\n\n"
                         f"{check.output}\n"
                     ),
                 )

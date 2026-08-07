@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
-from nexus.planning.task_contract import RiskLevel, Assumption
+from nexus.planning.task_contract import Assumption, RiskLevel
 
 
 class ActionType(str, Enum):

@@ -36,3 +36,29 @@ def test_pipeline_preserves_ledger_and_emits_hooks():
     assert result.outcome == "NO_CHANGES"
     assert result.success is False
     assert agent.run_ledger.resume_summary()["final_report"]["status"] == "UNVERIFIED"
+
+
+def test_verified_repair_blocks_when_engineering_state_integrity_fails(monkeypatch, tmp_path):
+    from nexus.intelligence.engineering import MemoryIntegrityError
+
+    agent = Agent(working_dir=str(tmp_path), workspace_isolation=False)
+    pipeline = ExecutionPipeline(agent)
+    agent.planner.analyze = lambda *_args, **_kwargs: {
+        "plan_type": "direct",
+        "intent": "debug",
+        "skills_needed": [],
+    }
+
+    def corrupt_prepare(*_args, **_kwargs):
+        raise MemoryIntegrityError("tampered task memory")
+
+    monkeypatch.setattr(agent.engineering_brain, "prepare", corrupt_prepare)
+    result = pipeline.run(
+        "[NEXUS VERIFIED REPAIR] Fix service.py and prove the regression is resolved",
+        interactive=False,
+    )
+
+    assert result.status == "BLOCKED"
+    assert result.outcome == "BLOCKED_BY_POLICY"
+    assert "safe mutation scope" in result.response
+    assert result.stage_results[-1].metadata["hard_block"] is True

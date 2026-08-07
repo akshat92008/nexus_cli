@@ -260,6 +260,7 @@ DEFAULT_DESCRIPTORS: list[ModelDescriptor] = [
 
 
 ALIASES: dict[str, str] = {
+    "auto": "glm-5.2",
     "llama": "llama-3.3-70b",
     "llama3": "llama-3.3-70b",
     "llama-3.3": "llama-3.3-70b",

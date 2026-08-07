@@ -531,6 +531,7 @@ def test_hosted_write_test_review_reaches_verified_without_stdout_noise(
         permission_mode="acceptEdits",
         mode_policy=test_policy,
         workspace_isolation=False,
+        allow_unisolated_host_process=True,
     )
     agent.client = HostedFake()
     agent.planner.analyze = lambda _prompt: {
@@ -585,7 +586,11 @@ def test_agent_close_stops_owned_background_processes(tmp_path, monkeypatch):
     agent = Agent(api_key="test", working_dir=str(tmp_path), workspace_isolation=False)
     command = f'{sys.executable} -c "import time; time.sleep(60)"'
     with tool_context(agent.working_dir, agent.history, agent.conversation_id):
-        result = tool_process_run(command)
+        result = tool_process_run(
+            command,
+            require_os_isolation=False,
+            allow_unisolated_host_process=True,
+        )
     pid = int(next(line for line in result.splitlines() if "PID:" in line).split(":", 1)[1])
 
     report = agent.close()

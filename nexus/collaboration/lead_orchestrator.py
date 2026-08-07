@@ -42,10 +42,6 @@ from nexus.collaboration.lifecycle import WorkerLifecycleManager
 from nexus.collaboration.models import (
     AgentAssignment,
     AgentRole,
-    AssignmentResult,
-    AssignmentStatus,
-    CollaborationBudget,
-    CollaborationDecision,
     CollaborationMode,
     CollaborationPolicyProfile,
     CollaborationRunState,
@@ -62,8 +58,8 @@ from nexus.collaboration.observability import (
     CENTRAL_VERIFICATION_STARTED,
     COLLABORATION_COMPLETED,
     COLLABORATION_DECISION_CREATED,
-    COLLABORATION_FALLBACK_SELECTED,
     COLLABORATION_FAILED,
+    COLLABORATION_FALLBACK_SELECTED,
     COLLABORATION_STARTED,
     INTEGRATION_COMPLETED,
     INTEGRATION_CONFLICT_DETECTED,
@@ -99,6 +95,9 @@ class LeadOrchestrator:
         persistence_dir: Optional[Path] = None,
         capability_registry: Optional[AgentCapabilityRegistry] = None,
         verification_service: Optional[object] = None,
+        provider_coordinator: Optional[object] = None,
+        tool_execution_service: Optional[object] = None,
+        recovery_service: Optional[object] = None,
         local_only: bool = False,
         task_contract_id: str = "task-contract-0",
         plan_id: str = "plan-0",
@@ -115,14 +114,8 @@ class LeadOrchestrator:
         self._blackboard = CoordinationBlackboard(task_contract_id, plan_id, plan_version)
         self._lifecycle = WorkerLifecycleManager(self._lead_root, current_revision=current_revision)
         self._partitioner = ContextPartitioner(current_revision)
-        if verification_service is None:
-            class _StructuralVerifier:
-                def run_verification(self, context=None, checks=None):
-                    class Outcome:
-                        passed = True
-                    return Outcome()
-            verification_service = _StructuralVerifier()
-
+        # Verification is intentionally not stubbed.  Missing verification must
+        # block mutating collaboration rather than manufacture a structural pass.
         self._integrator = IntegrationCoordinator(
             current_revision=current_revision,
             verification_service=verification_service,
@@ -146,7 +139,10 @@ class LeadOrchestrator:
         self._worker_runtime = WorkerRuntime(
             capability_registry=self._capabilities,
             scope_registry=self._scope_registry,
+            provider_coordinator=provider_coordinator,
+            tool_execution_service=tool_execution_service,
             verification_service=verification_service,
+            recovery_service=recovery_service,
         )
 
         self._cancellation_events: Dict[str, asyncio.Event] = {}

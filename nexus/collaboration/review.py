@@ -22,7 +22,6 @@ from nexus.collaboration.models import (
     AssignmentStatus,
     ReviewDecision,
     ReviewFinding,
-    ReviewFindingCategory,
     ReviewIssue,
     RiskLevel,
 )

@@ -1,15 +1,12 @@
 """Focused test suite for Sprint 5 Repository Intelligence Engine."""
 
-import pytest
-from pathlib import Path
-from nexus.intelligence.repository.discovery import RepositoryDiscovery
 from nexus.intelligence.repository.classification import FileClassifier
-from nexus.intelligence.repository.extraction import LanguageExtractor
-from nexus.intelligence.repository.secrets import SecretProtector
-from nexus.intelligence.repository.ranking import ExplainableContextRanker, TaskIntentClassifier
-from nexus.intelligence.repository.budget import ContextBudgetManager
+from nexus.intelligence.repository.discovery import RepositoryDiscovery
 from nexus.intelligence.repository.engine import RepositoryIntelligence
-from nexus.intelligence.repository.model import TaskIntent, RiskLevel, ContextBundle
+from nexus.intelligence.repository.extraction import LanguageExtractor
+from nexus.intelligence.repository.model import ContextBundle, RiskLevel, TaskIntent
+from nexus.intelligence.repository.ranking import TaskIntentClassifier
+from nexus.intelligence.repository.secrets import SecretProtector
 
 
 def test_repository_discovery(tmp_path):

@@ -1,8 +1,9 @@
-import os
 import json
+import os
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Optional
-from dataclasses import dataclass, field
+
 
 @dataclass
 class NexusConfig:

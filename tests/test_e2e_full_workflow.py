@@ -243,6 +243,7 @@ def test_full_autonomous_agent_workflow(tmp_path, monkeypatch):
         mode_policy=test_policy,
         workspace_isolation=True,
         max_turns=10,
+        allow_unisolated_host_process=True,
     )
 
     agent._should_use_two_node = lambda analysis: False

@@ -21,6 +21,7 @@ from typing import Optional
 
 from nexus.paths import nexus_home
 from nexus.process_io import readline_with_timeout
+from nexus.runtime.process_state import ProcessStateRegistry
 from nexus.sandbox import CommandSpec, SandboxRunner
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,7 @@ class MCPServerConfig:
     workspace: str = ""
     network: bool = False
     require_os_isolation: bool = True
+    allow_unisolated_host_process: bool = False
 
 
 class MCPConnection:
@@ -94,6 +96,7 @@ class MCPConnection:
                 env=self.config.env,
                 max_output_bytes=_MAX_MCP_OUTPUT_BYTES,
                 require_os_isolation=self.config.require_os_isolation,
+                allow_unisolated_host_process=self.config.allow_unisolated_host_process,
                 # MCP credentials are explicit, trusted configuration. Only the
                 # exact configured names may cross the process boundary.
                 allowed_sensitive_env_keys=tuple(self.config.env),
@@ -110,6 +113,7 @@ class MCPConnection:
                 env=dict(prepared.env),
                 start_new_session=True,
             )
+            ProcessStateRegistry.register_process(self._process)
 
             # Initialize
             init_response = self._send_request(
@@ -204,6 +208,7 @@ class MCPConnection:
                     self._process.wait(timeout=2)
             except (OSError, ValueError):
                 pass
+            ProcessStateRegistry.unregister_process(self._process)
             self._process = None
             self.connected = False
             if self._cleanup_path:

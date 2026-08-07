@@ -1,27 +1,18 @@
 """Tests for the canonical EngineeringChangeSet contract model (Sprint 8)."""
 from __future__ import annotations
 
-import pytest
+from nexus.multifile.consistency import ChangeSetConsistencyValidator
 from nexus.multifile.contracts import (
     ChangeType,
-    ChangeDependency,
-    ChangeStage,
-    ChangeStageStatus,
     CompatibilityPolicy,
     ContractChange,
-    ContractScope,
     ContractType,
     EngineeringChangeSet,
-    MissingChange,
     PlannedFileChange,
-    RollbackPlan,
-    ScopeViolation,
     SymbolReference,
     TaskType,
     ValidationStatus,
 )
-from nexus.multifile.consistency import ChangeSetConsistencyValidator
-
 
 # ---------------------------------------------------------------------------
 # PlannedFileChange

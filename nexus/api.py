@@ -56,6 +56,7 @@ class _ObservedStream:
         self._stream = stream
         self._finish = finish
         self._finished = False
+        self._transport_closed = False
 
     def __iter__(self):
         usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -79,11 +80,36 @@ class _ObservedStream:
             raise
         else:
             self._complete("verified", {"request_id": request_id, "usage": usage})
+        finally:
+            self._close_transport()
+            if not self._finished:
+                self._complete("cancelled", {"request_id": request_id, "usage": usage})
 
     def _complete(self, status: str, metadata: dict[str, Any]) -> None:
         if not self._finished:
             self._finished = True
             self._finish(status, metadata)
+
+    def _close_transport(self) -> None:
+        if self._transport_closed:
+            return
+        self._transport_closed = True
+        closer = getattr(self._stream, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except (OSError, RuntimeError, ValueError):
+                pass
+
+    def close(self) -> None:
+        self._close_transport()
+        self._complete("cancelled", {"request_id": "", "usage": {}})
+
+    def __enter__(self) -> "_ObservedStream":
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.close()
 
 
 def _load_env_file():
@@ -189,6 +215,9 @@ class NvidiaClient:
         self.timeout = timeout
         self._attempt_controller = attempt_controller
         self._attempt_observer = attempt_observer
+        self._client_lock = threading.RLock()
+        self._client_cache: dict[tuple[str, str, float], Any] = {}
+        self._closed = False
         self.custom_base_url = os.environ.get("NEXUS_OPENAI_BASE_URL", "").strip().rstrip("/")
         self.custom_api_key = os.environ.get("NEXUS_OPENAI_API_KEY", "").strip()
         self.custom_model = os.environ.get("NEXUS_MODEL_ID", "").strip()
@@ -224,32 +253,24 @@ class NvidiaClient:
 
         # Pre-instantiate the highest-priority configured client.
         if self.custom_base_url and self.custom_api_key:
-            self.client = OpenAI(
-                base_url=self.custom_base_url,
-                api_key=self.custom_api_key,
-                timeout=self.timeout,
-                max_retries=2,
+            self.client = self._get_client(
+                self.custom_base_url,
+                self.custom_api_key,
+                self.timeout,
             )
         elif self.nvidia_keys:
-            self.client = OpenAI(
-                base_url=NVIDIA_BASE_URL,
-                api_key=self.nvidia_keys[0],
-                timeout=self.timeout,
-                max_retries=2,
-            )
+            self.client = self._get_client(NVIDIA_BASE_URL, self.nvidia_keys[0], self.timeout)
         elif self.groq_keys:
-            self.client = OpenAI(
-                base_url=GROQ_BASE_URL,
-                api_key=self.groq_keys[0],
-                timeout=DEFAULT_GROQ_TIMEOUT,
-                max_retries=2,
+            self.client = self._get_client(
+                GROQ_BASE_URL,
+                self.groq_keys[0],
+                DEFAULT_GROQ_TIMEOUT,
             )
         elif os.environ.get("OPENROUTER_API_KEY"):
-            self.client = OpenAI(
-                base_url=OPENROUTER_BASE_URL,
-                api_key=os.environ["OPENROUTER_API_KEY"],
-                timeout=DEFAULT_GROQ_TIMEOUT,
-                max_retries=2,
+            self.client = self._get_client(
+                OPENROUTER_BASE_URL,
+                os.environ["OPENROUTER_API_KEY"],
+                DEFAULT_GROQ_TIMEOUT,
             )
         else:
             raise ValueError(
@@ -264,6 +285,63 @@ class NvidiaClient:
     @property
     def attempt_telemetry_enabled(self) -> bool:
         return self._attempt_observer is not None
+
+    def _get_client(self, base_url: str, api_key: str, timeout: float) -> OpenAI:
+        """Return one owned OpenAI-compatible client per endpoint/key tuple.
+
+        The previous implementation allocated fresh SDK clients on every
+        failover attempt.  Official OpenAI clients own an HTTP transport, so
+        repeatedly abandoning them makes process shutdown dependent on garbage
+        collection.  Cache and explicitly close them instead.
+        """
+
+        if self._closed:
+            raise RuntimeError("Hosted provider client is closed")
+        key = (base_url.rstrip("/"), api_key, float(timeout))
+        with self._client_lock:
+            cached = self._client_cache.get(key)
+            if cached is not None:
+                return cached
+            client = OpenAI(
+                base_url=base_url,
+                api_key=api_key,
+                timeout=timeout,
+                max_retries=2,
+            )
+            self._client_cache[key] = client
+            return client
+
+    def close(self) -> None:
+        """Close every owned HTTP transport exactly once."""
+
+        with self._client_lock:
+            if self._closed:
+                return
+            self._closed = True
+            clients = list(dict.fromkeys(map(id, self._client_cache.values())))
+            by_id = {id(value): value for value in self._client_cache.values()}
+            self._client_cache.clear()
+        errors: list[BaseException] = []
+        for client_id in clients:
+            client = by_id[client_id]
+            closer = getattr(client, "close", None)
+            if not callable(closer):
+                continue
+            try:
+                closer()
+            except BaseException as exc:  # cleanup must attempt every transport
+                errors.append(exc)
+        if errors:
+            raise RuntimeError(
+                "Failed to close hosted provider transport(s): "
+                + "; ".join(f"{type(exc).__name__}: {exc}" for exc in errors)
+            )
+
+    def __enter__(self) -> "NvidiaClient":
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.close()
 
     def _provider_request(
         self,
@@ -344,21 +422,11 @@ class NvidiaClient:
     def _get_groq_client(self, key: str | None = None) -> OpenAI:
         """Get an OpenAI client configured for Groq API."""
         api_key = key or self.groq_key
-        return OpenAI(
-            base_url=GROQ_BASE_URL,
-            api_key=api_key,
-            timeout=DEFAULT_GROQ_TIMEOUT,
-            max_retries=2,
-        )
+        return self._get_client(GROQ_BASE_URL, api_key, DEFAULT_GROQ_TIMEOUT)
 
     def _get_nvidia_client(self, key: str) -> OpenAI:
         """Get an OpenAI client for a specific NVIDIA key."""
-        return OpenAI(
-            base_url=NVIDIA_BASE_URL,
-            api_key=key,
-            timeout=self.timeout,
-            max_retries=2,
-        )
+        return self._get_client(NVIDIA_BASE_URL, key, self.timeout)
 
     def resolve_groq_model(self, model_id: str) -> str:
         """Map an NVIDIA model ID to an equivalent Groq model ID."""
@@ -417,11 +485,10 @@ class NvidiaClient:
         # ── Step 0: Explicit custom OpenAI-compatible endpoint ───────────
         if self.custom_base_url and self.custom_api_key:
             try:
-                custom_client = OpenAI(
-                    base_url=self.custom_base_url,
-                    api_key=self.custom_api_key,
-                    timeout=self.timeout,
-                    max_retries=2,
+                custom_client = self._get_client(
+                    self.custom_base_url,
+                    self.custom_api_key,
+                    self.timeout,
                 )
                 effective_model = self.custom_model or model_id
                 return self._provider_request(
@@ -575,11 +642,10 @@ class NvidiaClient:
         openrouter_key = os.environ.get("OPENROUTER_API_KEY", "")
         if openrouter_key:
             try:
-                or_client = OpenAI(
-                    base_url=OPENROUTER_BASE_URL,
-                    api_key=openrouter_key,
-                    timeout=DEFAULT_GROQ_TIMEOUT,
-                    max_retries=2,
+                or_client = self._get_client(
+                    OPENROUTER_BASE_URL,
+                    openrouter_key,
+                    DEFAULT_GROQ_TIMEOUT,
                 )
                 or_kwargs = dict(kwargs)
                 if or_kwargs.get("max_tokens", 16384) > 8192:

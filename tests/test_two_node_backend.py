@@ -159,3 +159,37 @@ def test_two_node_backend_run():
         assert res.executions[0].verdict == "VALIDATED"
         backend._execute_with_intern.assert_called_once()
         backend.ceiling.decompose.assert_called_once()
+
+
+def test_two_node_routes_all_multifile_work_to_ceiling():
+    task = AtomicTask(
+        id=6,
+        description="Modify src/a.py and src/b.py to update the helper",
+        expected_files=2,
+        scope_level="multi_file",
+    )
+    route, reason = TwoNodeBackend._route_task(task)
+    assert route == "ceiling"
+    assert "exactly one file" in reason
+
+
+def test_two_node_intern_requires_explicit_path():
+    task = AtomicTask(id=7, description="Fix the off-by-one bug", expected_files=1)
+    route, reason = TwoNodeBackend._route_task(task)
+    assert route == "ceiling"
+    assert "explicit repository path" in reason
+
+
+def test_two_node_respects_measured_intern_capability_profile():
+    task = AtomicTask(id=8, description="Modify src/app.py to rename x to y", expected_files=1)
+    weak_profile = {
+        "capabilities": {
+            "structured_output": {"score": 0.2},
+            "path_discipline": {"score": 0.8},
+            "single_file_repair": {"score": 0.8},
+            "patch_validity": {"score": 0.8},
+        }
+    }
+    route, reason = TwoNodeBackend._route_task(task, weak_profile)
+    assert route == "ceiling"
+    assert "capability profile" in reason

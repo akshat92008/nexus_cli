@@ -1,8 +1,9 @@
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List
-import uuid
+
 
 class EventType(Enum):
     TASK_STARTED = "TaskStarted"

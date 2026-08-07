@@ -41,3 +41,5 @@ __all__ = [
     "TaskIntent",
     "TestRelationship",
 ]
+
+from .snapshot import WorkspaceSnapshot, workspace_revision

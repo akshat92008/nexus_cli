@@ -7,7 +7,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -125,13 +124,18 @@ class GeneratedCodeValidator:
             )
 
         from nexus.process_gateway import ProcessExecutionGateway, ProcessRequest
+        # ``node --check`` parses the explicitly selected source file without
+        # executing it or resolving imports. Treat that static parser as an
+        # explicit trusted-host operation; native compilers may resolve include
+        # paths or invoke helpers and therefore remain kernel-isolation-only.
+        isolation_policy = "trusted_host" if suffix in {".js", ".mjs", ".cjs"} else "required"
         request = ProcessRequest.create(
             purpose="code_validation",
             command=command,
             workspace=self.workspace_dir,
             timeout_seconds=self.timeout,
             env_additions={"PYTHONDONTWRITEBYTECODE": "1", "CI": "true"},
-            isolation_policy="required",
+            isolation_policy=isolation_policy,
         )
         result = ProcessExecutionGateway.run(request)
         if result.timed_out:

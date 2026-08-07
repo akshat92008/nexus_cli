@@ -4,6 +4,7 @@ Canonical Recovery Strategy Definitions for Nexus CLI.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
@@ -43,6 +44,160 @@ class RecoveryStrategy:
     verification_required: bool = True
     max_repetitions: int = 2
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    _HANDLER_ALIASES = {
+        RecoveryStrategyType.RETRY_TRANSIENT: ("retry_transient", "retry"),
+        RecoveryStrategyType.RETRY_WITH_CORRECTED_ARGUMENTS: (
+            "retry_with_corrected_arguments",
+            "retry",
+        ),
+        RecoveryStrategyType.REQUEST_MISSING_PERMISSION: (
+            "request_missing_permission",
+            "request_permission",
+        ),
+        RecoveryStrategyType.REQUEST_CLARIFICATION: (
+            "request_clarification",
+            "clarify",
+        ),
+        RecoveryStrategyType.EXPAND_CONTEXT: ("expand_context",),
+        RecoveryStrategyType.REVISE_PLAN: ("revise_plan", "replan"),
+        RecoveryStrategyType.REVERT_LAST_MUTATION: (
+            "revert_last_mutation",
+            "rollback_last_mutation",
+        ),
+        RecoveryStrategyType.ROLLBACK_TO_CHECKPOINT: (
+            "rollback_to_checkpoint",
+            "rollback",
+        ),
+        RecoveryStrategyType.APPLY_SMALLER_PATCH: ("apply_smaller_patch",),
+        RecoveryStrategyType.CHANGE_TOOL: ("change_tool",),
+        RecoveryStrategyType.CHANGE_VALIDATION_COMMAND: (
+            "change_validation_command",
+        ),
+        RecoveryStrategyType.INSTALL_OR_CONFIGURE_DEPENDENCY: (
+            "install_or_configure_dependency",
+            "configure_dependency",
+        ),
+        RecoveryStrategyType.REPRODUCE_FAILURE_DIFFERENTLY: (
+            "reproduce_failure_differently",
+        ),
+        RecoveryStrategyType.SWITCH_MODEL: ("switch_model", "escalate_model"),
+        RecoveryStrategyType.REDUCE_SCOPE: ("reduce_scope",),
+        RecoveryStrategyType.SPLIT_TASK: ("split_task",),
+    }
+
+    @staticmethod
+    def _coerce_result(result: Any) -> bool:
+        """Convert a handler result into a strict applied/not-applied decision."""
+        if isinstance(result, bool):
+            return result
+        if result is None:
+            return False
+        if isinstance(result, Mapping):
+            for key in ("applied", "success", "ok"):
+                if key in result:
+                    return bool(result[key])
+            return False
+        for attribute in ("applied", "success", "ok"):
+            if hasattr(result, attribute):
+                return bool(getattr(result, attribute))
+        return False
+
+    @staticmethod
+    def _call_handler(
+        handler: Callable[..., Any],
+        *,
+        strategy: "RecoveryStrategy",
+        record: Any,
+        context: dict[str, Any],
+    ) -> Any:
+        """Invoke common handler signatures without treating TypeError as success."""
+        import inspect
+
+        signature = inspect.signature(handler)
+        parameters = signature.parameters
+        accepts_kwargs = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters.values()
+        )
+        keyword_arguments = {
+            "strategy": strategy,
+            "record": record,
+            "context": context,
+        }
+        if accepts_kwargs:
+            return handler(**keyword_arguments)
+        supported = {
+            name: value
+            for name, value in keyword_arguments.items()
+            if name in parameters
+        }
+        if supported:
+            return handler(**supported)
+        positional = [
+            parameter
+            for parameter in parameters.values()
+            if parameter.kind
+            in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        if len(positional) >= 2:
+            return handler(record, context)
+        if len(positional) == 1:
+            return handler(record)
+        return handler()
+
+    def apply(self, record: Any, context: dict[str, Any] | None = None) -> bool:
+        """Apply this strategy through an explicitly supplied runtime handler.
+
+        Strategy definitions are policy metadata, not repair implementations.  A
+        recovery attempt is therefore successful only when the runtime provides a
+        concrete handler and that handler returns an affirmative, inspectable
+        result.  This prevents false recovery evidence.
+        """
+        if self.strategy_type in {
+            RecoveryStrategyType.STOP_BLOCKED,
+            RecoveryStrategyType.STOP_FAILED,
+        }:
+            return False
+
+        ctx = context or {}
+        handler: Callable[..., Any] | None = None
+        handlers = ctx.get("strategy_handlers") or ctx.get("recovery_handlers")
+        if isinstance(handlers, Mapping):
+            candidate_keys: tuple[Any, ...] = (
+                self.strategy_type,
+                self.strategy_type.value,
+                self.strategy_type.value.lower(),
+                *self._HANDLER_ALIASES.get(self.strategy_type, ()),
+            )
+            for key in candidate_keys:
+                candidate = handlers.get(key)
+                if callable(candidate):
+                    handler = candidate
+                    break
+
+        if handler is None:
+            for key in self._HANDLER_ALIASES.get(self.strategy_type, ()):
+                candidate = ctx.get(key)
+                if callable(candidate):
+                    handler = candidate
+                    break
+
+        if handler is None:
+            generic = ctx.get("recovery_executor") or ctx.get("apply_strategy")
+            if callable(generic):
+                handler = generic
+
+        if handler is None:
+            return False
+
+        result = self._call_handler(
+            handler,
+            strategy=self,
+            record=record,
+            context=ctx,
+        )
+        return self._coerce_result(result)
 
     def to_dict(self) -> dict[str, Any]:
         return {

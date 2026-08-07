@@ -285,6 +285,7 @@ def test_agent_run_ledger_tracks_verified_tools_and_complete_rollback(
         working_dir=str(tmp_path),
         permission_mode="acceptEdits",
         mode_policy=test_policy,
+        allow_unisolated_host_process=True,
     )
     request = "Build calculator.py with a regression test"
     analysis = agent.planner.analyze(request)

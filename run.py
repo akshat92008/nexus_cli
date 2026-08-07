@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Quick-launch script — run NexusAI without installing."""
-import os
-import sys
+"""Source-checkout compatibility entrypoint for Nexus CLI.
 
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
+Production users should use the installed ``nexus`` console script.  This file
+exists so source archives, smoke tests, and contributors have one explicit,
+non-duplicated entry path.
+"""
 from nexus.cli import main
 
-main()
+
+if __name__ == "__main__":
+    main()

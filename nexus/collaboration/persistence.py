@@ -13,7 +13,7 @@ import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 from nexus.collaboration.models import (
     CollaborationBudget,
@@ -21,7 +21,6 @@ from nexus.collaboration.models import (
     CollaborationPolicyProfile,
     CollaborationRunState,
     CollaborationState,
-    WorkerState,
 )
 
 logger = logging.getLogger(__name__)

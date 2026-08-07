@@ -21,10 +21,9 @@ from enum import Enum
 from typing import Any
 
 from nexus.multifile.contracts import (
-    EngineeringChangeSet,
-    ImpactCategory,
-    PlannedFileChange,
     ChangeType,
+    EngineeringChangeSet,
+    PlannedFileChange,
 )
 from nexus.multifile.events import (
     ChangeSetRolledBack,

@@ -51,3 +51,36 @@ and a fully `VERIFIED` internal run report. External and internal outcomes
 remain separate in the result schema.
 Provider-dependent results are not committed as product claims until the
 manifest, model configuration, environment, and raw result are published.
+
+## Better-than-Claude-Code qualification
+
+A superiority claim uses three agents on the same private task revisions:
+Nexus, the same underlying model through a minimal direct baseline, and real
+Claude Code. Run the preflight before any paid execution:
+
+```bash
+nexus benchmark superiority-preflight \
+  --manifest /secure/private/superiority-campaign.json \
+  --output verification_evidence/superiority-preflight.json
+```
+
+The default preflight requires at least 50 unique task fingerprints, 10
+content-distinct repositories, three trials, at least five tasks in every hard
+category, non-placeholder product/model identities, the exact same model for
+Nexus and the direct baseline, non-empty withheld oracles, equal sealed budgets,
+and a disclosed immutable runner environment.
+
+After the completed report is signed in the independent evaluator environment,
+run the claim gate:
+
+```bash
+nexus benchmark superiority-gate \
+  --report /secure/evaluator/signed-superiority-report.json \
+  --output verification_evidence/superiority-evaluation.json
+```
+
+The gate rejects dry runs, scripted smoke stand-ins, duplicate repository
+content, duplicated repository/prompt tasks, missing cost/token/intervention
+telemetry, budget overruns, incomplete agent provenance, unsigned evidence, and
+any campaign where Nexus does not beat Claude Code both overall and in every
+required task category.

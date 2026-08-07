@@ -287,6 +287,67 @@ class RunFinalizer:
         )
         return True, self._agent._workspace_apply_detail
 
+    def _current_workspace_revision(self) -> str:
+        try:
+            from nexus.intelligence.repository.snapshot import workspace_revision
+            return workspace_revision(self._agent.working_dir)
+        except (OSError, ValueError):
+            return ""
+
+    @staticmethod
+    def _revision_bound_verification(
+        records: list[dict[str, Any]], revision: str
+    ) -> list[dict[str, Any]]:
+        if not revision:
+            return records
+        return [
+            item for item in records
+            if not (item.get("metadata") or {}).get("workspace_revision")
+            or (item.get("metadata") or {}).get("workspace_revision") == revision
+        ]
+
+    @staticmethod
+    def _validated_passing_checks(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        selected: list[dict[str, Any]] = []
+        for item in records:
+            metadata = item.get("metadata") or {}
+            if item.get("status") != "verified":
+                continue
+            if metadata.get("independently_validated") is not True:
+                continue
+            if metadata.get("check_type") in {"test", "tests"} and not (
+                metadata.get("runner_valid") is True
+                and metadata.get("verification_valid") is True
+            ):
+                continue
+            selected.append(item)
+        return selected
+
+    def _project_test_gate_issue(
+        self,
+        changes: list[dict[str, Any]],
+        passing_checks: list[dict[str, Any]],
+        revision: str,
+    ) -> str:
+        commands = getattr(getattr(self._agent, "verifier", None), "commands", {})
+        if not changes or not str(commands.get("test", "") or ""):
+            return ""
+        for item in passing_checks:
+            metadata = item.get("metadata") or {}
+            if metadata.get("check_type") not in {"test", "tests"}:
+                continue
+            if metadata.get("project_gate") is not True:
+                continue
+            if metadata.get("verification_valid") is not True:
+                continue
+            if revision and metadata.get("workspace_revision") != revision:
+                continue
+            return ""
+        return (
+            "Configured project test suite lacks validated full-suite evidence "
+            "for the final workspace revision."
+        )
+
     def finish(
         self,
         content: str,
@@ -303,6 +364,10 @@ class RunFinalizer:
         evidence = self._agent.evidence.records()[getattr(self, "_turn_evidence_start", 0) :]
         mutation_records = self._agent._effective_evidence(evidence, "file_mutation")
         verification_records = self._agent._effective_evidence(evidence, "verification_check")
+        current_workspace_revision = self._current_workspace_revision()
+        verification_records = self._revision_bound_verification(
+            verification_records, current_workspace_revision
+        )
         effective_state_ids = {
             str(item.get("id")) for item in [*mutation_records, *verification_records]
         }
@@ -349,7 +414,7 @@ class RunFinalizer:
             for item in evidence
             if item.get("kind") == "independent_review" and item.get("status") == "verified"
         ]
-        passing_checks = [item for item in verification_records if item.get("status") == "verified"]
+        passing_checks = self._validated_passing_checks(verification_records)
         reproduction_evidence = [
             item
             for item in command_records
@@ -385,7 +450,12 @@ class RunFinalizer:
             elif "build" in lowered or "compile" in lowered:
                 target_types = {"build"}
             elif "test" in lowered or "regression" in lowered:
-                target_types = {"test"}
+                return [
+                    item for item in passing_by_type.get("test", [])
+                    if (item.get("metadata") or {}).get("project_gate") is True
+                    and (item.get("metadata") or {}).get("verification_valid") is True
+                    and (item.get("metadata") or {}).get("runner_valid") is True
+                ]
             elif "run the project" in lowered or "works" in lowered or "smoke" in lowered:
                 target_types = {"test", "build", "browser", "api", "database"}
             else:
@@ -483,6 +553,18 @@ class RunFinalizer:
                     )
                 )
 
+        project_gate_issue = self._project_test_gate_issue(
+            changes, passing_checks, current_workspace_revision
+        )
+        if project_gate_issue:
+            results.append(
+                CriterionResult(
+                    "Configured project test suite passes after the final mutation",
+                    CriterionStatus.UNSATISFIED,
+                    detail=project_gate_issue,
+                )
+            )
+
         # Autonomous execution is iterative: a failed command or edit attempt
         # is not an unresolved run failure when a later call to that tool
         # succeeds and final deterministic verification passes.
@@ -512,6 +594,29 @@ class RunFinalizer:
         else:
             run_status = RunStatus.UNVERIFIED
 
+        completion_issue = ""
+        if run_status == RunStatus.VERIFIED:
+            brain = getattr(self._agent, "engineering_brain", None)
+            if brain is not None:
+                try:
+                    assessment = brain.completion_assessment(
+                        item.get("filepath", "") for item in changes if item.get("filepath")
+                    )
+                except (OSError, TypeError, ValueError) as exc:
+                    assessment = None
+                    completion_issue = f"Completion contract could not be evaluated: {exc}"
+                    run_status = RunStatus.PARTIALLY_VERIFIED
+                if assessment is not None and not assessment.complete:
+                    completion_issue = "Multi-file completion contract incomplete: " + str(assessment.to_dict())
+                    run_status = RunStatus.PARTIALLY_VERIFIED
+                    self._agent.evidence.append(
+                        kind="completion_contract",
+                        claim="All repository-scale obligations are complete",
+                        status="failed",
+                        raw_output=completion_issue,
+                        metadata=assessment.to_dict(),
+                    )
+
         workspace_apply_error = ""
         if run_status == RunStatus.VERIFIED and self._agent.mode_policy.may_apply:
             applied, apply_detail = self._apply_verified_workspace()
@@ -540,6 +645,10 @@ class RunFinalizer:
             )
         if workspace_apply_error:
             risks.append(workspace_apply_error)
+        if completion_issue:
+            risks.append(completion_issue)
+        if project_gate_issue:
+            risks.append(project_gate_issue)
 
         if run_status == RunStatus.VERIFIED:
             outcome = "COMPLETED_VERIFIED"
@@ -652,6 +761,8 @@ class RunFinalizer:
                 "provider_attempts": len(provider_attempt_records),
                 "tool_calls": jsonl_count("tool_calls.jsonl"),
                 "tests_executed": len(verification_records),
+                "workspace_revision": current_workspace_revision,
+                "project_test_gate_passed": not bool(project_gate_issue),
                 "criteria_satisfied": sum(
                     item.status == CriterionStatus.SATISFIED for item in results
                 ),

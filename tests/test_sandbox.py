@@ -26,7 +26,7 @@ def test_sandbox_backend_detection(tmp_path):
 
 def test_sandbox_run_echo(tmp_path):
     runner = SandboxRunner(tmp_path)
-    spec = CommandSpec.create(argv=["echo", "sandbox_test"], cwd=str(tmp_path))
+    spec = CommandSpec.create(argv=["echo", "sandbox_test"], cwd=str(tmp_path), require_os_isolation=False, allow_unisolated_host_process=True)
     result = runner.run(spec)
     assert result.success
     assert "sandbox_test" in result.stdout
@@ -34,7 +34,7 @@ def test_sandbox_run_echo(tmp_path):
 
 def test_sandbox_run_invalid_command(tmp_path):
     runner = SandboxRunner(tmp_path)
-    spec = CommandSpec.create(argv=["invalid_command_that_does_not_exist_123"], cwd=str(tmp_path))
+    spec = CommandSpec.create(argv=["invalid_command_that_does_not_exist_123"], cwd=str(tmp_path), require_os_isolation=False, allow_unisolated_host_process=True)
     result = runner.run(spec)
     assert not result.success
 
@@ -49,5 +49,5 @@ def test_sandbox_require_os_isolation_fails_on_restricted(tmp_path, monkeypatch)
 
 def test_sandbox_run_shell_command(tmp_path):
     runner = SandboxRunner(tmp_path)
-    result = runner.run_shell("echo hello")
+    result = runner.run_shell("echo hello", require_os_isolation=False, allow_unisolated_host_process=True)
     assert result.success

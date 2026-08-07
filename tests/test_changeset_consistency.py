@@ -1,21 +1,19 @@
 """Tests for ChangeSetConsistencyValidator (Sprint 8)."""
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
 
+from nexus.multifile.consistency import ChangeSetConsistencyValidator
 from nexus.multifile.contracts import (
     ChangeType,
     ContractChange,
     ContractType,
     EngineeringChangeSet,
-    ImpactCategory,
     PlannedFileChange,
     Reference,
     SymbolReference,
     ValidationStatus,
 )
-from nexus.multifile.consistency import ChangeSetConsistencyValidator
 
 
 def _write(path: Path, content: str) -> None:

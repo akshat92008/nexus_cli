@@ -94,3 +94,12 @@ except ImportError:  # pragma: no cover - fallback is covered in this repository
             self.timeout = timeout
             self.max_retries = max_retries
             self.chat = _Chat(self)
+
+        def close(self) -> None:
+            """Compatibility no-op; fallback HTTPX clients are request-scoped."""
+
+        def __enter__(self) -> "OpenAI":
+            return self
+
+        def __exit__(self, _exc_type, _exc, _tb) -> None:
+            self.close()

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 
-
 SECRET_PATTERNS = [
     # API Keys & Tokens
     (r"(?i)(api[_-]?key|secret[_-]?key|auth[_-]?token|access[_-]?token)\s*[:=]\s*['\"]?([A-Za-z0-9_\-.~+]{12,})['\"]?", "SECRET_KEY_REDACTED"),

@@ -48,7 +48,8 @@ class SandboxBackend(str, Enum):
 
     BUBBLEWRAP = "bubblewrap"
     MACOS = "sandbox-exec"
-    RESTRICTED = "restricted-process"
+    UNISOLATED_HOST = "unisolated-host-process"
+    RESTRICTED = "unisolated-host-process"  # compatibility alias; not a security boundary
     BLOCKED = "blocked"
 
 
@@ -62,7 +63,8 @@ class CommandSpec:
     network: bool = False
     env: Mapping[str, str] = field(default_factory=dict)
     max_output_bytes: int = 1_000_000
-    require_os_isolation: bool = False
+    require_os_isolation: bool = True
+    allow_unisolated_host_process: bool = False
     allowed_sensitive_env_keys: tuple[str, ...] = ()
 
     @classmethod
@@ -75,7 +77,8 @@ class CommandSpec:
         network: bool = False,
         env: Mapping[str, str] | None = None,
         max_output_bytes: int = 1_000_000,
-        require_os_isolation: bool = False,
+        require_os_isolation: bool = True,
+        allow_unisolated_host_process: bool = False,
         allowed_sensitive_env_keys: Sequence[str] = (),
     ) -> "CommandSpec":
         normalized = tuple(str(item) for item in argv)
@@ -92,6 +95,7 @@ class CommandSpec:
             env=dict(env or {}),
             max_output_bytes=max(1_024, int(max_output_bytes)),
             require_os_isolation=bool(require_os_isolation),
+            allow_unisolated_host_process=bool(allow_unisolated_host_process),
             allowed_sensitive_env_keys=tuple(str(key) for key in allowed_sensitive_env_keys),
         )
 
@@ -113,6 +117,7 @@ class CommandResult:
     network_allowed: bool = False
     network_enforced: bool = False
     output_truncated: bool = False
+    stream_cleanup_failed: bool = False
 
     def to_dict(self) -> dict:
         payload = asdict(self)
@@ -234,8 +239,10 @@ class SandboxRunner:
         try:
             kwargs = {}
             if os.name == "posix":
+                # ``preexec_fn`` is unsafe when Python has multiple threads and
+                # can deadlock or corrupt child startup.  Apply limits with
+                # prlimit after spawn instead.
                 kwargs["start_new_session"] = True
-                kwargs["preexec_fn"] = self._resource_limits_factory(spec)
             elif os.name == "nt":
                 kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 512)
             
@@ -247,6 +254,7 @@ class SandboxRunner:
                 stderr=subprocess.PIPE,
                 **kwargs
             )
+            self.apply_resource_limits(process.pid, spec)
             import threading
             stdout_chunks = []
             stderr_chunks = []
@@ -267,7 +275,6 @@ class SandboxRunner:
                             chunks.append(chunk[:allowed])
                         try:
                             if os.name == "posix":
-                                import signal
                                 os.killpg(process.pid, signal.SIGTERM)
                             else:
                                 process.terminate()
@@ -293,7 +300,6 @@ class SandboxRunner:
                 timed_out = True
                 if os.name == "posix":
                     try:
-                        import signal
                         os.killpg(process.pid, signal.SIGTERM)
                     except OSError:
                         pass
@@ -301,7 +307,6 @@ class SandboxRunner:
                         process.wait(timeout=0.5)
                     except subprocess.TimeoutExpired:
                         try:
-                            import signal
                             os.killpg(process.pid, signal.SIGKILL)
                         except OSError:
                             pass
@@ -311,8 +316,41 @@ class SandboxRunner:
                 process.wait()
                 completed_returncode = None
             
-            stdout_thread.join()
-            stderr_thread.join()
+            # A descendant can inherit stdout/stderr and keep the pipe open even
+            # after the direct child exits.  Never let a reader-thread join hang
+            # the entire Nexus process.  Give streams a short grace period, then
+            # terminate the process group and close the pipe handles.
+            reader_grace = min(1.0, max(0.1, spec.timeout_seconds * 0.05))
+            stdout_thread.join(timeout=reader_grace)
+            stderr_thread.join(timeout=reader_grace)
+            stream_cleanup_failed = stdout_thread.is_alive() or stderr_thread.is_alive()
+            if stream_cleanup_failed:
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+                else:
+                    try:
+                        process.terminate()
+                    except OSError:
+                        pass
+                stdout_thread.join(timeout=0.5)
+                stderr_thread.join(timeout=0.5)
+            for stream in (process.stdout, process.stderr):
+                try:
+                    stream.close()
+                except (OSError, ValueError):
+                    pass
+            if stdout_thread.is_alive() or stderr_thread.is_alive():
+                stream_cleanup_failed = True
+                if os.name == "posix":
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                stdout_thread.join(timeout=0.5)
+                stderr_thread.join(timeout=0.5)
             
             duration = int((time.monotonic() - started) * 1000)
             
@@ -335,13 +373,14 @@ class SandboxRunner:
                     network_allowed=spec.network,
                     network_enforced=backend != SandboxBackend.RESTRICTED,
                     output_truncated=stdout_cut or stderr_cut,
+                    stream_cleanup_failed=stream_cleanup_failed,
                 )
             
             return CommandResult(
                 argv=list(spec.argv),
                 cwd=str(cwd),
                 backend=backend,
-                success=completed_returncode == 0,
+                success=completed_returncode == 0 and not stream_cleanup_failed,
                 exit_code=completed_returncode,
                 stdout=stdout,
                 stderr=stderr,
@@ -349,6 +388,7 @@ class SandboxRunner:
                 network_allowed=spec.network,
                 network_enforced=backend != SandboxBackend.RESTRICTED,
                 output_truncated=stdout_cut or stderr_cut,
+                stream_cleanup_failed=stream_cleanup_failed,
             )
         except OSError as exc:
             return CommandResult(
@@ -387,15 +427,27 @@ class SandboxRunner:
             raise PermissionError(path_violation)
 
         backend = self.backend()
-        if spec.require_os_isolation and backend == SandboxBackend.RESTRICTED:
+        if backend == SandboxBackend.RESTRICTED and (
+            spec.require_os_isolation or not spec.allow_unisolated_host_process
+        ):
             raise PermissionError(
-                "No supported OS sandbox is available; install bubblewrap on Linux "
-                "or use sandbox-exec on macOS"
+                "No supported OS sandbox is available. Install bubblewrap on Linux or use "
+                "sandbox-exec on macOS. Trusted host execution requires the explicit "
+                "allow_unisolated_host_process=True capability with require_os_isolation=False."
             )
 
         env = self._filtered_env(
             spec.env, allowed_sensitive_keys=spec.allowed_sensitive_env_keys
         )
+        if backend == SandboxBackend.MACOS:
+            # Never expose the host-wide temporary directory to generated code.
+            # macOS sandboxed commands receive a workspace-private temporary
+            # root so temporary-file use remains functional without granting
+            # read/write access to unrelated host process artifacts.
+            private_tmp = self.workspace / ".nexus" / "sandbox-tmp"
+            private_tmp.mkdir(parents=True, exist_ok=True)
+            for key in ("TMPDIR", "TMP", "TEMP"):
+                env[key] = str(private_tmp)
         command, cleanup_path = self.build_command(spec, cwd)
         return PreparedCommand(
             argv=tuple(command),
@@ -414,7 +466,8 @@ class SandboxRunner:
         cwd: str | Path | None = None,
         timeout_seconds: float = 120.0,
         network: bool = False,
-        require_os_isolation: bool = False,
+        require_os_isolation: bool = True,
+        allow_unisolated_host_process: bool = False,
     ) -> CommandResult:
         """Compatibility path for a reviewed shell string."""
         shell = "/bin/sh" if os.name != "nt" else "cmd.exe"
@@ -426,6 +479,7 @@ class SandboxRunner:
                 timeout_seconds=timeout_seconds,
                 network=network,
                 require_os_isolation=require_os_isolation,
+                allow_unisolated_host_process=allow_unisolated_host_process,
             )
         )
         try:
@@ -495,15 +549,16 @@ class SandboxRunner:
     def _macos_command(self, spec: CommandSpec, cwd: Path) -> tuple[list[str], Path]:
         import sys
         workspace = str(self.workspace.resolve()).replace('"', '\\"')
-        temp_dir = str(Path(tempfile.gettempdir()).resolve()).replace('"', '\\"')
         read_roots = [
             workspace,
-            temp_dir,
             "/System",
             "/usr",
             "/bin",
             "/sbin",
-            "/opt",
+            # Common package-manager roots needed by developer tools without
+            # granting arbitrary reads across the entire /opt hierarchy.
+            "/opt/homebrew",
+            "/opt/local",
             "/Library/Developer",
             "/Library/Frameworks",
             "/private/var/db/dyld",
@@ -524,7 +579,7 @@ class SandboxRunner:
             '(literal "/") '
             '(literal "/dev/null") (literal "/dev/zero") '
             '(literal "/dev/random") (literal "/dev/urandom"))',
-            f'(allow file-write* (subpath "{workspace}") (subpath "{temp_dir}"))',
+            f'(allow file-write* (subpath "{workspace}"))',
             '(allow file-write-data (literal "/dev/null") (literal "/dev/zero"))',
         ]
         if spec.network:
@@ -754,27 +809,36 @@ class SandboxRunner:
         return result.returncode == 0
 
     @staticmethod
-    def _resource_limits_factory(spec: CommandSpec):
-        def _apply_limits() -> None:
-            if resource is None:
-                return
+    def resource_limit_values(spec: CommandSpec) -> tuple[tuple[int, tuple[int, int]], ...]:
+        """Return the bounded POSIX limits applied to a child process."""
+        if resource is None:
+            return ()
+        cpu_limit = int(spec.timeout_seconds) + 5
+        return (
+            (resource.RLIMIT_CORE, (0, 0)),
+            (resource.RLIMIT_NOFILE, (1024, 1024)),
+            (resource.RLIMIT_FSIZE, (512 * 1024 * 1024, 512 * 1024 * 1024)),
+            (resource.RLIMIT_CPU, (cpu_limit, cpu_limit)),
+            (resource.RLIMIT_AS, (4 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024)),
+            (resource.RLIMIT_NPROC, (512, 512)),
+        )
+
+    @staticmethod
+    def apply_resource_limits(pid: int, spec: CommandSpec) -> None:
+        """Apply limits without using thread-unsafe ``preexec_fn``.
+
+        Linux exposes ``resource.prlimit`` for setting a child process's limits
+        after spawn.  Hosts without that API retain timeout, output, workspace,
+        and native-sandbox controls rather than risking a fork-time deadlock.
+        """
+        if resource is None or not hasattr(resource, "prlimit"):
+            return
+        for limit, values in SandboxRunner.resource_limit_values(spec):
             try:
-                resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-                resource.setrlimit(resource.RLIMIT_NOFILE, (1024, 1024))
-                resource.setrlimit(resource.RLIMIT_FSIZE, (512 * 1024 * 1024, 512 * 1024 * 1024))
-                
-                # CPU time limit (add 5s buffer over wall-clock)
-                cpu_limit = int(spec.timeout_seconds) + 5
-                resource.setrlimit(resource.RLIMIT_CPU, (cpu_limit, cpu_limit))
-                
-                # 4GB memory limit
-                resource.setrlimit(resource.RLIMIT_AS, (4 * 1024 * 1024 * 1024, 4 * 1024 * 1024 * 1024))
-                
-                # Process count limit
-                resource.setrlimit(resource.RLIMIT_NPROC, (512, 512))
-            except (ValueError, OSError):
-                pass
-        return _apply_limits
+                resource.prlimit(pid, limit, values)
+            except (ProcessLookupError, PermissionError, ValueError, OSError):
+                # Short-lived commands can exit before limits are applied.
+                continue
 
     @staticmethod
     def _decode_bounded(value: bytes, limit: int) -> tuple[str, bool]:

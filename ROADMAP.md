@@ -1,6 +1,29 @@
+# Nexus roadmap
+
+## Nexus 3.7.0 Cognitive Reliability milestone
+
+Implemented locally: hypothesis-driven deliberation, graph-propagated context selection, enforceable multi-file completion, evidence-delta recovery, blind duel infrastructure, behavioral sandbox qualification, and shared-process lifecycle cleanup.
+
+Promotion gates still external: execute at least 50 private unseen matched tasks against a real Claude Code installation and a same-model minimal harness; publish signed Linux/macOS/Windows sandbox artifacts; demonstrate repeatability, bounded intervention, cost, latency, regression, and false-success thresholds.
+
+## Nexus 3.6.0 Truth Integrity milestone
+
+The P0 correctness contract is implemented: no stale repository cache reuse, no prose-based acceptance, no unsupported scope expansion, typed user prohibitions, authenticated engineering state, optimistic concurrency, and executable installed-artifact reliability evidence.
+
+The next milestone is external performance qualification rather than another governance subsystem: hidden real-provider tasks, cross-platform execution, repeatability, and blind matched comparisons. Autonomous production remains blocked until those thresholds are met.
+
+
+## Nexus 3.5.0 Engineering Brain milestone
+
+- Enforce repository-aware task contracts before mutation.
+- Preserve authenticated task, phase, and failure state plus corruption-evident change logs across long runs.
+- Make surgical scope and semantic acceptance runtime authorities beneath the model.
+- Compare identical models directly versus Nexus before making uplift claims.
+- Keep release-candidate and parity promotion blocked until real-provider and cross-platform evidence passes.
+
 # Nexus CLI product contract and roadmap
 
-Updated: 2026-07-29
+Updated: 2026-08-06
 
 ## North star
 
@@ -32,7 +55,7 @@ no model is the source of truth.
    `PARTIALLY VERIFIED`, `UNVERIFIED`, `BLOCKED`, `FAILED`, or
    `AWAITING APPROVAL`.
 
-## Version 3.0 final implementation boundary
+## Version 3.8 implementation boundary
 
 `Implemented` means the package contains the behavior and deterministic tests
 exercise its critical path. `Host-dependent` means Nexus contains the adapter
@@ -40,7 +63,7 @@ and correctly reports availability, but the external compiler, language
 server, browser, service, database, credentials, or sandbox must exist on the
 machine. No unavailable adapter is presented as verified.
 
-| Area | Status | Version 3.0 evidence boundary |
+| Area | Status | Version 3.8 evidence boundary |
 |---|---|---|
 | Installable CLI | Implemented | Self-contained wheel, `nexus` entry point, version and doctor smoke checks |
 | Hosted + local model routing | Implemented | Hosted planner paths plus local Ollama `nova_codex` executor |

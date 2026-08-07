@@ -15,22 +15,20 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import subprocess
 import shlex
-import tempfile
+import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from nexus.multifile.consistency import ChangeSetConsistencyValidator
 from nexus.multifile.contracts import (
+    ChangeSetValidationResult,
     ChangeStage,
     ChangeStageStatus,
     EngineeringChangeSet,
     PlannedFileChange,
-    ValidationStatus,
-    ChangeSetValidationResult,
 )
 from nexus.multifile.events import (
     ChangeStageCompleted,
@@ -40,8 +38,7 @@ from nexus.multifile.events import (
     IntermediateVerificationStarted,
     MultiFileVerificationCompleted,
 )
-from nexus.multifile.graph import build_graph, DependencyCycleError
-from nexus.multifile.consistency import ChangeSetConsistencyValidator
+from nexus.multifile.graph import DependencyCycleError, build_graph
 from nexus.process_gateway import ProcessExecutionGateway, ProcessRequest
 
 logger = logging.getLogger(__name__)

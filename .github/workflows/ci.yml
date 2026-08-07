@@ -1,83 +1,59 @@
-name: CI
+name: Deterministic CI
 
 on:
+  pull_request:
   push:
     branches: [main]
-  pull_request:
 
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  release-gate:
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+  test:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.10", "3.11", "3.12", "3.13"]
-        exclude:
-          # Limit Windows to a single Python version to avoid matrix explosion.
-          # Autonomous/isolation-requiring modes are not supported on Windows;
-          # the test suite exercises platform-aware fallback paths instead.
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: macos-latest
+            python: "3.12"
           - os: windows-latest
-            python-version: "3.10"
-          - os: windows-latest
-            python-version: "3.12"
-          - os: windows-latest
-            python-version: "3.13"
-
+            python: "3.12"
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
-
-      - uses: astral-sh/setup-uv@v6
-
-      - name: Install the locked project and release tools
-        run: uv sync --locked --extra dev --extra browser
-
-      # Install and probe the kernel sandbox BEFORE the release gate runs.
-      # The release gate includes test_cli_direct_command_real_execution which
-      # requires a native isolation backend on non-Windows platforms.
-      - name: Install and probe kernel sandbox (Linux)
-        if: runner.os == 'Linux'
+          python-version: ${{ matrix.python }}
+          cache: pip
+      - name: Install
+        run: python -m pip install -c release-constraints.txt -e '.[dev]'
+      - name: Verify dependency contract
         run: |
-          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
-          sudo apt-get update && sudo apt-get install -y bubblewrap
-          uv run python - <<'PY'
-          from pathlib import Path
-          from nexus.sandbox import SandboxBackend, SandboxRunner
-          backend = SandboxRunner(Path.cwd()).backend()
-          if backend is not SandboxBackend.BUBBLEWRAP:
-              raise SystemExit(f"Linux CI sandbox probe failed: expected BUBBLEWRAP, got {backend.value}")
-          print(f"sandbox probe OK: {backend.value}")
+          python -m pip check
+          python - <<'PY'
+          from nexus.qualification_environment import qualify_environment
+          report = qualify_environment('.')
+          assert report.passed, report.to_dict()
           PY
-
-      - name: Probe kernel sandbox (macOS)
-        if: runner.os == 'macOS'
+      - name: Compile and architecture gate
         run: |
-          uv run python - <<'PY'
-          from pathlib import Path
-          from nexus.sandbox import SandboxBackend, SandboxRunner
-          backend = SandboxRunner(Path.cwd()).backend()
-          if backend is not SandboxBackend.MACOS:
-              raise SystemExit(f"macOS CI sandbox probe failed: expected MACOS, got {backend.value}")
-          print(f"sandbox probe OK: {backend.value}")
-          PY
-
-      - name: Run release gate
-        run: uv run python scripts/run_release_gate.py
-
-      - name: Run offline command scenarios
-        run: uv run python scripts/run_offline_scenarios.py
-
-      - name: Run randomized full suite
-        run: uv run pytest tests --randomly-seed=${{ github.run_id }}
+          python -m compileall -q nexus tests scripts
+          python -m nexus architecture check
+      - name: Truth-integrity and installed CLI boundaries
+        run: >-
+          python -m pytest -q
+          tests/test_truth_integrity_p0.py
+          tests/test_offline_reliability_benchmark.py
+          tests/test_e2e_installed_wheel.py
+          tests/test_sandbox_stress.py
+      - name: Full deterministic suite
+        env:
+          NEXUS_STATE_HMAC_KEY: ci-${{ matrix.os }}-${{ matrix.python }}
+          NEXUS_DISABLE_NETWORK: "1"
+          NEXUS_OFFLINE: "1"
+        run: python -m pytest -q

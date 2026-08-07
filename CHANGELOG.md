@@ -1,6 +1,189 @@
 # Changelog
 
+## [3.8.2] - 2026-08-07
+
+### Launch-remediation and evidence hardening
+
+- Added deterministic provider/client lifecycle ownership and idempotent cleanup for hosted transports, streams, fallback routers, budget wrappers, and agents.
+- Hardened sandbox stdout/stderr cleanup against descendant-inherited pipe handles; cleanup failure now makes the command result fail closed.
+- Added a shared-process watchdog that requires the complete pytest interpreter to exit cleanly, not merely print a passing summary.
+- Added direct dependency-range qualification plus `pip check`; release/CI now reject environments that violate `pyproject.toml`.
+- Added exact Git-or-archive source identity, dependency-lock hashes, and non-empty sandbox qualification revision binding.
+- Added canonical machine-readable doctor output.
+- Release workflow now requires autonomous native-sandbox qualification for autonomous artifacts and completes live provider qualification before artifact attestation.
+- Live provider evidence is explicitly scoped as a regression campaign and does not claim unseen-task or Claude Code parity without the separate sealed benchmark gate.
+
+## [3.8.1] - 2026-08-06
+
+### Verification-integrity launch hardening
+- Replaced command-text test heuristics with structured test-runner profiles, exact targets, normalized scopes, observed execution evidence, command fingerprints, and workspace revisions.
+- Rejected arbitrary commands, compound shell commands, zero-test runs, and commands that merely mention test-related words from satisfying test or completion gates.
+- Prevented a narrow passing test from superseding a broader failing suite; a validated full-suite pass may cover narrower obligations only for the same runner and workspace revision.
+- Content-addressed test provenance at planning time so pre-existing, modified, generated, mixed, and unknown tests remain distinct.
+- Bound final acceptance to independently validated evidence from the final workspace revision and require the configured project-level test suite after mutation.
+- Hardened the repository completion ledger so only validated, explicitly targeted tests—or a validated full-suite run—receive verification credit.
+- Preserved the architecture complexity budget by extracting revision, passing-check, and project-test-gate logic into isolated finalizer helpers.
+
+### Qualification
+- 887 tests collected: 885 passed, 2 platform-specific skips, 0 failures, and 0 duplicate test identities across the post-refactor launch matrix.
+- All 248 packaged modules import and the architecture-health gate passes.
+- The release remains fail-closed for autonomous command execution until native sandbox qualification passes on the exact deployment host.
+- Claude Code parity or superiority is not claimed without the sealed private-repository campaign and independent evaluator signature.
+
+## [3.8.0] - 2026-08-06
+
+### Repository intelligence offensive
+- Replaced fixed context growth with failure-evidence extraction, dependency-directed expansion, configurable graph hops, and risk-scaled file/token budgets.
+- Added operational task profiles for hidden multi-file bugs, framework migrations, feature additions, difficult refactors, indirect test failures, repository-wide API changes, and state/concurrency defects.
+- Added an independent completion ledger that blocks unresolved callers, migration surfaces, concurrency obligations, missing verification, unexpected files, and preserved-file violations on hard tasks.
+- Added structural replanning: new evidence invalidates hypotheses, inserts an investigation step, expands evidenced scope, and requires targeted verification; duplicate evidence cannot masquerade as a new plan.
+- Added deterministic concurrency triage for shared mutable state, check-then-act patterns, lock/async misuse, transaction boundaries, and process lifecycle cleanup.
+
+### Execution and release integrity
+- Fixed the tagged-release workflow's nonexistent sandbox API call.
+- Made native OS isolation the default for public command/process APIs; unisolated host execution now requires a separate explicit capability.
+- Added dynamic filesystem escape and controlled loopback-network probes to sandbox qualification.
+- Replaced ambiguous doctor readiness with capability-specific analysis, plan-only, verified-repair, and autonomous states.
+- Threaded explicit trusted-host authority through verification and MCP fixture execution without weakening production defaults.
+- Added signed artifact-attestation and packaged-evidence steps to the release workflow.
+- Added deterministic wheel and sdist normalization so identical source and `SOURCE_DATE_EPOCH` produce byte-for-byte identical release archives.
+
+### Competitive proof
+- Extended the blind benchmark harness to two-to-four distinct agents with repository/prompt provenance, task categories, cost, token, and intervention metrics.
+- Added a fail-closed superiority gate requiring at least 50 private unseen tasks across 10 repositories, all seven hard categories, three trials, withheld oracles, independent evaluation, equal budgets, real Claude Code provenance, same-model uplift, quality margin, safety, cost, latency, and intervention thresholds.
+- Added `nexus benchmark superiority-gate`; smoke scripts and dry runs can never authorize a superiority claim.
+- Added a fail-fast `nexus benchmark superiority-preflight` that rejects duplicate repository content, repeated task fingerprints, placeholder identities, incomplete category coverage, missing withheld oracles, unequal model identities, and invalid budgets before paid executions begin.
+- Bound competitive reports to disclosed budget and runtime-environment manifests, content-derived repository hashes, exact model/product identities, per-task timeout envelopes, and complete cost/token/intervention metrics.
+
+## [3.7.0] - 2026-08-06
+
+### Cognitive engineering
+- Added falsifiable engineering deliberation contracts with competing hypotheses, required evidence, invariants, stop conditions, and risk-specific completion confidence.
+- Added measured-capability routing: high-risk work cannot be certified from conservative model priors and requires approval or escalation when Model Doctor evidence is absent.
+
+### Repository and multi-file reliability
+- Added graph-propagated context selection across imports, reverse imports, callers, symbol references, mapped tests, configuration, and risk boundaries.
+- Added hard multi-file completion contracts for inspection, coordinated changes, verification, allowed roots, and preserved non-goals.
+- Fixed a contradictory obligation where an explicitly preserved file could also be marked as a required change.
+- Invalidated stale repository candidates after command-driven modification or deletion.
+
+### Recovery and lifecycle
+- Added evidence-delta recovery with stable failure fingerprints and bounded escalation through smaller patch, context expansion, replanning, model switch, rollback, and terminal stop.
+- Added a production process-state registry for child processes, executors, pools, context variables, caches, and one-shot cleanup callbacks.
+- Added mandatory shared-process qualification with a watchdog and before/after source-tree SHA-256.
+
+### External proof
+- Added blind matched-repository Nexus-versus-Claude duel execution with hidden oracle installation, randomized order, identical verification, provenance, scope scoring, and false-success detection.
+- Added behavioral host sandbox qualification and a Linux/macOS/Windows CI matrix; policy guards are never mislabeled as native filesystem isolation.
+
+## [3.6.1] - 2026-08-06
+
+### Execution truth
+- Fixed canonical MCP, plugin, and extension dispatch by importing and normalizing `ToolResult`/`ToolStatus` at the Agent boundary.
+- Made structured status authoritative; human-readable output markers can no longer convert a failed external tool into success.
+- Preserved MCP `isError` failures and converted extension/plugin exceptions into structured terminal failures.
+- Corrected recovery-controller input so tool failures no longer construct an invalid `FailureRecord`.
+
+### Transactional command mutations
+- Replaced mtime-only shell reconciliation with a content-addressed workspace journal.
+- Added union-diff detection for created, modified, deleted, mode-changed, symlink, and timestamp-preserving mutations.
+- Added immutable preimages, deletion-aware history, mode restoration, digest verification, unreadable-tree fail-closed behavior, and preflight validation before rollback.
+- Failed commands now automatically roll back all tracked partial workspace mutations and verify the restored tree; transaction IDs are collision-resistant UUIDs.
+- Command mutation history is committed atomically in one batch, and rollback evidence describes the verified restored state instead of leaving stale success artifacts.
+- Excluded Nexus internal state/preimage storage from user-workspace mutation reports.
+- Added typed artifact evidence with expected-existence verification.
+
+### Engineering planning
+- Made explicit leading repair intent authoritative over secondary build/test keywords.
+- Added deterministic intent tie-breaking and mandatory planning for risky moderate repairs, authentication, concurrency, migrations, compatibility, and production-sensitive changes.
+- Reduced dual-planner contradiction by deriving the executable legacy intent from the canonical task contract.
+- Bound canonical plan tool names to the live tool registry and added root-cause hypotheses for repair/security tasks.
+
+### Qualification
+- Added end-to-end regression coverage for canonical plugin/extension/MCP dispatch, unknown-status fail-closed behavior, legacy adapter normalization, timestamp-preserving edits, deletion/restore, multi-path failed-command rollback, file-to-directory restoration, repair intent, and live-tool plan validation.
+- Added `scripts/run_isolated_pytest.py`, a machine-readable per-module process-isolation gate that cryptographically records the source-tree SHA-256 before and after qualification and fails on source drift.
+
+## [3.6.0] - 2026-08-06
+
+### Truth integrity
+- Replaced metadata-only repository cache validation with actual SHA-256 content fingerprints.
+- Added immutable source-revision snapshots and stale-evidence rejection across planning, mutation, recovery, and semantic verification.
+- Added a typed natural-language constraint compiler for prohibited files, schema changes, public API changes, dependencies, authentication, behavior, and backward compatibility.
+- Removed free-form scope-expansion authorization; only pre-registered repository/compiler/test evidence or explicit human authority can expand scope.
+- Removed raw model output and notes from acceptance evidence. Every criterion now requires typed, independently produced evidence.
+- Added optimistic concurrency checks that reject writes when a planned file changed after analysis.
+
+### Authenticated state and deployment
+- Replaced adjacent unkeyed checksums with HMAC-SHA256 state authentication using keys outside the editable repository.
+- Added corruption, stale-writer, concurrent-writer, and invalid-key regression coverage.
+- Added `nexus deploy check --deep` for supervised deployment qualification and explicit autonomous blockers.
+- Added an installed offline reliability benchmark that performs a real repair and four adversarial integrity scenarios.
+- Added an SPDX 2.3 SBOM and bound it to release evidence.
+
+### Qualification and evaluation
+- Added an external hash-pinned hidden-task gate requiring at least 30 tasks and three trials per task.
+- Added false-verification, prohibited-change, repeatability, intervention, cost, and latency thresholds.
+- Added duplicate top-level definition detection to the architecture gate.
+- Added deterministic Linux/macOS/Windows CI and corrected stale workflow test paths.
+- Release-candidate promotion now also requires hidden-task, repeatability, false-verification, prohibited-change, live-provider, and cross-platform evidence.
+
+
+## [3.5.0] - 2026-08-06
+
+Engineering Brain reliability release.
+
+### Added
+
+- Repository-aware Engineering Brain contract with decisive files, callers, related tests, architecture constraints, non-goals, risk, and plan-critic output.
+- Tamper-evident persistent task memory with atomic writes, sequence checks, cross-process locking, and stale-writer rejection.
+- Hash-sealed long-horizon phase state with evidence-gated transitions and fail-closed resume.
+- Surgical mutation scope with file, line, prohibition, and bounded expansion budgets enforced below the model layer.
+- Semantic verification requiring external evidence, scope compliance, acceptance mapping, and independent review.
+- Hash-chained failure-learning store with redaction, fsync, corruption detection, and repeated-failure escalation.
+- `nexus intelligence inspect`, `nexus intelligence memory`, `nexus deploy check`, and `nexus benchmark compare-matched`.
+- Matched direct-versus-Nexus benchmark analysis for identical task/model/revision/budget pairs.
+
+### Changed
+
+- Quality and Verified Repair modes block when the engineering control plane cannot establish or validate safe state.
+- Model prompts now include repository intelligence, durable decisions, failure lessons, non-goals, scope, and long-horizon phase context.
+- Finalization can no longer promote a run past semantic acceptance or engineering-state integrity failures.
+- Architecture qualification now requires the Engineering Brain and matched-benchmark modules.
+
+### Security and reliability
+
+- Corrupt failure-learning suffixes are no longer silently ignored.
+- Concurrent task-memory writers cannot overwrite newer state.
+- Tampered long-horizon checkpoints are rejected instead of reset.
+- New-file requests remain bounded by extracting explicit user-named paths before repository mutation.
+
 All notable changes to NexusAI CLI are documented here.
+
+## [3.4.0] - 2026-08-05
+
+### Verified Repair reliability release
+
+- Added the `nexus fix` workflow with risk-aware model routing, workspace isolation, hard INR budgets, bounded turns, plan criticism, verification-first execution, and optional Nexus Proof receipts.
+- Added tamper-evident `nexus.proof.v2` receipts that downgrade unsupported VERIFIED claims and record repository state, changed-file fingerprints, checks, criteria, costs, routing, risks, rollback, and evidence hashes.
+- Removed execution/recovery module-package collisions and replaced the shipped `AgentSession` success stub with a fail-closed controller contract.
+- Made installed benchmarks self-contained through package resources and verified them from an unrelated empty directory.
+- Added artifact-bound qualification for source, wheel, source distribution, JUnit, coverage, benchmark, runner, test counts, and timestamps.
+- Added resumable isolated release-test shards with separate HOME, cache, Nexus state, logs, JUnit, and coverage databases.
+- Added source-layout, fake-success, concrete-placeholder, unreachable-module, and complexity-regression architecture gates.
+- Added source-distribution coverage for workflows, tests, benchmark fixtures, scripts, and package resources.
+- Fresh deterministic matrix: 771 collected, 769 passed, 0 failed, 2 platform-specific skips on Linux.
+
+## [3.3.0] - 2026-08-05
+
+### Reliability consolidation
+
+- Restored doctor, model capability, plugin manifest, and release qualification modules.
+- Enforced one canonical CLI and tool runtime through compatibility facades and architecture gates.
+- Added import-all, source-secret, package-integrity, and evidence-bound release checks.
+- Replaced optimistic recovery stubs with explicit fail-closed handlers and verified run-scoped rollback.
+- Implemented bounded collaboration workers with scope, budget, mutation, and verification evidence.
+- Consolidated agent and CLI planning through one production planning adapter.
+- Hardened Ceiling + Intern routing: Intern is limited to explicit single-file low-risk work; Ceiling owns ambiguity, multi-file work, high-risk semantics, escalation, and final review.
 
 ## [Unreleased]
 

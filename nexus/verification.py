@@ -17,6 +17,8 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 
+from nexus.verification_evidence import analyse_test_command, validate_test_execution
+
 
 class CheckType(str, Enum):
     """Types of verification checks."""
@@ -193,6 +195,7 @@ class VerificationEngine:
         custom_commands: dict[str, str] | None = None,
         *,
         require_os_isolation: bool = False,
+        allow_unisolated_host_process: bool = False,
         timeout_seconds: float | None = None,
     ):
         self.root = Path(working_dir).expanduser().resolve()
@@ -202,6 +205,7 @@ class VerificationEngine:
         self.project_type = self._detect_project_type()
         self.commands = self._resolve_commands(custom_commands or {})
         self.require_os_isolation = bool(require_os_isolation)
+        self.allow_unisolated_host_process = bool(allow_unisolated_host_process)
         configured_timeout = timeout_seconds or float(os.getenv("NEXUS_VERIFY_TIMEOUT", "300"))
         self.timeout_seconds = min(1800.0, max(30.0, float(configured_timeout)))
 
@@ -497,6 +501,7 @@ class VerificationEngine:
             str(baseline_path),
             custom_commands=dict(self.commands),
             require_os_isolation=self.require_os_isolation,
+            allow_unisolated_host_process=self.allow_unisolated_host_process,
             timeout_seconds=self.timeout_seconds,
         )
         reconciled: list[CheckResult] = []
@@ -721,6 +726,7 @@ class VerificationEngine:
                 timeout_seconds=timeout_seconds or self.timeout_seconds,
                 network=False,
                 require_os_isolation=self.require_os_isolation,
+                allow_unisolated_host_process=self.allow_unisolated_host_process,
             )
 
             duration = int((time.monotonic() - start) * 1000)
@@ -729,6 +735,17 @@ class VerificationEngine:
                 output += "\n" + result.stderr
 
             status = CheckStatus.PASSED if result.success else CheckStatus.FAILED
+            if check_type == CheckType.TEST:
+                profile = analyse_test_command(command, root=self.working_dir)
+                valid, detail, _count = validate_test_execution(
+                    profile,
+                    output=output,
+                    exit_code=result.exit_code,
+                    root=self.working_dir,
+                )
+                if not valid:
+                    status = CheckStatus.FAILED
+                    output = (output.rstrip() + f"\n\n[NEXUS] Test evidence rejected: {detail}").strip()
 
             # Count errors and warnings from output
             error_count = output.lower().count("error")

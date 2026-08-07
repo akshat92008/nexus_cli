@@ -23,6 +23,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from nexus.code_validation import GeneratedCodeValidator
+from nexus.model_doctor import CapabilityDimension, model_doctor
 from nexus.nova_backend import PROMPT_PATH, NovaPipelineBackend, NovaToolProposal
 from nexus.nova_runtime import (
     CEILING_SYSTEM_PROMPT,
@@ -198,6 +199,7 @@ class TwoNodeResult:
     review_summary: str = ""
     review_findings: list[str] = field(default_factory=list)
     execution_plan: ExecutionPlan | None = None
+    intern_capability_profile: dict = field(default_factory=dict)
 
     @property
     def proposals(self) -> list[NovaToolProposal]:
@@ -426,6 +428,7 @@ class TwoNodeBackend:
         self.ceiling = NvidiaCeilingNode(client, ceiling_model_id)
         self.ceiling_model_name = ceiling_model_name
         self.intern_model = intern_model
+        self.intern_capability_profile = model_doctor.get_profile(intern_model).to_dict()
         self.run_ledger = run_ledger or _NoopExecutionLedger()
         self.parser = NovaOutputParser()
         self.escalation_log_path = self.working_dir / ".nexusai" / "escalations.jsonl"
@@ -466,6 +469,7 @@ class TwoNodeBackend:
             tasks=tasks,
             decomposition_raw=raw_decomposition,
             execution_plan=execution_plan,
+            intern_capability_profile=getattr(self, "intern_capability_profile", {}),
         )
 
         with tempfile.TemporaryDirectory(prefix="nexus_two_node_") as tmp:
@@ -488,7 +492,7 @@ class TwoNodeBackend:
 
             def execute_step(step: PlanStep) -> TaskOutcome:
                 task = task_by_id[step.id]
-                route, route_reason = self._route_task(task)
+                route, route_reason = self._select_route(task)
                 if route == "ceiling":
                     execution = self._escalate_to_ceiling(
                         task=task,
@@ -1153,14 +1157,34 @@ class TwoNodeBackend:
             )
         return context
 
+    def _select_route(self, task: AtomicTask) -> tuple[str, str]:
+        """Route through an instance override when tests/extensions inject one."""
+        override = self.__dict__.get("_route_task")
+        if callable(override):
+            return override(task)
+        return type(self)._route_task(
+            task, getattr(self, "intern_capability_profile", None)
+        )
+
     @staticmethod
-    def _route_task(task: AtomicTask) -> tuple[str, str]:
-        """Make every Intern/Ceiling routing choice explicit and reproducible."""
+    def _route_task(
+        task: AtomicTask, intern_profile: dict | None = None
+    ) -> tuple[str, str]:
+        """Make every Intern/Ceiling routing choice explicit and reproducible.
+
+        The Intern is intentionally a bounded executor.  It never owns ambiguous,
+        multi-file, architectural, security-sensitive, or dependency-manifest work.
+        """
         text = task.description.lower()
         if task.scope_level == "vague":
-            return "ceiling", "underspecified task; Nova is not allowed to guess"
-        if task.expected_files > 1 and ("json" in text or ".json" in text):
-            return "ceiling", "multi-file JSON hits Nova's documented filepath-marker weakness"
+            return "ceiling", "underspecified task; Intern is not allowed to guess"
+        if int(task.expected_files or 0) != 1:
+            return "ceiling", "Intern mutation budget is exactly one file per atomic task"
+
+        explicit_paths = extract_prompt_paths(task.description)
+        if len(explicit_paths) != 1:
+            return "ceiling", "Intern requires exactly one explicit repository path"
+
         high_risk = (
             "concurren",
             "thread",
@@ -1179,10 +1203,33 @@ class TwoNodeBackend:
             "package.json",
             "cargo.toml",
             "go.mod",
+            "pyproject.toml",
+            "requirements.txt",
+            "dockerfile",
+            "workflow",
+            ".github/",
         )
         matched = [term for term in high_risk if term in text]
         if matched:
             return "ceiling", f"complex/high-risk semantics detected: {', '.join(matched[:3])}"
         if len(task.description) > 700:
             return "ceiling", "subtask exceeds the bounded Intern complexity budget"
-        return "nova", "atomic, explicit, single-file task within Nova's guarded capability"
+
+        if intern_profile:
+            capabilities = dict(intern_profile.get("capabilities") or {})
+            minimums = {
+                CapabilityDimension.STRUCTURED_OUTPUT.value: 0.35,
+                CapabilityDimension.PATH_DISCIPLINE.value: 0.35,
+                CapabilityDimension.SINGLE_FILE_REPAIR.value: 0.40,
+                CapabilityDimension.PATCH_VALIDITY.value: 0.35,
+            }
+            weak = []
+            for name, threshold in minimums.items():
+                raw = capabilities.get(name) or {}
+                score = float(raw.get("score", 0.0)) if isinstance(raw, dict) else 0.0
+                if score < threshold:
+                    weak.append(f"{name}={score:.2f}")
+            if weak:
+                return "ceiling", "Intern capability profile below safe threshold: " + ", ".join(weak)
+
+        return "nova", "atomic, explicit, single-file task within guarded Intern capability"

@@ -7,7 +7,6 @@ requires argv array execution, and enforces working directory and timeout bounds
 from __future__ import annotations
 
 import re
-import shlex
 from enum import Enum
 from pathlib import Path
 from typing import Sequence
@@ -47,26 +46,56 @@ class CommandPolicy:
         if not argv:
             return CommandRisk.UNKNOWN
 
-        cmd = Path(argv[0]).name.lower()
-        args = " ".join(argv[1:]).lower()
+        normalized = [str(item) for item in argv]
+        cmd = Path(normalized[0]).name.lower()
+        args = [item.lower() for item in normalized[1:]]
+        full_line = " ".join(normalized)
 
-        # Check dangerous patterns first
-        full_line = " ".join(argv)
+        # Check dangerous patterns first.
         for pattern, _ in DANGEROUS_COMMAND_PATTERNS:
             if re.search(pattern, full_line, re.IGNORECASE):
                 return CommandRisk.DESTRUCTIVE
 
-        if cmd in ("ls", "cat", "git status", "git log", "git diff", "grep", "find", "pwd", "head", "tail"):
+        first = args[0] if args else ""
+        second = args[1] if len(args) > 1 else ""
+
+        if cmd in {"ls", "cat", "grep", "rg", "find", "pwd", "head", "tail"}:
             return CommandRisk.READ_ONLY
-        elif cmd in ("pytest", "npm test", "go test", "cargo test", "flake8", "eslint", "ruff", "mypy"):
+        if cmd == "git" and first in {"status", "log", "diff", "show", "rev-parse", "ls-files"}:
+            return CommandRisk.READ_ONLY
+
+        if cmd in {"pytest", "flake8", "eslint", "ruff", "mypy"}:
             return CommandRisk.VALIDATION
-        elif cmd in ("make", "npm run build", "cargo build", "go build", "gcc", "clang"):
+        if (cmd in {"npm", "yarn", "pnpm"} and first == "test") or (cmd in {"go", "cargo"} and first == "test"):
+            return CommandRisk.VALIDATION
+
+        if cmd in {"make", "gcc", "clang"}:
             return CommandRisk.BUILD
-        elif cmd in ("npm install", "pip install", "uv pip install", "cargo add", "yarn add", "poetry add"):
+        if cmd in {"npm", "yarn", "pnpm"} and first == "run" and second == "build":
+            return CommandRisk.BUILD
+        if cmd in {"cargo", "go"} and first == "build":
+            return CommandRisk.BUILD
+
+        if (cmd in {"pip", "pip3"} and first == "install") or (cmd == "uv" and first == "pip" and second == "install"):
             return CommandRisk.PACKAGE_INSTALL
-        elif cmd in ("git",) and any(sub in args for sub in ("commit", "branch", "checkout", "merge", "rebase", "reset")):
+        if cmd in {"npm", "pnpm"} and first in {"install", "add"}:
+            return CommandRisk.PACKAGE_INSTALL
+        if cmd == "yarn" and first in {"add", "install"}:
+            return CommandRisk.PACKAGE_INSTALL
+        if cmd in {"cargo", "poetry"} and first == "add":
+            return CommandRisk.PACKAGE_INSTALL
+        if cmd in {"python", "python3"} and len(args) >= 3 and first == "-m" and second in {"pip", "uv"} and args[2] == "install":
+            return CommandRisk.PACKAGE_INSTALL
+
+        if cmd == "git" and first in {
+            "add", "commit", "branch", "checkout", "switch", "merge", "rebase",
+            "reset", "restore", "rm", "mv", "tag", "cherry-pick", "revert",
+        }:
             return CommandRisk.GIT_MUTATION
-        elif cmd in ("curl", "wget", "fetch", "git push", "git fetch", "git pull"):
+
+        if cmd in {"curl", "wget", "fetch"}:
+            return CommandRisk.NETWORK_REQUEST
+        if cmd == "git" and first in {"push", "fetch", "pull", "clone", "ls-remote"}:
             return CommandRisk.NETWORK_REQUEST
 
         return CommandRisk.UNKNOWN

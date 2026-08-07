@@ -5,7 +5,6 @@ Attempt Signatures and Loop Prevention Engine for Nexus CLI Recovery Subsystem.
 from __future__ import annotations
 
 import hashlib
-import json
 from dataclasses import dataclass
 from typing import Any
 

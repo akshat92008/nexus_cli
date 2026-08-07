@@ -15,7 +15,6 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any
 
 from nexus.multifile.consistency import ChangeSetConsistencyValidator
 from nexus.multifile.contracts import (
@@ -26,7 +25,6 @@ from nexus.multifile.contracts import (
     SymbolReference,
 )
 from nexus.multifile.impact import ImpactAnalyzer
-from nexus.multifile.patch import MultiFilePatchManager
 from nexus.multifile.persistence import ChangeSetPersistence
 from nexus.multifile.staged_execution import StagedChangeSetExecutor
 

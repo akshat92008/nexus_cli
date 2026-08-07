@@ -164,6 +164,21 @@ class Provider(ABC):
         """Return a list of capabilities this provider supports."""
         return self.capabilities.labels()
 
+    def close(self) -> None:
+        """Release provider-owned resources.
+
+        Providers that own sockets, HTTP clients, subprocesses, executors, or
+        other long-lived resources should override this method.  Keeping the
+        method on the base protocol gives callers one deterministic lifecycle
+        hook without forcing light-weight test doubles to implement it.
+        """
+
+    def __enter__(self) -> "Provider":
+        return self
+
+    def __exit__(self, _exc_type, _exc, _tb) -> None:
+        self.close()
+
 class ModelProvider(Provider):
     """
     Modern target interface for Sprint 3.

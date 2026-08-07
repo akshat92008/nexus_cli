@@ -58,3 +58,33 @@ def test_rollback_manager_successful_rollback(tmp_path: Path, monkeypatch):
     assert success, msg
     assert "Restored target.txt to previous version" in msg
     assert dummy_file.read_text() == "before"
+
+
+def test_rollback_manager_blocks_older_turn_with_newer_changes(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("nexus.run_catalog.nexus_home", lambda: tmp_path)
+    monkeypatch.setattr("nexus.history.nexus_home", lambda: tmp_path)
+
+    session_id = "test-session-newer"
+    first_turn = tmp_path / "runs" / session_id / "turn-0001"
+    first_turn.mkdir(parents=True)
+    (first_turn / "request.json").write_text(
+        '{"schema_version":"nexus.run.v2","session_id":"test-session-newer","turn_id":"turn-0001"}'
+    )
+    (first_turn / "final_report.json").write_text(
+        '{"metadata":{"history_start":0,"history_end":1}}'
+    )
+
+    history = FileHistory(session_id)
+    target = tmp_path / "target-newer.txt"
+    target.write_text("v1")
+    snap1 = history.snapshot_before_write(str(target))
+    target.write_text("v2")
+    history.record_change(str(target), "write_file", snapshot_path=snap1)
+    snap2 = history.snapshot_before_write(str(target))
+    target.write_text("v3")
+    history.record_change(str(target), "write_file", snapshot_path=snap2)
+
+    success, message = RollbackManager.rollback("turn-0001")
+    assert not success
+    assert "newer persisted changes" in message
+    assert target.read_text() == "v3"

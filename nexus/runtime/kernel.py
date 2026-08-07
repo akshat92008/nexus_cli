@@ -13,6 +13,8 @@ from typing import Any, Callable, Generator
 
 from nexus.planner import ExecutionPlan, PlanStep, TaskStatus
 from nexus.providers.base import Provider
+from nexus.recovery import RecoveryController
+from nexus.recovery.normalizer import FailureNormalizer
 from nexus.run_state import RunLedger
 from nexus.runtime.events import (
     BaseEvent,
@@ -29,10 +31,8 @@ from nexus.runtime.events import (
     TurnCompleted,
     TurnStarted,
 )
-from nexus.recovery import RecoveryController
 from nexus.runtime.state_machine import RunState, StateMachine
-from nexus.recovery.records import FailureRecord
-from nexus.recovery.normalizer import FailureNormalizer
+
 logger = logging.getLogger(__name__)
 
 

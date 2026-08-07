@@ -2,9 +2,15 @@
 
 import secrets
 
+
 def reset_global_state() -> None:
     """Reset shared module-level state for deterministic test isolation."""
     errors = []
+    try:
+        from nexus.runtime.process_state import reset_process_state
+        reset_process_state(strict=True)
+    except Exception as exc:
+        errors.append(f"Process-state reset failed: {exc}")
     
     from nexus.sandbox import SandboxRunner
     SandboxRunner._backend_cache = None

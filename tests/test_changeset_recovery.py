@@ -1,19 +1,18 @@
 """Tests for MultiFileRecoveryHandler (Sprint 8)."""
 from __future__ import annotations
 
-import pytest
+from nexus.multifile.contracts import (
+    ChangeType,
+    EngineeringChangeSet,
+    ImpactCategory,
+    MissingChange,
+    PlannedFileChange,
+    Reference,
+)
 from nexus.multifile.recovery import (
     MultiFileRecoveryHandler,
     RecoveryContext,
     RecoveryDecision,
-)
-from nexus.multifile.contracts import (
-    ChangeType,
-    EngineeringChangeSet,
-    MissingChange,
-    PlannedFileChange,
-    Reference,
-    ImpactCategory,
 )
 
 

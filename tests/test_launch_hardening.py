@@ -217,6 +217,7 @@ def test_direct_nova_executes_declared_test_and_reaches_verified_status(
         permission_mode="acceptEdits",
         mode_policy=test_policy,
         workspace_isolation=False,
+        allow_unisolated_host_process=True,
     )
 
     pipeline_result = ExecutionPipeline(agent).run("Create answer.py with ANSWER = 42")
@@ -383,7 +384,7 @@ def test_macos_profile_has_no_global_file_read_grant(tmp_path):
         inside_file = tmp_path / "inside.txt"
         inside_file.write_text("hello", encoding="utf-8")
         
-        # Create a secret file outside the workspace (and outside temp_dir, which is permitted)
+        # Create a secret file outside the workspace (the host-wide temp tree is not permitted)
         outside_file = Path.home() / ".nexus_test_sandbox_escape.txt"
         outside_file.write_text("secret", encoding="utf-8")
         
